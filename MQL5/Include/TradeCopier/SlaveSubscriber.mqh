@@ -304,9 +304,9 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
    double fraction = e.volume / masterOpenVolume;
    double targetSlaveVolume = slaveOpenVolume * fraction;
    double lotStep = m_symbolInfo.LotsStep();
-   targetSlaveVolume = MathFloor(targetSlaveVolume / lotStep) * lotStep;
    double volumeToClose = currentSlaveVolume - targetSlaveVolume;
    volumeToClose = MathFloor(volumeToClose / lotStep) * lotStep;
+   volumeToClose = MathMin(volumeToClose, currentSlaveVolume);
 
    if(volumeToClose <= 0.0)
       return;
