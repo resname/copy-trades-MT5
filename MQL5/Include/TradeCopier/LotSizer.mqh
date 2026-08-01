@@ -5,7 +5,6 @@
 #define LOT_SIZER_MQH
 
 #include <Trade\SymbolInfo.mqh>
-#include <Math\Math.mqh>
 
 class CLotSizer
 {
@@ -47,7 +46,9 @@ double CLotSizer::CalculateLots(double balance, double stepAmount, double stepSi
    lots = MathMin(lots, maxLotSymbol);
    lots = MathMin(lots, maxLot);
 
-   return NormalizeDouble(lots, 2);
+   // re-align DOWN to lot step after clamping/capping; never round up
+   lots = MathFloor(lots / lotStep) * lotStep;
+   return lots;
 }
 
 #endif
