@@ -365,7 +365,7 @@ bool CSlaveSubscriber::OpenSlaveOrder(const string symbol, ENUM_ORDER_TYPE type,
       return false;
    }
 
-   m_trade.SetExpertMagicNumber((int)magic);
+   m_trade.SetExpertMagicNumber(magic);
    m_trade.SetDeviationInPoints(10);
 
    for(int attempt = 0; attempt <= m_retryCount; attempt++)
@@ -373,7 +373,20 @@ bool CSlaveSubscriber::OpenSlaveOrder(const string symbol, ENUM_ORDER_TYPE type,
       double price = (type == ORDER_TYPE_BUY) ? m_symbolInfo.Ask() : m_symbolInfo.Bid();
       if(m_trade.PositionOpen(symbol, type, lots, price, sl, tp, comment))
       {
-         outTicket = m_trade.ResultOrder();
+         ulong ticket = m_trade.ResultOrder();
+         if(ticket == 0)
+         {
+            PrintFormat("Slave: PositionOpen succeeded for %s but returned ticket 0",
+                        symbol);
+            return false;
+         }
+         if(!PositionSelectByTicket(ticket))
+         {
+            PrintFormat("Slave: PositionOpen returned ticket #%I64u for %s but position does not exist",
+                        ticket, symbol);
+            return false;
+         }
+         outTicket = ticket;
          return true;
       }
       PrintFormat("Slave: open attempt %d failed for %s, error %d",
