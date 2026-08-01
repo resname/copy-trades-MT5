@@ -1,0 +1,20 @@
+# MT5 Local Trade Copier
+
+A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 account to a slave MT5 account running on the same machine.
+
+## Features
+- Master/Slave dual mode
+- ZeroMQ-based local communication
+- Manual symbol translation
+- Balance-step lot sizing
+- Point-normalized SL/TP mirroring
+- Full trade lifecycle mirroring (open, modify SL/TP, partial close, close)
+
+## Installation
+(TODO: fill in after Task 10)
+
+## Configuration
+(TODO: fill in after Task 2)
+
+## Manual Testing Checklist
+(TODO: fill in after Task 11)
