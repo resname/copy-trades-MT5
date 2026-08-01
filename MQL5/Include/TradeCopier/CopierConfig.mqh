@@ -26,7 +26,7 @@ input double           BalanceStepSize   = 0.01;  // Lot size added per balance 
 input double           MaxLotSize        = 10.0;  // Hard lot-size cap
 input int              MaxTradeAgeMinutes = 30;   // Ignore master trades older than this on sync
 input bool             NormalizeSLTPUsingPoints = true; // Convert SL/TP via point distances
-input int              RetryCount = 3;            // Order-send retries on temporary failure
+input int              RetryCount = 3;            // Total order-send attempts (including the first attempt)
 input int              RetryDelayMs = 500;        // Delay between retries (ms)
 
 // Magic number base for copied trades. Slave ticket = base + (master_ticket % 900000)

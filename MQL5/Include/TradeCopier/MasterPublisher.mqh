@@ -22,6 +22,7 @@ class CMasterPublisher
 private:
    Context           *m_context;
    Socket            *m_socket;
+   Socket            *m_syncPull;
    int               m_heartbeatSeconds;
    datetime          m_lastHeartbeat;
    ulong             m_lastPublish;
@@ -34,9 +35,11 @@ private:
    int         FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const;
    void        BuildCurrentSnapshots(SPositionSnapshot &out[]);
    void        ReplaceSnapshots(const SPositionSnapshot &src[]);
+   void        ProcessSyncRequests();
 
 public:
-   CMasterPublisher() : m_context(NULL), m_socket(NULL), m_heartbeatSeconds(0), m_lastHeartbeat(0), m_lastPublish(0) {}
+   CMasterPublisher() : m_context(NULL), m_socket(NULL), m_syncPull(NULL),
+                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_lastPublish(0) {}
    bool Init(int port, int heartbeatSeconds);
    void Deinit();
    void PublishChanges(int intervalMs);
@@ -50,6 +53,7 @@ bool CMasterPublisher::Init(int port, int heartbeatSeconds)
    ArrayResize(m_prevSnapshots, 0);
 
    string address = StringFormat("tcp://127.0.0.1:%d", port);
+   string syncAddress = StringFormat("tcp://127.0.0.1:%d", port + 1);
 
    m_context = new Context();
    if(m_context == NULL)
@@ -61,7 +65,7 @@ bool CMasterPublisher::Init(int port, int heartbeatSeconds)
    m_socket = new Socket(m_context, ZMQ_PUB);
    if(m_socket == NULL)
    {
-      Print("MasterPublisher: failed to create ZMQ socket");
+      Print("MasterPublisher: failed to create ZMQ PUB socket");
       delete m_context;
       m_context = NULL;
       return false;
@@ -69,7 +73,7 @@ bool CMasterPublisher::Init(int port, int heartbeatSeconds)
 
    if(!m_socket.bind(address))
    {
-      PrintFormat("MasterPublisher: failed to bind to %s", address);
+      PrintFormat("MasterPublisher: failed to bind PUB to %s", address);
       delete m_socket;
       delete m_context;
       m_socket = NULL;
@@ -77,12 +81,42 @@ bool CMasterPublisher::Init(int port, int heartbeatSeconds)
       return false;
    }
 
-   PrintFormat("MasterPublisher: bound to %s", address);
+   PrintFormat("MasterPublisher: bound PUB to %s", address);
+
+   m_syncPull = new Socket(m_context, ZMQ_PULL);
+   if(m_syncPull == NULL)
+   {
+      Print("MasterPublisher: failed to create ZMQ PULL socket");
+      delete m_socket;
+      delete m_context;
+      m_socket = NULL;
+      m_context = NULL;
+      return false;
+   }
+
+   if(!m_syncPull.bind(syncAddress))
+   {
+      PrintFormat("MasterPublisher: failed to bind PULL to %s", syncAddress);
+      delete m_syncPull;
+      delete m_socket;
+      delete m_context;
+      m_syncPull = NULL;
+      m_socket = NULL;
+      m_context = NULL;
+      return false;
+   }
+
+   PrintFormat("MasterPublisher: bound PULL sync to %s", syncAddress);
    return true;
 }
 
 void CMasterPublisher::Deinit()
 {
+   if(m_syncPull != NULL)
+   {
+      delete m_syncPull;
+      m_syncPull = NULL;
+   }
    if(m_socket != NULL)
    {
       delete m_socket;
@@ -102,6 +136,9 @@ void CMasterPublisher::PublishChanges(int intervalMs)
    if(now - m_lastPublish < (uint)intervalMs)
       return;
    m_lastPublish = now;
+
+   // Handle any sync request from a slave that started after the master.
+   ProcessSyncRequests();
 
    SPositionSnapshot curr[];
    BuildCurrentSnapshots(curr);
@@ -126,8 +163,9 @@ void CMasterPublisher::PublishChanges(int intervalMs)
          {
             SendEvent("PARTIAL_CLOSE", pos, curr[i].volume);
          }
-         else if(NormalizeDouble(prev.sl - curr[i].sl, 8) != 0.0 ||
-                 NormalizeDouble(prev.tp - curr[i].tp, 8) != 0.0)
+
+         if(NormalizeDouble(prev.sl - curr[i].sl, 8) != 0.0 ||
+            NormalizeDouble(prev.tp - curr[i].tp, 8) != 0.0)
          {
             SendEvent("MODIFY_TRADE", pos, curr[i].volume);
          }
@@ -163,6 +201,37 @@ void CMasterPublisher::PublishChanges(int intervalMs)
       Send(hb);
       m_lastHeartbeat = nowTime;
    }
+}
+
+void CMasterPublisher::ProcessSyncRequests()
+{
+   if(m_syncPull == NULL)
+      return;
+
+   ZmqMsg msg;
+   if(!m_syncPull.recv(msg, true))
+      return;
+
+   string data = msg.getData();
+   STradeEvent e;
+   if(!CTradeMessage::JsonToEvent(data, e))
+   {
+      PrintFormat("MasterPublisher: malformed sync request: %s", data);
+      return;
+   }
+
+   if(e.event != "SYNC_REQUEST")
+      return;
+
+   ArrayResize(m_prevSnapshots, 0);
+
+   STradeEvent response;
+   ZeroMemory(response);
+   response.event = "SYNC_RESPONSE";
+   response.timestamp = TimeLocal();
+   Send(response);
+
+   Print("MasterPublisher: sync request received, republishing all positions");
 }
 
 STradeEvent CMasterPublisher::BuildEvent(const string eventName, const PositionInfo &pos)

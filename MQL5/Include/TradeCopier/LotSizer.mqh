@@ -47,10 +47,16 @@ double CLotSizer::CalculateLots(double balance, double stepAmount, double stepSi
    // round DOWN to lot step
    lots = MathFloor(lots / lotStep) * lotStep;
 
-   // clamp and cap (no further rounding; value is already on the lotStep grid)
+   // clamp and cap
    lots = MathMax(lots, minLot);
    lots = MathMin(lots, maxLotSymbol);
    lots = MathMin(lots, maxLot);
+
+   // remove floating-point noise while staying on the lot-step grid
+   int lotDigits = 0;
+   if(lotStep > 0.0)
+      lotDigits = (int)MathMax(0.0, -MathLog10(lotStep));
+   lots = NormalizeDouble(lots, lotDigits);
 
    return lots;
 }

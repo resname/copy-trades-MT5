@@ -31,7 +31,7 @@ struct STradeEvent
 bool GetJsonString(const string json, const string key, string &out);
 bool GetJsonRawValue(const string json, const string key, string &out);
 bool GetJsonLong(const string json, const string key, long &out);
-bool GetJsonULong(const string json, const string key, long &out);
+bool GetJsonULong(const string json, const string key, ulong &out);
 bool GetJsonInt(const string json, const string key, int &out);
 bool GetJsonDouble(const string json, const string key, double &out);
 
@@ -123,9 +123,12 @@ bool GetJsonLong(const string json, const string key, long &out)
 //+------------------------------------------------------------------+
 //| Extract unsigned long value for key                                |
 //+------------------------------------------------------------------+
-bool GetJsonULong(const string json, const string key, long &out)
+bool GetJsonULong(const string json, const string key, ulong &out)
 {
-   return GetJsonLong(json, key, out);
+   string s;
+   if(!GetJsonRawValue(json, key, s)) return false;
+   out = (ulong)StringToInteger(s);
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -198,7 +201,7 @@ bool CTradeMessage::JsonToEvent(const string json, STradeEvent &e)
 
    if(!GetJsonLong(json, "timestamp", e.timestamp)) return false;
    if(!GetJsonLong(json, "magic", e.magic)) return false;
-   if(!GetJsonULong(json, "master_ticket", (long&)e.master_ticket)) return false;
+   if(!GetJsonULong(json, "master_ticket", e.master_ticket)) return false;
    if(!GetJsonString(json, "symbol", e.symbol)) return false;
    if(!GetJsonInt(json, "side", e.side)) return false;
    if(!GetJsonDouble(json, "open_price", e.open_price)) return false;

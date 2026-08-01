@@ -19,6 +19,7 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 4. Attach the EA to a chart on the master account; set `CopierMode` to `MASTER`.
 5. Attach the EA to a chart on the slave account; set `CopierMode` to `SLAVE` and configure symbol mapping / lot sizing.
 6. Both MT5 terminals must be running on the same machine.
+7. The sync channel automatically uses `CopierPort + 1`; no extra input is required.
 
 ## Configuration
 
@@ -46,7 +47,7 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 | MaxLotSize | double | 10.0 | Hard lot-size cap |
 | MaxTradeAgeMinutes | int | 30 | Ignore master trades older than this on sync |
 | NormalizeSLTPUsingPoints | bool | true | Convert SL/TP via point distances |
-| RetryCount | int | 3 | Order-send retries on temporary failure |
+| RetryCount | int | 3 | Total order-send attempts (including the first attempt) |
 | RetryDelayMs | int | 500 | Delay between retries (ms) |
 
 MAGIC_BASE is fixed at `1000000`. The copied position's magic number is computed as `MAGIC_BASE + (master_ticket % 900000)`.

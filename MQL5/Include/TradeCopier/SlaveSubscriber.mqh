@@ -27,6 +27,7 @@ class CSlaveSubscriber
 private:
    Context           *m_context;
    Socket            *m_socket;
+   Socket            *m_syncPush;
    CTrade             m_trade;
    CSymbolMapper      m_mapper;
    CLotSizer          m_lotSizer;
@@ -34,6 +35,9 @@ private:
    int                m_maxAgeMinutes;
    int                m_retryCount;
    int                m_retryDelayMs;
+   int                m_heartbeatSeconds;
+   datetime           m_lastHeartbeat;
+   bool               m_heartbeatWarned;
    SSlaveCopyRecord   m_records[];
 
    void   ProcessEvent(const STradeEvent &e);
@@ -47,27 +51,34 @@ private:
                          double sl, double tp, long magic, string comment,
                          ulong &outTicket);
    bool   RoundToTickSize(const string symbol, double &price);
+   bool   SendSyncRequest();
 
 public:
-   CSlaveSubscriber() : m_context(NULL), m_socket(NULL),
-                        m_maxAgeMinutes(0), m_retryCount(0), m_retryDelayMs(0) {}
+   CSlaveSubscriber() : m_context(NULL), m_socket(NULL), m_syncPush(NULL),
+                        m_maxAgeMinutes(0), m_retryCount(0), m_retryDelayMs(0),
+                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_heartbeatWarned(false) {}
    bool Init(int port, const string symbolMap, int maxAgeMinutes,
-             int retryCount, int retryDelayMs);
+             int retryCount, int retryDelayMs, int heartbeatSeconds);
    void Deinit();
    void Poll();
 };
 
 bool CSlaveSubscriber::Init(int port, const string symbolMap,
-                            int maxAgeMinutes, int retryCount, int retryDelayMs)
+                            int maxAgeMinutes, int retryCount, int retryDelayMs,
+                            int heartbeatSeconds)
 {
    m_maxAgeMinutes = maxAgeMinutes;
    m_retryCount = retryCount;
    m_retryDelayMs = retryDelayMs;
+   m_heartbeatSeconds = heartbeatSeconds;
+   m_lastHeartbeat = 0;
+   m_heartbeatWarned = false;
    ArrayResize(m_records, 0);
 
    m_mapper.Init(symbolMap);
 
    string address = StringFormat("tcp://127.0.0.1:%d", port);
+   string syncAddress = StringFormat("tcp://127.0.0.1:%d", port + 1);
 
    m_context = new Context();
    if(CheckPointer(m_context) == POINTER_INVALID)
@@ -79,7 +90,7 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
    m_socket = new Socket(m_context, ZMQ_SUB);
    if(CheckPointer(m_socket) == POINTER_INVALID)
    {
-      Print("SlaveSubscriber: failed to create ZMQ socket");
+      Print("SlaveSubscriber: failed to create ZMQ SUB socket");
       delete m_context;
       m_context = NULL;
       return false;
@@ -87,7 +98,7 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
 
    if(!m_socket.connect(address))
    {
-      PrintFormat("SlaveSubscriber: failed to connect to %s", address);
+      PrintFormat("SlaveSubscriber: failed to connect SUB to %s", address);
       delete m_socket;
       delete m_context;
       m_socket = NULL;
@@ -106,7 +117,41 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
    }
 
    m_socket.setReceiveTimeout(1);
-   PrintFormat("SlaveSubscriber: connected to %s", address);
+   PrintFormat("SlaveSubscriber: connected SUB to %s", address);
+
+   m_syncPush = new Socket(m_context, ZMQ_PUSH);
+   if(CheckPointer(m_syncPush) == POINTER_INVALID)
+   {
+      Print("SlaveSubscriber: failed to create ZMQ PUSH socket");
+      delete m_socket;
+      delete m_context;
+      m_socket = NULL;
+      m_context = NULL;
+      return false;
+   }
+
+   if(!m_syncPush.connect(syncAddress))
+   {
+      PrintFormat("SlaveSubscriber: failed to connect PUSH sync to %s", syncAddress);
+      delete m_syncPush;
+      delete m_socket;
+      delete m_context;
+      m_syncPush = NULL;
+      m_socket = NULL;
+      m_context = NULL;
+      return false;
+   }
+
+   PrintFormat("SlaveSubscriber: connected PUSH sync to %s", syncAddress);
+
+   // Set a short send timeout so starting the slave before the master does not hang init.
+   m_syncPush.setSendTimeout(1000);
+   if(!SendSyncRequest())
+      Print("SlaveSubscriber: sync request could not be delivered; will rely on normal subscription");
+
+   // Start heartbeat timer now that the subscriber is online.
+   m_lastHeartbeat = TimeCurrent();
+   m_heartbeatWarned = false;
 
    // Rebuild records for any copied positions already open on the slave account
    // so a restart does not create duplicate trades.
@@ -128,19 +173,50 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
       int prefixPos = StringFind(comment, prefix);
       if(prefixPos == -1)
          continue;
+
       int numPos = prefixPos + StringLen(prefix);
-      string ticketStr = StringSubstr(comment, numPos);
-      // Accept only a plain numeric ticket suffix
-      if(StringToInteger(ticketStr) <= 0)
-         continue;
+      double masterVolume = 0.0;
+      double slaveVolume  = 0.0;
+      bool parsedVolumes = false;
+
+      // New format: CPY#<ticket>|MV<master_volume>|SV<slave_volume>
+      int pipePos = StringFind(comment, "|", numPos);
+      if(pipePos != -1)
+      {
+         int mvPos = StringFind(comment, "|MV", numPos);
+         int svPos = StringFind(comment, "|SV", numPos);
+         if(mvPos != -1 && svPos != -1)
+         {
+            string mvStr = StringSubstr(comment, mvPos + 3, svPos - (mvPos + 3));
+            string svStr = StringSubstr(comment, svPos + 3);
+            double mv = StringToDouble(mvStr);
+            double sv = StringToDouble(svStr);
+            if(mv > 0.0 && sv > 0.0)
+            {
+               masterVolume = mv;
+               slaveVolume  = sv;
+               parsedVolumes = true;
+            }
+         }
+      }
+
+      if(!parsedVolumes)
+      {
+         // Legacy plain-ticket format: fall back to the current position volume.
+         string ticketStr = StringSubstr(comment, numPos);
+         if(StringToInteger(ticketStr) <= 0)
+            continue;
+         double volume = PositionGetDouble(POSITION_VOLUME);
+         masterVolume = volume;
+         slaveVolume  = volume;
+      }
 
       int idx = ArraySize(m_records);
       ArrayResize(m_records, idx + 1);
       m_records[idx].magic = magic;
       m_records[idx].slave_ticket = slaveTicket;
-      double volume = PositionGetDouble(POSITION_VOLUME);
-      m_records[idx].master_open_volume = volume;
-      m_records[idx].slave_open_volume = volume;
+      m_records[idx].master_open_volume = masterVolume;
+      m_records[idx].slave_open_volume  = slaveVolume;
       rebuilt++;
    }
 
@@ -149,12 +225,30 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
    return true;
 }
 
+bool CSlaveSubscriber::SendSyncRequest()
+{
+   if(m_syncPush == NULL)
+      return false;
+
+   STradeEvent e;
+   ZeroMemory(e);
+   e.event = "SYNC_REQUEST";
+   e.timestamp = TimeLocal();
+
+   string msg = CTradeMessage::EventToJson(e);
+   ZmqMsg zmsg(msg);
+   return m_syncPush.send(zmsg);
+}
+
 void CSlaveSubscriber::Deinit()
 {
+   if(CheckPointer(m_syncPush) != POINTER_INVALID)
+      delete m_syncPush;
    if(CheckPointer(m_socket) != POINTER_INVALID)
       delete m_socket;
    if(CheckPointer(m_context) != POINTER_INVALID)
       delete m_context;
+   m_syncPush = NULL;
    m_socket = NULL;
    m_context = NULL;
    ArrayResize(m_records, 0);
@@ -175,7 +269,23 @@ void CSlaveSubscriber::Poll()
          PrintFormat("SlaveSubscriber: malformed JSON: %s", data);
          continue;
       }
+
+      // Any valid event from the master counts as a heartbeat.
+      m_lastHeartbeat = TimeCurrent();
+      m_heartbeatWarned = false;
+
       ProcessEvent(e);
+   }
+
+   if(m_heartbeatSeconds > 0 &&
+      m_lastHeartbeat > 0 &&
+      TimeCurrent() - m_lastHeartbeat > m_heartbeatSeconds * 2)
+   {
+      if(!m_heartbeatWarned)
+      {
+         Print("SlaveSubscriber: no heartbeat from master");
+         m_heartbeatWarned = true;
+      }
    }
 }
 
@@ -254,9 +364,11 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
 
    ENUM_ORDER_TYPE orderType = (e.side == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
 
+   string comment = StringFormat("CPY#%I64u|MV%.8f|SV%.8f", e.master_ticket, e.volume, lots);
+
    ulong ticket = 0;
    if(!OpenSlaveOrder(slaveSymbol, orderType, lots, slaveSL, slaveTP,
-                      e.magic, StringFormat("CPY#%I64u", e.master_ticket), ticket))
+                      e.magic, comment, ticket))
    {
       PrintFormat("Slave: failed to copy trade #%I64u to %s", e.master_ticket, slaveSymbol);
       return;
@@ -313,7 +425,7 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
       return;
    }
 
-   for(int attempt = 0; attempt <= m_retryCount; attempt++)
+   for(int attempt = 0; attempt < m_retryCount; attempt++)
    {
       if(m_trade.PositionModify(slaveTicket, slaveSL, slaveTP))
          return;
@@ -356,7 +468,7 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
    if(volumeToClose <= 0.0)
       return;
 
-   for(int attempt = 0; attempt <= m_retryCount; attempt++)
+   for(int attempt = 0; attempt < m_retryCount; attempt++)
    {
       if(m_trade.PositionClosePartial(slaveTicket, volumeToClose))
          return;
@@ -372,7 +484,7 @@ void CSlaveSubscriber::CloseTrade(const STradeEvent &e)
       return;
 
    ulong slaveTicket = m_records[idx].slave_ticket;
-   for(int attempt = 0; attempt <= m_retryCount; attempt++)
+   for(int attempt = 0; attempt < m_retryCount; attempt++)
    {
       if(m_trade.PositionClose(slaveTicket))
       {
@@ -413,7 +525,7 @@ bool CSlaveSubscriber::OpenSlaveOrder(const string symbol, ENUM_ORDER_TYPE type,
    m_trade.SetExpertMagicNumber(magic);
    m_trade.SetDeviationInPoints(10);
 
-   for(int attempt = 0; attempt <= m_retryCount; attempt++)
+   for(int attempt = 0; attempt < m_retryCount; attempt++)
    {
       double price = (type == ORDER_TYPE_BUY) ? m_symbolInfo.Ask() : m_symbolInfo.Bid();
       if(m_trade.PositionOpen(symbol, type, lots, price, sl, tp, comment))
@@ -448,7 +560,8 @@ bool CSlaveSubscriber::RoundToTickSize(const string symbol, double &price)
    double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize <= 0.0)
       return false;
-   price = NormalizeDouble(MathRound(price / tickSize) * tickSize, 8);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   price = NormalizeDouble(MathRound(price / tickSize) * tickSize, digits);
    return true;
 }
 

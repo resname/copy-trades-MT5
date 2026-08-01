@@ -27,7 +27,7 @@ int OnInit()
    }
    else
    {
-      if(!g_slave.Init(CopierPort, SymbolMap, MaxTradeAgeMinutes, RetryCount, RetryDelayMs))
+      if(!g_slave.Init(CopierPort, SymbolMap, MaxTradeAgeMinutes, RetryCount, RetryDelayMs, HeartbeatSeconds))
       {
          Print("TradeCopier: failed to initialize SLAVE");
          return INIT_FAILED;
