@@ -4,7 +4,7 @@
 #ifndef MASTER_PUBLISHER_MQH
 #define MASTER_PUBLISHER_MQH
 
-#include <zmq\zmq.mqh>
+#include <Zmq\Zmq.mqh>
 #include <Arrays\ArrayLong.mqh>
 #include <Trade\PositionInfo.mqh>
 #include "CopierConfig.mqh"
@@ -14,7 +14,7 @@ class CMasterPublisher
 {
 private:
    Context     *m_context;
-   Publisher   *m_socket;
+   Socket      *m_socket;
    int         m_heartbeatSeconds;
    datetime    m_lastHeartbeat;
    CArrayLong  m_lastTickets;
@@ -41,10 +41,14 @@ bool CMasterPublisher::Init(int port, int heartbeatSeconds)
 
    string address = StringFormat("tcp://127.0.0.1:%d", port);
    m_context = new Context();
-   m_socket = new Publisher(m_context);
+   m_socket = new Socket(m_context, ZMQ_PUB);
    if(!m_socket.bind(address))
    {
       PrintFormat("MasterPublisher: failed to bind to %s", address);
+      delete m_socket;
+      delete m_context;
+      m_socket = NULL;
+      m_context = NULL;
       return false;
    }
 
