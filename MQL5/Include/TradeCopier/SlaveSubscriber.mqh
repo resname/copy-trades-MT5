@@ -386,7 +386,10 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
 {
    int idx = FindRecord(e.magic);
    if(idx < 0)
+   {
+      PrintFormat("Slave: MODIFY_TRADE for unknown magic %I64d (master ticket %I64u), ignoring", e.magic, e.master_ticket);
       return;
+   }
 
    ulong slaveTicket = m_records[idx].slave_ticket;
    if(!PositionSelectByTicket(slaveTicket))
@@ -438,7 +441,10 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
 {
    int idx = FindRecord(e.magic);
    if(idx < 0)
+   {
+      PrintFormat("Slave: PARTIAL_CLOSE for unknown magic %I64d (master ticket %I64u), ignoring", e.magic, e.master_ticket);
       return;
+   }
 
    ulong slaveTicket = m_records[idx].slave_ticket;
    if(!PositionSelectByTicket(slaveTicket))
@@ -481,7 +487,10 @@ void CSlaveSubscriber::CloseTrade(const STradeEvent &e)
 {
    int idx = FindRecord(e.magic);
    if(idx < 0)
+   {
+      PrintFormat("Slave: CLOSE_TRADE for unknown magic %I64d (master ticket %I64u), ignoring", e.magic, e.master_ticket);
       return;
+   }
 
    ulong slaveTicket = m_records[idx].slave_ticket;
    for(int attempt = 0; attempt < m_retryCount; attempt++)
