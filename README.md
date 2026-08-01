@@ -46,8 +46,7 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 | BalanceStepSize | double | 0.01 | Lot size added per balance step |
 | MaxLotSize | double | 10.0 | Hard lot-size cap |
 | MaxTradeAgeMinutes | int | 30 | Ignore master trades older than this on sync |
-| NormalizeSLTPByPriceDistance | bool | true | Convert SL/TP via raw price distance (recommended) |
-| NormalizeSLTPUsingPoints | bool | false | Convert SL/TP via point distances (legacy) |
+| NormalizeSLTPByPriceDistance | bool | true | Convert SL/TP via raw price distance |
 | RetryCount | int | 3 | Total order-send attempts (including the first attempt) |
 | RetryDelayMs | int | 500 | Delay between retries (ms) |
 
@@ -63,7 +62,6 @@ MAGIC_BASE is fixed at `1000000`. The copied position's magic number is computed
 | `MaxLotSize` | `10.0` | never exceed 10 lots |
 | `MaxTradeAgeMinutes` | `30` | ignore trades older than 30 min on startup |
 | `NormalizeSLTPByPriceDistance` | `true` | convert SL/TP using raw price distance |
-| `NormalizeSLTPUsingPoints` | `false` | convert SL/TP using point distances (legacy) |
 
 With a €5,000 balance and the values above, the slave lot size will be `floor(5000 / 100) * 0.01 = 0.5` lots.
 

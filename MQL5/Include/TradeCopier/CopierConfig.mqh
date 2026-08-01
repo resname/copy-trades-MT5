@@ -25,8 +25,7 @@ input double           BalanceStepAmount = 100.0; // Account-currency units per 
 input double           BalanceStepSize   = 0.01;  // Lot size added per balance step
 input double           MaxLotSize        = 10.0;  // Hard lot-size cap
 input int              MaxTradeAgeMinutes = 30;   // Ignore master trades older than this on sync
-input bool             NormalizeSLTPByPriceDistance = true; // Convert SL/TP via raw price distance (recommended)
-input bool             NormalizeSLTPUsingPoints = false;      // Convert SL/TP via point distances (legacy)
+input bool             NormalizeSLTPByPriceDistance = true; // Convert SL/TP via raw price distance
 input int              RetryCount = 3;            // Total order-send attempts (including the first attempt)
 input int              RetryDelayMs = 500;        // Delay between retries (ms)
 

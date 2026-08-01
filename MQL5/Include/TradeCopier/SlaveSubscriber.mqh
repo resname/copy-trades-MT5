@@ -348,23 +348,9 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
       // and slave quote the same instrument at different decimal precisions
       // (e.g. US30 at 52444.31 and WS30 at 52444).
       CPriceNormalizer::NormalizeSLTP(
-         e.open_price, e.sl, e.tp, e.point,
-         slaveOpen, 1.0, // slavePoint unused in price-distance mode
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         true);
-   }
-   else if(NormalizeSLTPUsingPoints)
-   {
-      double slavePoint = m_symbolInfo.Point();
-      double slaveAsk = m_symbolInfo.Ask();
-      double slaveBid = m_symbolInfo.Bid();
-      double slaveOpen = (e.side == POSITION_TYPE_BUY) ? slaveAsk : slaveBid;
-
-      CPriceNormalizer::NormalizeSLTP(
-         e.open_price, e.sl, e.tp, e.point,
-         slaveOpen, slavePoint,
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         false);
+         e.open_price, e.sl, e.tp,
+         slaveOpen,
+         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP);
    }
    else
    {
@@ -428,19 +414,9 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
    {
       // Preserve raw price distance on modify as well as open.
       CPriceNormalizer::NormalizeSLTP(
-         e.open_price, e.sl, e.tp, e.point,
-         slaveOpen, 1.0, // slavePoint unused in price-distance mode
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         true);
-   }
-   else if(NormalizeSLTPUsingPoints)
-   {
-      double slavePoint = m_symbolInfo.Point();
-      CPriceNormalizer::NormalizeSLTP(
-         e.open_price, e.sl, e.tp, e.point,
-         slaveOpen, slavePoint,
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         false);
+         e.open_price, e.sl, e.tp,
+         slaveOpen,
+         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP);
    }
    else
    {
