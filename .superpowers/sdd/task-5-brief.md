@@ -1,3 +1,15 @@
+# Task 5: SL/TP point-distance normalizer
+
+**Files:**
+- Create: `MQL5/Include/TradeCopier/PriceNormalizer.mqh`
+
+**Interfaces:**
+- Produces: `class CPriceNormalizer` with `void NormalizeSLTP(double masterOpen, double masterSL, double masterTP, double masterPoint, double slaveOpen, double slavePoint, ENUM_POSITION_TYPE side, double &outSL, double &outTP)`.
+- `outSL` / `outTP` are `0.0` if no master SL/TP.
+
+- [ ] **Step 1: Create the normalizer**
+
+```cpp
 //+------------------------------------------------------------------+
 //|                                      PriceNormalizer.mqh         |
 //+------------------------------------------------------------------+
@@ -11,47 +23,18 @@ public:
                              double masterPoint,
                              double slaveOpen, double slavePoint,
                              ENUM_POSITION_TYPE side,
-                             double &outSL, double &outTP,
-                             bool byPriceDistance = true);
+                             double &outSL, double &outTP);
 };
 
 void CPriceNormalizer::NormalizeSLTP(double masterOpen, double masterSL, double masterTP,
-                                       double masterPoint,
-                                       double slaveOpen, double slavePoint,
-                                       ENUM_POSITION_TYPE side,
-                                       double &outSL, double &outTP,
-                                       bool byPriceDistance)
+                                     double masterPoint,
+                                     double slaveOpen, double slavePoint,
+                                     ENUM_POSITION_TYPE side,
+                                     double &outSL, double &outTP)
 {
    outSL = 0.0;
    outTP = 0.0;
 
-   if(byPriceDistance)
-   {
-      // Preserve raw price distance. This is the correct default when the
-      // master and slave symbols represent the same underlying instrument but
-      // different brokers quote them with different decimal precision.
-      // Example: master SL is 400 raw price units away  => slave SL is also
-      // 400 raw price units away, regardless of each broker's SYMBOL_POINT.
-      if(side == POSITION_TYPE_BUY)
-      {
-         if(masterSL > 0.0)
-            outSL = slaveOpen - (masterOpen - masterSL);
-         if(masterTP > 0.0)
-            outTP = slaveOpen + (masterTP - masterOpen);
-      }
-      else // POSITION_TYPE_SELL
-      {
-         if(masterSL > 0.0)
-            outSL = slaveOpen + (masterSL - masterOpen);
-         if(masterTP > 0.0)
-            outTP = slaveOpen - (masterOpen - masterTP);
-      }
-      return;
-   }
-
-   // Legacy point-distance mode. Useful only when master and slave symbols have
-   // genuinely different point values AND the intended SL/TP distance should be
-   // expressed as a point count rather than a raw price distance.
    if(masterPoint <= 0.0 || slavePoint <= 0.0)
    {
       Print("PriceNormalizer: invalid point size");
@@ -87,3 +70,13 @@ void CPriceNormalizer::NormalizeSLTP(double masterOpen, double masterSL, double 
 }
 
 #endif
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add MQL5/Include/TradeCopier/PriceNormalizer.mqh
+git commit -m "feat: add SL/TP point-distance normalizer
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```

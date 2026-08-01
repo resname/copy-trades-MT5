@@ -1,0 +1,82 @@
+diff --git a/MQL5/Include/TradeCopier/CopierConfig.mqh b/MQL5/Include/TradeCopier/CopierConfig.mqh
+new file mode 100644
+index 0000000..4b48b8b
+--- /dev/null
++++ b/MQL5/Include/TradeCopier/CopierConfig.mqh
+@@ -0,0 +1,35 @@
++//+------------------------------------------------------------------+
++//|                                           CopierConfig.mqh       |
++//|                        MT5 Local Trade Copier Configuration      |
++//+------------------------------------------------------------------+
++#ifndef COPPER_CONFIG_MQH
++#define COPPER_CONFIG_MQH
++
++enum ENUM_COPIER_MODE
++{
++   COPIER_MASTER,   // publish trades
++   COPIER_SLAVE     // subscribe and copy trades
++};
++
++input group "=== Copier Mode ==="
++input ENUM_COPIER_MODE CopierMode = COPIER_SLAVE; // Run as MASTER or SLAVE
++input int              CopierPort = 15555;        // ZeroMQ TCP port
++input int              HeartbeatSeconds = 5;      // Master heartbeat interval
++
++input group "=== Master Settings ==="
++input int              PublishIntervalMs = 500;   // Trade change scan interval (ms)
++
++input group "=== Slave Settings ==="
++input string           SymbolMap = "";            // Symbol mappings: US30=WS30, XAUUSD=GOLD
++input double           BalanceStepAmount = 100.0; // Account-currency units per lot step
++input double           BalanceStepSize   = 0.01;  // Lot size added per balance step
++input double           MaxLotSize        = 10.0;  // Hard lot-size cap
++input int              MaxTradeAgeMinutes = 30;   // Ignore master trades older than this on sync
++input bool             NormalizeSLTPUsingPoints = true; // Convert SL/TP via point distances
++input int              RetryCount = 3;            // Order-send retries on temporary failure
++input int              RetryDelayMs = 500;        // Delay between retries (ms)
++
++// Magic number base for copied trades. Slave ticket = base + (master_ticket % 900000)
++const int MAGIC_BASE = 1000000;
++
++#endif
+diff --git a/README.md b/README.md
+index 9894f83..b06b70b 100644
+--- a/README.md
++++ b/README.md
+@@ -14,7 +14,35 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
+ (TODO: fill in after Task 10)
+ 
+ ## Configuration
+-(TODO: fill in after Task 2)
++
++### Copier Mode
++
++| Input | Type | Default | Description |
++|-------|------|---------|-------------|
++| CopierMode | ENUM_COPIER_MODE | COPIER_SLAVE | Run as MASTER or SLAVE |
++| CopierPort | int | 15555 | ZeroMQ TCP port |
++| HeartbeatSeconds | int | 5 | Master heartbeat interval |
++
++### Master Settings
++
++| Input | Type | Default | Description |
++|-------|------|---------|-------------|
++| PublishIntervalMs | int | 500 | Trade change scan interval (ms) |
++
++### Slave Settings
++
++| Input | Type | Default | Description |
++|-------|------|---------|-------------|
++| SymbolMap | string | "" | Symbol mappings: US30=WS30, XAUUSD=GOLD |
++| BalanceStepAmount | double | 100.0 | Account-currency units per lot step |
++| BalanceStepSize | double | 0.01 | Lot size added per balance step |
++| MaxLotSize | double | 10.0 | Hard lot-size cap |
++| MaxTradeAgeMinutes | int | 30 | Ignore master trades older than this on sync |
++| NormalizeSLTPUsingPoints | bool | true | Convert SL/TP via point distances |
++| RetryCount | int | 3 | Order-send retries on temporary failure |
++| RetryDelayMs | int | 500 | Delay between retries (ms) |
++
++MAGIC_BASE is fixed at `1000000`. The slave ticket is computed as `MAGIC_BASE + (master_ticket % 900000)`.
+ 
+ ## Manual Testing Checklist
+ (TODO: fill in after Task 11)

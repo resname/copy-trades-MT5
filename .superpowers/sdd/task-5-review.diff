@@ -1,0 +1,66 @@
+diff --git a/MQL5/Include/TradeCopier/PriceNormalizer.mqh b/MQL5/Include/TradeCopier/PriceNormalizer.mqh
+new file mode 100644
+index 0000000..a46cf60
+--- /dev/null
++++ b/MQL5/Include/TradeCopier/PriceNormalizer.mqh
+@@ -0,0 +1,60 @@
++//+------------------------------------------------------------------+
++//|                                      PriceNormalizer.mqh         |
++//+------------------------------------------------------------------+
++#ifndef PRICE_NORMALIZER_MQH
++#define PRICE_NORMALIZER_MQH
++
++class CPriceNormalizer
++{
++public:
++   static void NormalizeSLTP(double masterOpen, double masterSL, double masterTP,
++                             double masterPoint,
++                             double slaveOpen, double slavePoint,
++                             ENUM_POSITION_TYPE side,
++                             double &outSL, double &outTP);
++};
++
++void CPriceNormalizer::NormalizeSLTP(double masterOpen, double masterSL, double masterTP,
++                                       double masterPoint,
++                                       double slaveOpen, double slavePoint,
++                                       ENUM_POSITION_TYPE side,
++                                       double &outSL, double &outTP)
++{
++   outSL = 0.0;
++   outTP = 0.0;
++
++   if(masterPoint <= 0.0 || slavePoint <= 0.0)
++   {
++      Print("PriceNormalizer: invalid point size");
++      return;
++   }
++
++   if(side == POSITION_TYPE_BUY)
++   {
++      if(masterSL > 0.0)
++      {
++         double slDistPoints = (masterOpen - masterSL) / masterPoint;
++         outSL = slaveOpen - (slDistPoints * slavePoint);
++      }
++      if(masterTP > 0.0)
++      {
++         double tpDistPoints = (masterTP - masterOpen) / masterPoint;
++         outTP = slaveOpen + (tpDistPoints * slavePoint);
++      }
++   }
++   else // POSITION_TYPE_SELL
++   {
++      if(masterSL > 0.0)
++      {
++         double slDistPoints = (masterSL - masterOpen) / masterPoint;
++         outSL = slaveOpen + (slDistPoints * slavePoint);
++      }
++      if(masterTP > 0.0)
++      {
++         double tpDistPoints = (masterOpen - masterTP) / masterPoint;
++         outTP = slaveOpen - (tpDistPoints * slavePoint);
++      }
++   }
++}
++
++#endif

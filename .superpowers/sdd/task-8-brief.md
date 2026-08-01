@@ -1,3 +1,53 @@
+# Task 8: Slave subscriber and order executor
+
+**Files:**
+- Create: `MQL5/Include/TradeCopier/SlaveSubscriber.mqh`
+
+**Interfaces:**
+- Consumes: `CopierConfig.mqh`, `SymbolMapper.mqh`, `LotSizer.mqh`, `PriceNormalizer.mqh`, `TradeMessage.mqh`
+- Produces: `class CSlaveSubscriber` with `bool Init(int port, const string symbolMap, int maxAgeMinutes, int retryCount, int retryDelayMs)`, `void Deinit()`, `void Poll()`.
+- Internally maintains map `magic -> {slave_ticket, master_open_volume, slave_open_volume}`.
+
+## Required behavior
+
+- Connects to `tcp://127.0.0.1:<port>` using a ZeroMQ `Socket` of type `ZMQ_SUB`.
+- Subscribes to all messages (`setSubscribe("")`).
+- Receives JSON events and dispatches:
+  - `NEW_TRADE` → open a corresponding slave position.
+  - `MODIFY_TRADE` → update SL/TP on the matched slave position.
+  - `PARTIAL_CLOSE` → close a proportional fraction of the slave position so the remaining slave volume matches the same fraction of the original master volume carried in the event.
+  - `CLOSE_TRADE` → fully close the matched slave position.
+  - `HEARTBEAT` → ignored (no action).
+- `NEW_TRADE` ignores trades older than `MaxTradeAgeMinutes`.
+- Each copied trade gets magic `e.magic` and comment `CPY#<master_ticket>`.
+
+## Partial-close logic
+
+The master now sends `PARTIAL_CLOSE` with `volume` equal to the **current remaining master volume** after the partial close. The slave must keep the slave position proportionally sized:
+
+```cpp
+fraction_remaining = e.volume / stored_master_open_volume;
+target_slave_volume = stored_slave_open_volume * fraction_remaining;
+volume_to_close = current_slave_volume - target_slave_volume;
+```
+
+Round `volume_to_close` down to the slave symbol's lot step and call `PositionClosePartial`.
+
+## Open-trade logic
+
+Use the lot sizer with current account balance. Determine slave symbol via mapper (fallback to same name). Compute SL/TP via `CPriceNormalizer::NormalizeSLTP` if `NormalizeSLTPUsingPoints` is true, then round to the symbol's `SYMBOL_TRADE_TICK_SIZE`. Use the current ask for buy orders and current bid for sell orders as the open price passed to `CTrade::PositionOpen`.
+
+## Modify-trade logic
+
+Select the slave position by ticket, then normalize and round SL/TP as in open logic and call `CTrade::PositionModify`.
+
+## Close-trade logic
+
+Call `CTrade::PositionClose(slaveTicket)`.
+
+## Implementation sketch
+
+```cpp
 //+------------------------------------------------------------------+
 //|                                       SlaveSubscriber.mqh        |
 //+------------------------------------------------------------------+
@@ -8,6 +58,8 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
+#include <Arrays\ArrayLong.mqh>
+#include <Arrays\ArrayDouble.mqh>
 #include "CopierConfig.mqh"
 #include "SymbolMapper.mqh"
 #include "LotSizer.mqh"
@@ -25,9 +77,8 @@ struct SSlaveCopyRecord
 class CSlaveSubscriber
 {
 private:
-   Context           *m_context;
+   Context            m_context;
    Socket            *m_socket;
-   Socket            *m_syncPush;
    CTrade             m_trade;
    CSymbolMapper      m_mapper;
    CLotSizer          m_lotSizer;
@@ -35,9 +86,7 @@ private:
    int                m_maxAgeMinutes;
    int                m_retryCount;
    int                m_retryDelayMs;
-   int                m_heartbeatSeconds;
-   datetime           m_lastHeartbeat;
-   bool               m_heartbeatWarned;
+   ulong              m_lastPoll;
    SSlaveCopyRecord   m_records[];
 
    void   ProcessEvent(const STradeEvent &e);
@@ -51,35 +100,26 @@ private:
                          double sl, double tp, long magic, string comment,
                          ulong &outTicket);
    bool   RoundToTickSize(const string symbol, double &price);
-   bool   SendSyncRequest();
 
 public:
-   CSlaveSubscriber() : m_context(NULL), m_socket(NULL), m_syncPush(NULL),
-                        m_maxAgeMinutes(0), m_retryCount(0), m_retryDelayMs(0),
-                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_heartbeatWarned(false) {}
    bool Init(int port, const string symbolMap, int maxAgeMinutes,
-             int retryCount, int retryDelayMs, int heartbeatSeconds);
+             int retryCount, int retryDelayMs);
    void Deinit();
    void Poll();
 };
 
 bool CSlaveSubscriber::Init(int port, const string symbolMap,
-                            int maxAgeMinutes, int retryCount, int retryDelayMs,
-                            int heartbeatSeconds)
+                            int maxAgeMinutes, int retryCount, int retryDelayMs)
 {
    m_maxAgeMinutes = maxAgeMinutes;
    m_retryCount = retryCount;
    m_retryDelayMs = retryDelayMs;
-   m_heartbeatSeconds = heartbeatSeconds;
-   m_lastHeartbeat = 0;
-   m_heartbeatWarned = false;
+   m_lastPoll = 0;
    ArrayResize(m_records, 0);
 
    m_mapper.Init(symbolMap);
 
    string address = StringFormat("tcp://127.0.0.1:%d", port);
-   string syncAddress = StringFormat("tcp://127.0.0.1:%d", port + 1);
-
    m_context = new Context();
    if(CheckPointer(m_context) == POINTER_INVALID)
    {
@@ -90,15 +130,14 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
    m_socket = new Socket(m_context, ZMQ_SUB);
    if(CheckPointer(m_socket) == POINTER_INVALID)
    {
-      Print("SlaveSubscriber: failed to create ZMQ SUB socket");
+      Print("SlaveSubscriber: failed to create ZMQ socket");
       delete m_context;
-      m_context = NULL;
       return false;
    }
 
    if(!m_socket.connect(address))
    {
-      PrintFormat("SlaveSubscriber: failed to connect SUB to %s", address);
+      PrintFormat("SlaveSubscriber: failed to connect to %s", address);
       delete m_socket;
       delete m_context;
       m_socket = NULL;
@@ -117,141 +156,18 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
    }
 
    m_socket.setReceiveTimeout(1);
-   PrintFormat("SlaveSubscriber: connected SUB to %s", address);
-
-   m_syncPush = new Socket(m_context, ZMQ_PUSH);
-   if(CheckPointer(m_syncPush) == POINTER_INVALID)
-   {
-      Print("SlaveSubscriber: failed to create ZMQ PUSH socket");
-      delete m_socket;
-      delete m_context;
-      m_socket = NULL;
-      m_context = NULL;
-      return false;
-   }
-
-   if(!m_syncPush.connect(syncAddress))
-   {
-      PrintFormat("SlaveSubscriber: failed to connect PUSH sync to %s", syncAddress);
-      delete m_syncPush;
-      delete m_socket;
-      delete m_context;
-      m_syncPush = NULL;
-      m_socket = NULL;
-      m_context = NULL;
-      return false;
-   }
-
-   PrintFormat("SlaveSubscriber: connected PUSH sync to %s", syncAddress);
-
-   // Set a short send timeout so starting the slave before the master does not hang init.
-   m_syncPush.setSendTimeout(1000);
-   if(!SendSyncRequest())
-      Print("SlaveSubscriber: sync request could not be delivered; will rely on normal subscription");
-
-   // Start heartbeat timer now that the subscriber is online.
-   m_lastHeartbeat = TimeCurrent();
-   m_heartbeatWarned = false;
-
-   // Rebuild records for any copied positions already open on the slave account
-   // so a restart does not create duplicate trades.
-   int total = PositionsTotal();
-   int rebuilt = 0;
-   for(int i = 0; i < total; i++)
-   {
-      string posSymbol = PositionGetSymbol(i);
-      if(posSymbol == "")
-         continue;
-
-      long magic = PositionGetInteger(POSITION_MAGIC);
-      if(magic < MAGIC_BASE)
-         continue;
-
-      ulong slaveTicket = PositionGetInteger(POSITION_TICKET);
-      string comment = PositionGetString(POSITION_COMMENT);
-      string prefix = "CPY#";
-      int prefixPos = StringFind(comment, prefix);
-      if(prefixPos == -1)
-         continue;
-
-      int numPos = prefixPos + StringLen(prefix);
-      double masterVolume = 0.0;
-      double slaveVolume  = 0.0;
-      bool parsedVolumes = false;
-
-      // New format: CPY#<ticket>|MV<master_volume>|SV<slave_volume>
-      int pipePos = StringFind(comment, "|", numPos);
-      if(pipePos != -1)
-      {
-         int mvPos = StringFind(comment, "|MV", numPos);
-         int svPos = StringFind(comment, "|SV", numPos);
-         if(mvPos != -1 && svPos != -1)
-         {
-            string mvStr = StringSubstr(comment, mvPos + 3, svPos - (mvPos + 3));
-            string svStr = StringSubstr(comment, svPos + 3);
-            double mv = StringToDouble(mvStr);
-            double sv = StringToDouble(svStr);
-            if(mv > 0.0 && sv > 0.0)
-            {
-               masterVolume = mv;
-               slaveVolume  = sv;
-               parsedVolumes = true;
-            }
-         }
-      }
-
-      if(!parsedVolumes)
-      {
-         // Legacy plain-ticket format: fall back to the current position volume.
-         string ticketStr = StringSubstr(comment, numPos);
-         if(StringToInteger(ticketStr) <= 0)
-            continue;
-         double volume = PositionGetDouble(POSITION_VOLUME);
-         masterVolume = volume;
-         slaveVolume  = volume;
-      }
-
-      int idx = ArraySize(m_records);
-      ArrayResize(m_records, idx + 1);
-      m_records[idx].magic = magic;
-      m_records[idx].slave_ticket = slaveTicket;
-      m_records[idx].master_open_volume = masterVolume;
-      m_records[idx].slave_open_volume  = slaveVolume;
-      rebuilt++;
-   }
-
-   if(rebuilt > 0)
-      PrintFormat("SlaveSubscriber: rebuilt %d copied position record(s) from open positions", rebuilt);
+   PrintFormat("SlaveSubscriber: connected to %s", address);
    return true;
-}
-
-bool CSlaveSubscriber::SendSyncRequest()
-{
-   if(m_syncPush == NULL)
-      return false;
-
-   STradeEvent e;
-   ZeroMemory(e);
-   e.event = "SYNC_REQUEST";
-   e.timestamp = TimeLocal();
-
-   string msg = CTradeMessage::EventToJson(e);
-   ZmqMsg zmsg(msg);
-   return m_syncPush.send(zmsg);
 }
 
 void CSlaveSubscriber::Deinit()
 {
-   if(CheckPointer(m_syncPush) != POINTER_INVALID)
-      delete m_syncPush;
    if(CheckPointer(m_socket) != POINTER_INVALID)
       delete m_socket;
    if(CheckPointer(m_context) != POINTER_INVALID)
       delete m_context;
-   m_syncPush = NULL;
    m_socket = NULL;
    m_context = NULL;
-   ArrayResize(m_records, 0);
 }
 
 void CSlaveSubscriber::Poll()
@@ -269,23 +185,7 @@ void CSlaveSubscriber::Poll()
          PrintFormat("SlaveSubscriber: malformed JSON: %s", data);
          continue;
       }
-
-      // Any valid event from the master counts as a heartbeat.
-      m_lastHeartbeat = TimeCurrent();
-      m_heartbeatWarned = false;
-
       ProcessEvent(e);
-   }
-
-   if(m_heartbeatSeconds > 0 &&
-      m_lastHeartbeat > 0 &&
-      TimeCurrent() - m_lastHeartbeat > m_heartbeatSeconds * 2)
-   {
-      if(!m_heartbeatWarned)
-      {
-         Print("SlaveSubscriber: no heartbeat from master");
-         m_heartbeatWarned = true;
-      }
    }
 }
 
@@ -338,22 +238,7 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
    }
 
    double slaveSL = 0.0, slaveTP = 0.0;
-   if(NormalizeSLTPByPriceDistance)
-   {
-      double slaveAsk = m_symbolInfo.Ask();
-      double slaveBid = m_symbolInfo.Bid();
-      double slaveOpen = (e.side == POSITION_TYPE_BUY) ? slaveAsk : slaveBid;
-
-      // Preserve raw price distance. This handles the common case where master
-      // and slave quote the same instrument at different decimal precisions
-      // (e.g. US30 at 52444.31 and WS30 at 52444).
-      CPriceNormalizer::NormalizeSLTP(
-         e.open_price, e.sl, e.tp, e.point,
-         slaveOpen, 1.0, // slavePoint unused in price-distance mode
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         true);
-   }
-   else if(NormalizeSLTPUsingPoints)
+   if(NormalizeSLTPUsingPoints)
    {
       double slavePoint = m_symbolInfo.Point();
       double slaveAsk = m_symbolInfo.Ask();
@@ -363,8 +248,7 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
       CPriceNormalizer::NormalizeSLTP(
          e.open_price, e.sl, e.tp, e.point,
          slaveOpen, slavePoint,
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         false);
+         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP);
    }
    else
    {
@@ -372,19 +256,15 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
       slaveTP = e.tp;
    }
 
-   if(!RoundToTickSize(slaveSymbol, slaveSL) || !RoundToTickSize(slaveSymbol, slaveTP))
-   {
-      PrintFormat("Slave: failed to round SL/TP to tick size for %s", slaveSymbol);
-      return;
-   }
+   RoundToTickSize(slaveSymbol, slaveSL);
+   RoundToTickSize(slaveSymbol, slaveTP);
 
    ENUM_ORDER_TYPE orderType = (e.side == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-
-   string comment = StringFormat("CPY#%I64u|MV%.8f|SV%.8f", e.master_ticket, e.volume, lots);
+   double openPrice = (orderType == ORDER_TYPE_BUY) ? m_symbolInfo.Ask() : m_symbolInfo.Bid();
 
    ulong ticket = 0;
    if(!OpenSlaveOrder(slaveSymbol, orderType, lots, slaveSL, slaveTP,
-                      e.magic, comment, ticket))
+                      e.magic, StringFormat("CPY#%I64u", e.master_ticket), ticket))
    {
       PrintFormat("Slave: failed to copy trade #%I64u to %s", e.master_ticket, slaveSymbol);
       return;
@@ -402,10 +282,7 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
 {
    int idx = FindRecord(e.magic);
    if(idx < 0)
-   {
-      PrintFormat("Slave: MODIFY_TRADE for unknown magic %I64d (master ticket %I64u), ignoring", e.magic, e.master_ticket);
       return;
-   }
 
    ulong slaveTicket = m_records[idx].slave_ticket;
    if(!PositionSelectByTicket(slaveTicket))
@@ -421,26 +298,16 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
       return;
    }
 
+   double slavePoint = m_symbolInfo.Point();
    double slaveOpen = PositionGetDouble(POSITION_PRICE_OPEN);
    double slaveSL = 0.0, slaveTP = 0.0;
 
-   if(NormalizeSLTPByPriceDistance)
+   if(NormalizeSLTPUsingPoints)
    {
-      // Preserve raw price distance on modify as well as open.
-      CPriceNormalizer::NormalizeSLTP(
-         e.open_price, e.sl, e.tp, e.point,
-         slaveOpen, 1.0, // slavePoint unused in price-distance mode
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         true);
-   }
-   else if(NormalizeSLTPUsingPoints)
-   {
-      double slavePoint = m_symbolInfo.Point();
       CPriceNormalizer::NormalizeSLTP(
          e.open_price, e.sl, e.tp, e.point,
          slaveOpen, slavePoint,
-         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP,
-         false);
+         (ENUM_POSITION_TYPE)e.side, slaveSL, slaveTP);
    }
    else
    {
@@ -448,13 +315,10 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
       slaveTP = e.tp;
    }
 
-   if(!RoundToTickSize(slaveSymbol, slaveSL) || !RoundToTickSize(slaveSymbol, slaveTP))
-   {
-      PrintFormat("Slave: failed to round SL/TP to tick size for modify on %s", slaveSymbol);
-      return;
-   }
+   RoundToTickSize(slaveSymbol, slaveSL);
+   RoundToTickSize(slaveSymbol, slaveTP);
 
-   for(int attempt = 0; attempt < m_retryCount; attempt++)
+   for(int attempt = 0; attempt <= m_retryCount; attempt++)
    {
       if(m_trade.PositionModify(slaveTicket, slaveSL, slaveTP))
          return;
@@ -467,10 +331,7 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
 {
    int idx = FindRecord(e.magic);
    if(idx < 0)
-   {
-      PrintFormat("Slave: PARTIAL_CLOSE for unknown magic %I64d (master ticket %I64u), ignoring", e.magic, e.master_ticket);
       return;
-   }
 
    ulong slaveTicket = m_records[idx].slave_ticket;
    if(!PositionSelectByTicket(slaveTicket))
@@ -493,14 +354,14 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
    double fraction = e.volume / masterOpenVolume;
    double targetSlaveVolume = slaveOpenVolume * fraction;
    double lotStep = m_symbolInfo.LotsStep();
+   targetSlaveVolume = MathFloor(targetSlaveVolume / lotStep) * lotStep;
    double volumeToClose = currentSlaveVolume - targetSlaveVolume;
    volumeToClose = MathFloor(volumeToClose / lotStep) * lotStep;
-   volumeToClose = MathMin(volumeToClose, currentSlaveVolume);
 
    if(volumeToClose <= 0.0)
       return;
 
-   for(int attempt = 0; attempt < m_retryCount; attempt++)
+   for(int attempt = 0; attempt <= m_retryCount; attempt++)
    {
       if(m_trade.PositionClosePartial(slaveTicket, volumeToClose))
          return;
@@ -513,13 +374,10 @@ void CSlaveSubscriber::CloseTrade(const STradeEvent &e)
 {
    int idx = FindRecord(e.magic);
    if(idx < 0)
-   {
-      PrintFormat("Slave: CLOSE_TRADE for unknown magic %I64d (master ticket %I64u), ignoring", e.magic, e.master_ticket);
       return;
-   }
 
    ulong slaveTicket = m_records[idx].slave_ticket;
-   for(int attempt = 0; attempt < m_retryCount; attempt++)
+   for(int attempt = 0; attempt <= m_retryCount; attempt++)
    {
       if(m_trade.PositionClose(slaveTicket))
       {
@@ -543,7 +401,7 @@ bool CSlaveSubscriber::IsTooOld(datetime openTime)
 {
    if(openTime == 0)
       return false;
-   datetime now = TimeCurrent();
+   datetime now = TimeLocal();
    return (now - openTime) > m_maxAgeMinutes * 60;
 }
 
@@ -551,34 +409,22 @@ bool CSlaveSubscriber::OpenSlaveOrder(const string symbol, ENUM_ORDER_TYPE type,
                                       double lots, double sl, double tp,
                                       long magic, string comment, ulong &outTicket)
 {
-   if(!m_symbolInfo.Name(symbol) || !m_symbolInfo.Select(symbol))
-   {
-      PrintFormat("Slave: cannot select symbol %s for open", symbol);
-      return false;
-   }
-
-   m_trade.SetExpertMagicNumber(magic);
+   m_trade.SetExpertMagicNumber((int)magic);
    m_trade.SetDeviationInPoints(10);
 
-   for(int attempt = 0; attempt < m_retryCount; attempt++)
+   for(int attempt = 0; attempt <= m_retryCount; attempt++)
    {
+      if(!m_symbolInfo.Name(symbol) || !m_symbolInfo.Select(symbol))
+      {
+         Sleep(m_retryDelayMs);
+         continue;
+      }
       double price = (type == ORDER_TYPE_BUY) ? m_symbolInfo.Ask() : m_symbolInfo.Bid();
       if(m_trade.PositionOpen(symbol, type, lots, price, sl, tp, comment))
       {
-         ulong ticket = m_trade.ResultOrder();
-         if(ticket == 0)
-         {
-            PrintFormat("Slave: PositionOpen succeeded for %s but returned ticket 0",
-                        symbol);
-            return false;
-         }
-         if(!PositionSelectByTicket(ticket))
-         {
-            PrintFormat("Slave: PositionOpen returned ticket #%I64u for %s but position does not exist",
-                        ticket, symbol);
-            return false;
-         }
-         outTicket = ticket;
+         outTicket = m_trade.ResultDeal(); // or ResultOrder? ResultDeal gives the deal ticket; for matching we need position ticket.
+         // Use ResultOrder for the order ticket, then derive position ticket via PositionSelectByTicket if needed.
+         outTicket = m_trade.ResultOrder();
          return true;
       }
       PrintFormat("Slave: open attempt %d failed for %s, error %d",
@@ -595,9 +441,27 @@ bool CSlaveSubscriber::RoundToTickSize(const string symbol, double &price)
    double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize <= 0.0)
       return false;
-   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-   price = NormalizeDouble(MathRound(price / tickSize) * tickSize, digits);
+   price = NormalizeDouble(MathRound(price / tickSize) * tickSize, 8);
    return true;
 }
 
 #endif
+```
+
+## Important notes
+
+- `CTrade::PositionOpen` returns `true`/`false`. After a successful open, `m_trade.ResultOrder()` returns the order ticket. The position ticket is usually the same as the order ticket for market orders in hedging mode, but use `PositionSelectByTicket` to confirm.
+- For simplicity, store the returned order ticket as the slave position ticket.
+- `ArrayRemove` is a built-in MQL5 function to remove an element from a dynamic array.
+- Commit the file after verifying syntax as much as possible.
+
+- [ ] **Step 1: Create `SlaveSubscriber.mqh` with the corrected logic.**
+- [ ] **Step 2: Compile-check using a temporary stub EA if possible.**
+- [ ] **Step 3: Commit.**
+
+```bash
+git add MQL5/Include/TradeCopier/SlaveSubscriber.mqh
+git commit -m "feat: add slave subscriber and order executor
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```

@@ -1,0 +1,39 @@
+diff --git a/README.md b/README.md
+index b06b70b..6f68cf3 100644
+--- a/README.md
++++ b/README.md
+@@ -11,7 +11,14 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
+ - Full trade lifecycle mirroring (open, modify SL/TP, partial close, close)
+ 
+ ## Installation
+-(TODO: fill in after Task 10)
++
++1. Copy `MQL5/Experts/TradeCopier/TradeCopier.mq5` and the `MQL5/Include/TradeCopier/*.mqh` files into your MetaTrader 5 data folder.
++2. Make sure the MQL5 ZeroMQ binding (`MQL5/Include/Zmq/Zmq.mqh`) is installed.
++   - If missing, install the "ZeroMQ" library from the MetaTrader Market or copy a known-good ZMQ include set.
++3. Open `TradeCopier.mq5` in MetaEditor and compile (F7).
++4. Attach the EA to a chart on the master account; set `CopierMode` to `MASTER`.
++5. Attach the EA to a chart on the slave account; set `CopierMode` to `SLAVE` and configure symbol mapping / lot sizing.
++6. Both MT5 terminals must be running on the same machine.
+ 
+ ## Configuration
+ 
+@@ -44,5 +51,18 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
+ 
+ MAGIC_BASE is fixed at `1000000`. The slave ticket is computed as `MAGIC_BASE + (master_ticket % 900000)`.
+ 
++### Example slave configuration
++
++| Input | Value | Result |
++|-------|-------|--------|
++| `SymbolMap` | `US30=WS30, XAUUSD=GOLD` | master US30 -> slave WS30 |
++| `BalanceStepAmount` | `100.0` | one lot step per €100 balance |
++| `BalanceStepSize` | `0.01` | each step adds 0.01 lots |
++| `MaxLotSize` | `10.0` | never exceed 10 lots |
++| `MaxTradeAgeMinutes` | `30` | ignore trades older than 30 min on startup |
++| `NormalizeSLTPUsingPoints` | `true` | convert SL/TP using point distances |
++
++With a €5,000 balance and the values above, the slave lot size will be `floor(5000 / 100) * 0.01 = 0.5` lots.
++
+ ## Manual Testing Checklist
+ (TODO: fill in after Task 11)

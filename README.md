@@ -46,7 +46,8 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 | BalanceStepSize | double | 0.01 | Lot size added per balance step |
 | MaxLotSize | double | 10.0 | Hard lot-size cap |
 | MaxTradeAgeMinutes | int | 30 | Ignore master trades older than this on sync |
-| NormalizeSLTPUsingPoints | bool | true | Convert SL/TP via point distances |
+| NormalizeSLTPByPriceDistance | bool | true | Convert SL/TP via raw price distance (recommended) |
+| NormalizeSLTPUsingPoints | bool | false | Convert SL/TP via point distances (legacy) |
 | RetryCount | int | 3 | Total order-send attempts (including the first attempt) |
 | RetryDelayMs | int | 500 | Delay between retries (ms) |
 
@@ -61,7 +62,8 @@ MAGIC_BASE is fixed at `1000000`. The copied position's magic number is computed
 | `BalanceStepSize` | `0.01` | each step adds 0.01 lots |
 | `MaxLotSize` | `10.0` | never exceed 10 lots |
 | `MaxTradeAgeMinutes` | `30` | ignore trades older than 30 min on startup |
-| `NormalizeSLTPUsingPoints` | `true` | convert SL/TP using point distances |
+| `NormalizeSLTPByPriceDistance` | `true` | convert SL/TP using raw price distance |
+| `NormalizeSLTPUsingPoints` | `false` | convert SL/TP using point distances (legacy) |
 
 With a €5,000 balance and the values above, the slave lot size will be `floor(5000 / 100) * 0.01 = 0.5` lots.
 
@@ -79,4 +81,4 @@ With a €5,000 balance and the values above, the slave lot size will be `floor(
 - [ ] Use an unmapped symbol that does **not** exist on the slave; confirm the trade is skipped with an error log.
 - [ ] Verify lot sizing changes when the slave account balance changes.
 - [ ] Verify `MaxLotSize` cap is respected on large balances.
-- [ ] Verify SL/TP point normalization works when master and slave quote different decimal precisions (e.g. master `US30` at 2 decimals, slave `WS30` at 0 decimals).
+- [ ] Verify SL/TP price-distance normalization works when master and slave quote different decimal precisions (e.g. master `US30` at 52444.31, slave `WS30` at 52444).
