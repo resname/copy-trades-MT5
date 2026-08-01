@@ -2,8 +2,8 @@
 //|                                           CopierConfig.mqh       |
 //|                        MT5 Local Trade Copier Configuration      |
 //+------------------------------------------------------------------+
-#ifndef COPPER_CONFIG_MQH
-#define COPPER_CONFIG_MQH
+#ifndef COPIER_CONFIG_MQH
+#define COPIER_CONFIG_MQH
 
 enum ENUM_COPIER_MODE
 {

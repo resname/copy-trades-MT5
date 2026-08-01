@@ -107,6 +107,45 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
 
    m_socket.setReceiveTimeout(1);
    PrintFormat("SlaveSubscriber: connected to %s", address);
+
+   // Rebuild records for any copied positions already open on the slave account
+   // so a restart does not create duplicate trades.
+   int total = PositionsTotal();
+   int rebuilt = 0;
+   for(int i = 0; i < total; i++)
+   {
+      string posSymbol = PositionGetSymbol(i);
+      if(posSymbol == "")
+         continue;
+
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      if(magic < MAGIC_BASE)
+         continue;
+
+      ulong slaveTicket = PositionGetInteger(POSITION_TICKET);
+      string comment = PositionGetString(POSITION_COMMENT);
+      string prefix = "CPY#";
+      int prefixPos = StringFind(comment, prefix);
+      if(prefixPos == -1)
+         continue;
+      int numPos = prefixPos + StringLen(prefix);
+      string ticketStr = StringSubstr(comment, numPos);
+      // Accept only a plain numeric ticket suffix
+      if(StringToInteger(ticketStr) <= 0)
+         continue;
+
+      int idx = ArraySize(m_records);
+      ArrayResize(m_records, idx + 1);
+      m_records[idx].magic = magic;
+      m_records[idx].slave_ticket = slaveTicket;
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      m_records[idx].master_open_volume = volume;
+      m_records[idx].slave_open_volume = volume;
+      rebuilt++;
+   }
+
+   if(rebuilt > 0)
+      PrintFormat("SlaveSubscriber: rebuilt %d copied position record(s) from open positions", rebuilt);
    return true;
 }
 
@@ -207,8 +246,11 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
       slaveTP = e.tp;
    }
 
-   RoundToTickSize(slaveSymbol, slaveSL);
-   RoundToTickSize(slaveSymbol, slaveTP);
+   if(!RoundToTickSize(slaveSymbol, slaveSL) || !RoundToTickSize(slaveSymbol, slaveTP))
+   {
+      PrintFormat("Slave: failed to round SL/TP to tick size for %s", slaveSymbol);
+      return;
+   }
 
    ENUM_ORDER_TYPE orderType = (e.side == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
 
@@ -265,8 +307,11 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
       slaveTP = e.tp;
    }
 
-   RoundToTickSize(slaveSymbol, slaveSL);
-   RoundToTickSize(slaveSymbol, slaveTP);
+   if(!RoundToTickSize(slaveSymbol, slaveSL) || !RoundToTickSize(slaveSymbol, slaveTP))
+   {
+      PrintFormat("Slave: failed to round SL/TP to tick size for modify on %s", slaveSymbol);
+      return;
+   }
 
    for(int attempt = 0; attempt <= m_retryCount; attempt++)
    {
@@ -351,7 +396,7 @@ bool CSlaveSubscriber::IsTooOld(datetime openTime)
 {
    if(openTime == 0)
       return false;
-   datetime now = TimeLocal();
+   datetime now = TimeCurrent();
    return (now - openTime) > m_maxAgeMinutes * 60;
 }
 

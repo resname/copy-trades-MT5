@@ -26,6 +26,16 @@ struct STradeEvent
 };
 
 //+------------------------------------------------------------------+
+//| Minimal JSON helpers (no external dependency)                      |
+//+------------------------------------------------------------------+
+bool GetJsonString(const string json, const string key, string &out);
+bool GetJsonRawValue(const string json, const string key, string &out);
+bool GetJsonLong(const string json, const string key, long &out);
+bool GetJsonULong(const string json, const string key, long &out);
+bool GetJsonInt(const string json, const string key, int &out);
+bool GetJsonDouble(const string json, const string key, double &out);
+
+//+------------------------------------------------------------------+
 //| Trade message JSON serializer/deserializer                         |
 //+------------------------------------------------------------------+
 class CTradeMessage
@@ -37,6 +47,108 @@ public:
 private:
    static string JsonString(const string value);
 };
+
+//+------------------------------------------------------------------+
+//| Extract string value for key                                       |
+//+------------------------------------------------------------------+
+bool GetJsonString(const string json, const string key, string &out)
+{
+   string pattern = "\"" + key + "\":";
+   int pos = StringFind(json, pattern);
+   if(pos == -1) return false;
+   pos += StringLen(pattern);
+   // skip whitespace
+   while(pos < StringLen(json) && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+   if(pos >= StringLen(json) || json[pos] != '"') return false;
+   pos++;
+
+   // Find the closing quote, ignoring escaped quotes.
+   int end = -1;
+   for(int i = pos; i < StringLen(json); i++)
+   {
+      if(json[i] != '"') continue;
+      int backslashes = 0;
+      int j = i - 1;
+      while(j >= 0 && json[j] == '\\')
+      {
+         backslashes++;
+         j--;
+      }
+      if(backslashes % 2 == 0)
+      {
+         end = i;
+         break;
+      }
+   }
+   if(end == -1) return false;
+
+   out = StringSubstr(json, pos, end - pos);
+   // Unescape JSON string sequences in reverse order of escaping.
+   StringReplace(out, "\\\"", "\"");
+   StringReplace(out, "\\\\", "\\");
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Extract raw JSON value for key                                     |
+//+------------------------------------------------------------------+
+bool GetJsonRawValue(const string json, const string key, string &out)
+{
+   string pattern = "\"" + key + "\":";
+   int pos = StringFind(json, pattern);
+   if(pos == -1) return false;
+   pos += StringLen(pattern);
+   while(pos < StringLen(json) && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+
+   int start = pos;
+   // read until comma or end brace
+   while(pos < StringLen(json) && json[pos] != ',' && json[pos] != '}') pos++;
+   out = StringSubstr(json, start, pos - start);
+   StringReplace(out, " ", "");
+   StringReplace(out, "\t", "");
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Extract long value for key                                         |
+//+------------------------------------------------------------------+
+bool GetJsonLong(const string json, const string key, long &out)
+{
+   string s;
+   if(!GetJsonRawValue(json, key, s)) return false;
+   out = (long)StringToInteger(s);
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Extract unsigned long value for key                                |
+//+------------------------------------------------------------------+
+bool GetJsonULong(const string json, const string key, long &out)
+{
+   return GetJsonLong(json, key, out);
+}
+
+//+------------------------------------------------------------------+
+//| Extract int value for key                                          |
+//+------------------------------------------------------------------+
+bool GetJsonInt(const string json, const string key, int &out)
+{
+   string s;
+   if(!GetJsonRawValue(json, key, s)) return false;
+   out = (int)StringToInteger(s);
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Extract double value for key                                       |
+//+------------------------------------------------------------------+
+bool GetJsonDouble(const string json, const string key, double &out)
+{
+   string s;
+   if(!GetJsonRawValue(json, key, s)) return false;
+   out = StringToDouble(s);
+   return true;
+}
 
 //+------------------------------------------------------------------+
 //| Serialize event to JSON                                            |
@@ -103,91 +215,14 @@ bool CTradeMessage::JsonToEvent(const string json, STradeEvent &e)
 }
 
 //+------------------------------------------------------------------+
-//| Minimal JSON helpers (no external dependency)                      |
+//| Escape a string value for JSON                                     |
 //+------------------------------------------------------------------+
 string CTradeMessage::JsonString(const string value)
 {
-   return "\"" + value + "\"";
-}
-
-//+------------------------------------------------------------------+
-//| Extract string value for key                                       |
-//+------------------------------------------------------------------+
-bool GetJsonString(const string json, const string key, string &out)
-{
-   string pattern = "\"" + key + "\":";
-   int pos = StringFind(json, pattern);
-   if(pos == -1) return false;
-   pos += StringLen(pattern);
-   // skip whitespace
-   while(pos < StringLen(json) && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-   if(pos >= StringLen(json) || json[pos] != '"') return false;
-   pos++;
-   int end = StringFind(json, "\"", pos);
-   if(end == -1) return false;
-   out = StringSubstr(json, pos, end - pos);
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Extract long value for key                                         |
-//+------------------------------------------------------------------+
-bool GetJsonLong(const string json, const string key, long &out)
-{
-   string s;
-   if(!GetJsonRawValue(json, key, s)) return false;
-   out = (long)StringToInteger(s);
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Extract unsigned long value for key                                |
-//+------------------------------------------------------------------+
-bool GetJsonULong(const string json, const string key, long &out)
-{
-   return GetJsonLong(json, key, out);
-}
-
-//+------------------------------------------------------------------+
-//| Extract int value for key                                          |
-//+------------------------------------------------------------------+
-bool GetJsonInt(const string json, const string key, int &out)
-{
-   string s;
-   if(!GetJsonRawValue(json, key, s)) return false;
-   out = (int)StringToInteger(s);
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Extract double value for key                                       |
-//+------------------------------------------------------------------+
-bool GetJsonDouble(const string json, const string key, double &out)
-{
-   string s;
-   if(!GetJsonRawValue(json, key, s)) return false;
-   out = StringToDouble(s);
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Extract raw JSON value for key                                     |
-//+------------------------------------------------------------------+
-bool GetJsonRawValue(const string json, const string key, string &out)
-{
-   string pattern = "\"" + key + "\":";
-   int pos = StringFind(json, pattern);
-   if(pos == -1) return false;
-   pos += StringLen(pattern);
-   while(pos < StringLen(json) && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-
-   int start = pos;
-   // read until comma or end brace
-   while(pos < StringLen(json) && json[pos] != ',' && json[pos] != '}') pos++;
-   out = StringSubstr(json, start, pos - start);
-   StringReplace(out, " ", "");
-   StringReplace(out, "\t", "");
-   return true;
+   string out = value;
+   StringReplace(out, "\\", "\\\\");
+   StringReplace(out, "\"", "\\\"");
+   return "\"" + out + "\"";
 }
 
 #endif

@@ -49,7 +49,7 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 | RetryCount | int | 3 | Order-send retries on temporary failure |
 | RetryDelayMs | int | 500 | Delay between retries (ms) |
 
-MAGIC_BASE is fixed at `1000000`. The slave ticket is computed as `MAGIC_BASE + (master_ticket % 900000)`.
+MAGIC_BASE is fixed at `1000000`. The copied position's magic number is computed as `MAGIC_BASE + (master_ticket % 900000)`.
 
 ### Example slave configuration
 
