@@ -31,23 +31,27 @@ double CLotSizer::CalculateLots(double balance, double stepAmount, double stepSi
       return 0.0;
    }
 
-   double steps = MathFloor(balance / stepAmount);
-   double lots  = steps * stepSize;
-
    double lotStep = m_symbolInfo.LotsStep();
    double minLot  = m_symbolInfo.LotsMin();
    double maxLotSymbol = m_symbolInfo.LotsMax();
 
+   if(lotStep <= 0.0)
+   {
+      Print("LotSizer: invalid lot step (must be > 0)");
+      return 0.0;
+   }
+
+   double steps = MathFloor(balance / stepAmount);
+   double lots  = steps * stepSize;
+
    // round DOWN to lot step
    lots = MathFloor(lots / lotStep) * lotStep;
 
-   // clamp and cap
+   // clamp and cap (no further rounding; value is already on the lotStep grid)
    lots = MathMax(lots, minLot);
    lots = MathMin(lots, maxLotSymbol);
    lots = MathMin(lots, maxLot);
 
-   // re-align DOWN to lot step after clamping/capping; never round up
-   lots = MathFloor(lots / lotStep) * lotStep;
    return lots;
 }
 
