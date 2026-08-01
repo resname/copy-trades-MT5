@@ -12,7 +12,6 @@
 
 CMasterPublisher g_master;
 CSlaveSubscriber g_slave;
-bool             g_modeSet = false;
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -24,7 +23,6 @@ int OnInit()
          Print("TradeCopier: failed to initialize MASTER");
          return INIT_FAILED;
       }
-      g_modeSet = true;
       Print("TradeCopier: running as MASTER");
    }
    else
@@ -34,7 +32,6 @@ int OnInit()
          Print("TradeCopier: failed to initialize SLAVE");
          return INIT_FAILED;
       }
-      g_modeSet = true;
       Print("TradeCopier: running as SLAVE");
    }
 
