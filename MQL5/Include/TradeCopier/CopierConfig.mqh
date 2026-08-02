@@ -13,12 +13,8 @@ enum ENUM_COPIER_MODE
 
 input group "=== Copier Mode ==="
 input ENUM_COPIER_MODE CopierMode = COPIER_SLAVE; // Run as MASTER or SLAVE
-input int              HeartbeatSeconds = 5;      // Maximum age of heartbeat before slave warns
-
-input group "=== Transport Settings ==="
-input string           SharedDataPath = "TradeCopier\\"; // Shared folder under Common/Files for snapshot file
-input int              MasterSnapshotIntervalMs = 200;     // Master snapshot write interval (ms)
-input int              SlavePollIntervalMs = 257;          // Slave snapshot read interval (ms), desynchronized from master
+input ushort           DiscoveryUdpPort = 55555;  // UDP port for master discovery broadcasts
+input int              HeartbeatSeconds = 5;      // Maximum heartbeat age before slave warns
 
 input group "=== Slave Settings ==="
 input string           SymbolMap = "";            // Symbol mappings: US30=WS30, XAUUSD=GOLD
