@@ -6,9 +6,15 @@
 struct SPositionSnapshot
 {
    ulong  ticket;
+   string symbol;
+   int    side;
+   double open_price;
    double volume;
    double sl;
    double tp;
+   long   open_time;
+   double point;
+   string comment;
 };
 
 struct STradeSnapshot
@@ -57,9 +63,15 @@ string CSnapshotFile::SnapshotToJson(const STradeSnapshot &snapshot)
       const SPositionSnapshot &p = snapshot.positions[i];
       json += "{";
       json += "\"ticket\":" + IntegerToString((long)p.ticket) + ",";
+      json += "\"symbol\":" + CTradeMessage::JsonString(p.symbol) + ",";
+      json += "\"side\":" + IntegerToString(p.side) + ",";
+      json += "\"open_price\":" + DoubleToString(p.open_price, 8) + ",";
       json += "\"volume\":" + DoubleToString(p.volume, 8) + ",";
       json += "\"sl\":" + DoubleToString(p.sl, 8) + ",";
-      json += "\"tp\":" + DoubleToString(p.tp, 8);
+      json += "\"tp\":" + DoubleToString(p.tp, 8) + ",";
+      json += "\"open_time\":" + IntegerToString(p.open_time) + ",";
+      json += "\"point\":" + DoubleToString(p.point, 8) + ",";
+      json += "\"comment\":" + CTradeMessage::JsonString(p.comment);
       json += "}";
       if(i < n - 1) json += ",";
    }
@@ -103,6 +115,21 @@ bool CSnapshotFile::JsonToSnapshot(const string json, STradeSnapshot &snapshot)
       else
          p.ticket = 0;
 
+      if(GetJsonString(positionJson, "symbol", raw))
+         p.symbol = raw;
+      else
+         p.symbol = "";
+
+      if(GetJsonRawValue(positionJson, "side", raw))
+         p.side = (int)StringToInteger(raw);
+      else
+         p.side = 0;
+
+      if(GetJsonRawValue(positionJson, "open_price", raw))
+         p.open_price = StringToDouble(raw);
+      else
+         p.open_price = 0.0;
+
       if(GetJsonRawValue(positionJson, "volume", raw))
          p.volume = StringToDouble(raw);
       else
@@ -117,6 +144,21 @@ bool CSnapshotFile::JsonToSnapshot(const string json, STradeSnapshot &snapshot)
          p.tp = StringToDouble(raw);
       else
          p.tp = 0.0;
+
+      if(GetJsonRawValue(positionJson, "open_time", raw))
+         p.open_time = StringToInteger(raw);
+      else
+         p.open_time = 0;
+
+      if(GetJsonRawValue(positionJson, "point", raw))
+         p.point = StringToDouble(raw);
+      else
+         p.point = 0.0;
+
+      if(GetJsonString(positionJson, "comment", raw))
+         p.comment = raw;
+      else
+         p.comment = "";
 
       // Advance search to the next position object.
       pos += StringLen("\"ticket\":");
