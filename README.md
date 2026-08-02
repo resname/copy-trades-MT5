@@ -1,10 +1,11 @@
 # MT5 Local Trade Copier
 
-A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 account to one or more slave MT5 accounts running on the same machine.
+A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 account to one or more slave MT5 accounts over the local network with zero connection configuration.
 
 ## Features
 - Master/Slave dual mode
-- File-based local communication via shared snapshot
+- LAN TCP + UDP broadcast discovery
+- On-chart configuration GUI with symbol-mapping table
 - Manual symbol translation
 - Balance-step lot sizing
 - Point-normalized SL/TP mirroring
@@ -16,10 +17,22 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 1. Copy `MQL5/Experts/TradeCopier/TradeCopier.mq5` and the `MQL5/Include/TradeCopier/*.mqh` files into your MetaTrader 5 data folder.
 2. Open `TradeCopier.mq5` in MetaEditor and compile (F7).
 3. Attach the EA to a chart on the master account; set `CopierMode` to `MASTER`.
-4. Attach the EA to a chart on each slave account; set `CopierMode` to `SLAVE` and configure symbol mapping / lot sizing.
-5. Set `SharedDataPath` to the same folder on the master and on every slave, for example `TradeCopier\\Shared\\` (relative to the terminal's `MQL5/Common/Files` folder). All MT5 terminals must be running on the same machine, must use the same MetaTrader 5 installation, and must read the same snapshot file.
+4. Attach the EA to a chart on each slave account; set `CopierMode` to `SLAVE`.
+5. Make sure the master and slave PCs are on the same local network. No IP or port configuration is required — the slave discovers the master automatically via UDP broadcast.
 
-You can attach the slave EA to any number of charts/terminals. All slaves must use the same `SharedDataPath`. Each slave has its own `SymbolMap`, `BalanceStepAmount`, and `MaxLotSize` settings.
+For localhost (same PC), the slave automatically falls back to `127.0.0.1` if broadcast is blocked.
+
+You can attach the slave EA to any number of charts/terminals. Each slave has its own `SymbolMap`, `BalanceStepAmount`, and `MaxLotSize` settings.
+
+## GUI
+
+The EA draws a panel directly on the chart:
+
+- **General tab:** shows mode (MASTER/SLAVE), connection status, master endpoint, and latency.
+- **Symbols tab:** editable table of master → slave symbol mappings. Type the master symbol in the left column and the slave symbol in the right column. The generated `SymbolMap` string is printed to the Experts log so you can paste it into the EA inputs for persistence.
+- **Trades tab:** (placeholder) list of currently copied positions.
+
+Note: MQL5 cannot save input values from code. After editing the mapping table, copy the printed `SymbolMap` string into the EA's `SymbolMap` input and re-attach the EA if you want the mapping to persist across restarts.
 
 ## Configuration
 
@@ -28,10 +41,8 @@ You can attach the slave EA to any number of charts/terminals. All slaves must u
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
 | CopierMode | ENUM_COPIER_MODE | COPIER_SLAVE | Run as MASTER or SLAVE |
-| SharedDataPath | string | `TradeCopier\\` | Shared folder for the snapshot file (relative to Common/Files or absolute) |
-| MasterSnapshotIntervalMs | int | 200 | Master snapshot write interval (ms) |
-| SlavePollIntervalMs | int | 257 | Slave snapshot read interval (ms), desynchronized from master |
-| HeartbeatSeconds | int | 5 | Maximum age of heartbeat before slave warns |
+| DiscoveryUdpPort | ushort | 55555 | UDP port for master discovery broadcasts |
+| HeartbeatSeconds | int | 5 | Maximum heartbeat age before slave warns |
 
 ### Slave Settings
 
@@ -63,14 +74,18 @@ With a €5,000 balance and the values above, the slave lot size will be `floor(
 
 ## Feature Test Checklist
 
-Use two demo accounts on the same PC. Check each item once it behaves as described.
+Use two demo accounts on PCs in the same LAN (or two terminals on the same PC for localhost fallback). Check each item once it behaves as described.
 
 ### Transport & Setup
 - [ ] Compile `TradeCopier.mq5` in MetaEditor without errors.
 - [ ] Attach the EA to a master chart with `CopierMode = MASTER`.
 - [ ] Attach the EA to a slave chart with `CopierMode = SLAVE`.
-- [ ] Verify the file `TradeCopier.snapshot.json` appears in the configured `SharedDataPath` after the first master timer tick.
-- [ ] Confirm both master and slave use the exact same `SharedDataPath`.
+- [ ] Attach master EA on one PC; verify it starts advertising.
+- [ ] Attach slave EA on another PC on the same LAN; verify it discovers and connects automatically.
+- [ ] Verify the master endpoint and latency appear in the slave GUI.
+- [ ] Disconnect the master PC from the network; verify the slave shows "searching..." after the heartbeat timeout.
+- [ ] Reconnect the master; verify the slave reconnects and syncs.
+- [ ] Run master and slave on the same PC (localhost); verify fallback connection works.
 
 ### Trade Lifecycle Mirroring
 - [ ] Open a market order on the master; the slave opens the corresponding position within ~1 second.
@@ -98,10 +113,9 @@ Use two demo accounts on the same PC. Check each item once it behaves as describ
 - [ ] Restart the slave EA with an open master position older than `MaxTradeAgeMinutes`; the slave ignores it and does not copy.
 
 ### Multi-Slave
-- [ ] Attach a second slave EA to another chart/terminal with the same `SharedDataPath` but a different `SymbolMap`; both slaves mirror the same master trade independently.
+- [ ] Attach a second slave EA to another chart/terminal on the LAN with a different `SymbolMap`; both slaves mirror the same master trade independently.
 - [ ] Close the copied position on one slave; the other slave and the master remain unaffected.
 
 ### Heartbeat & Intervals
 - [ ] Stop the master EA; after more than `HeartbeatSeconds * 2`, the slave logs a missing-heartbeat warning.
-- [ ] Restart the master EA; the slave heartbeat warning stops after the next snapshot is read.
-- [ ] Change `MasterSnapshotIntervalMs` and `SlavePollIntervalMs`; observe that the file write and read intervals follow the new values.
+- [ ] Restart the master EA; the slave reconnects and the heartbeat warning stops.
