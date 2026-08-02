@@ -25,6 +25,7 @@ private:
    int    m_latencyMs;
 
    bool   InternalSend(int socket, const string &json);
+   bool   InternalReceive(int socket, string &outJson, uint timeoutMs);
    int    FindClientSlot();
 
 public:
@@ -41,6 +42,7 @@ public:
    bool BroadcastEndpoint(uint discoveryUdpPort);
    bool AcceptClients();
    bool SendToAllClients(const string &json);
+   bool ReceiveFromClient(string &outJson, uint timeoutMs);
 
    // Slave
    bool StartSlaveListener(uint discoveryUdpPort);
@@ -304,10 +306,10 @@ bool CLanTransport::InternalSend(int socket, const string &json)
    return true;
 }
 
-bool CLanTransport::ReceiveFrame(string &outJson, uint timeoutMs)
+bool CLanTransport::InternalReceive(int socket, string &outJson, uint timeoutMs)
 {
    outJson = "";
-   if(m_tcpClient == INVALID_HANDLE) return false;
+   if(socket == INVALID_HANDLE) return false;
 
    uint start = GetTickCount();
 
@@ -320,7 +322,7 @@ bool CLanTransport::ReceiveFrame(string &outJson, uint timeoutMs)
          return false;
 
       uchar tmp[1];
-      int r = SocketRead(m_tcpClient, tmp, 1, 100);
+      int r = SocketRead(socket, tmp, 1, 100);
       if(r > 0)
       {
          header[headerRead] = tmp[0];
@@ -347,7 +349,7 @@ bool CLanTransport::ReceiveFrame(string &outJson, uint timeoutMs)
       int remaining = len - payloadRead;
       uchar tmp[];
       ArrayResize(tmp, remaining);
-      int r = SocketRead(m_tcpClient, tmp, remaining, 100);
+      int r = SocketRead(socket, tmp, remaining, 100);
       if(r > 0)
       {
          ArrayCopy(payload, tmp, payloadRead, 0, r);
@@ -358,11 +360,37 @@ bool CLanTransport::ReceiveFrame(string &outJson, uint timeoutMs)
    }
 
    outJson = CharArrayToString(payload, 0, len);
-
-   if(m_latencyMs < 0)
-      m_latencyMs = (int)(GetTickCount() - start);
-
    return true;
+}
+
+bool CLanTransport::ReceiveFrame(string &outJson, uint timeoutMs)
+{
+   outJson = "";
+   if(m_tcpClient == INVALID_HANDLE) return false;
+
+   uint start = GetTickCount();
+   bool ok = InternalReceive(m_tcpClient, outJson, timeoutMs);
+   if(ok && m_latencyMs < 0)
+      m_latencyMs = (int)(GetTickCount() - start);
+   return ok;
+}
+
+bool CLanTransport::ReceiveFromClient(string &outJson, uint timeoutMs)
+{
+   outJson = "";
+   if(m_tcpServer == INVALID_HANDLE) return false;
+
+   int n = ArraySize(m_clients);
+   for(int i = 0; i < n; i++)
+   {
+      if(m_clients[i] == INVALID_HANDLE) continue;
+      if(InternalReceive(m_clients[i], outJson, timeoutMs))
+         return true;
+      // Receive failed: close and clear this client slot.
+      SocketClose(m_clients[i]);
+      m_clients[i] = INVALID_HANDLE;
+   }
+   return false;
 }
 
 bool CLanTransport::SendFrame(const string &json)
