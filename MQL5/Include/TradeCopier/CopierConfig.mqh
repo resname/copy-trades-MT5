@@ -20,8 +20,6 @@ input string           SharedDataPath = "TradeCopier\\"; // Shared folder for sn
 input int              MasterSnapshotIntervalMs = 200;     // Master snapshot write interval (ms)
 input int              SlavePollIntervalMs = 257;          // Slave snapshot read interval (ms), desynchronized from master
 
-input group "=== Master Settings ==="
-
 input group "=== Slave Settings ==="
 input string           SymbolMap = "";            // Symbol mappings: US30=WS30, XAUUSD=GOLD
 input double           BalanceStepAmount = 100.0; // Account-currency units per lot step
