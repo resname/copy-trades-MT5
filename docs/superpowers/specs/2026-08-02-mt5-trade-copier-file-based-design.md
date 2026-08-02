@@ -66,9 +66,9 @@ Single file: `TradeCopier.snapshot.json`
 
 - `timestamp`: epoch seconds (UTC) of the snapshot generation.
 - `heartbeat`: same as `timestamp`; used by slaves to detect a stalled master.
-- `positions`: array of all open positions the master currently holds.
+- `positions`: array of all open positions the master currently holds. Each position carries the full trade-event payload (`ticket`, `symbol`, `side`, `open_price`, `volume`, `sl`, `tp`, `open_time`, `point`, `comment`) so the slave can reconstruct `STradeEvent` objects without accessing the master account.
 - `side`: `0` = buy, `1` = sell (`ENUM_POSITION_TYPE` values).
-- `comment`: optional, currently unused by the slave but kept for debugging.
+- `comment`: optional, kept for debugging and future restart recovery.
 
 ## Atomic Writes
 
@@ -87,7 +87,7 @@ The slave maintains a local copy of the previous snapshot (`m_prevSnapshots`). O
 
 1. Read `TradeCopier.snapshot.json`.
 2. If the file cannot be opened or parsed, log once and retry next tick.
-3. If `heartbeat` has not changed for longer than `HeartbeatSeconds * 2`, log a warning.
+3. Check the snapshot's own `heartbeat` timestamp. If it has not changed for longer than `HeartbeatSeconds * 2`, log a warning. (Do not rely only on file-read success, because a stale but still-readable file would not reveal a dead master.)
 4. Compare the new `positions` array with `m_prevSnapshots`:
    - **NEW_TRADE:** a ticket exists in the new snapshot but not in `m_prevSnapshots`.
    - **MODIFY_TRADE:** a ticket exists in both, but `sl` or `tp` differ.
@@ -102,7 +102,7 @@ When a slave starts:
 
 1. It reads the current snapshot.
 2. It treats the first snapshot as the baseline: existing master positions are loaded into `m_prevSnapshots` but do **not** generate `NEW_TRADE` events.
-3. Positions older than `MaxTradeAgeMinutes` are excluded from the baseline.
+3. Positions older than `MaxTradeAgeMinutes` are excluded from the baseline using each position's `open_time` field.
 4. The slave scans its own open positions for any with a `CPY#<ticket>` comment and rebuilds `m_records` so restarts do not create duplicates.
 
 Because the snapshot is refreshed at least every `MasterSnapshotIntervalMs` (default 200 ms), no explicit sync request is required.
