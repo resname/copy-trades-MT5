@@ -1,0 +1,8 @@
+capture/*.pcap
+capture/*.pcapng
+capture/*.log
+capture/frida_*.log
+capture/timeline.tsv
+capture/*.csv
+secrets.txt
+*.key
