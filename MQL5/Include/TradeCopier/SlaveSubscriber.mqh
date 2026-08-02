@@ -4,9 +4,8 @@
 #ifndef SLAVE_SUBSCRIBER_MQH
 #define SLAVE_SUBSCRIBER_MQH
 
-#include <Zmq\Zmq.mqh>
+#include "SnapshotFile.mqh"
 #include <Trade\Trade.mqh>
-#include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
 #include "CopierConfig.mqh"
 #include "SymbolMapper.mqh"
@@ -25,9 +24,7 @@ struct SSlaveCopyRecord
 class CSlaveSubscriber
 {
 private:
-   Context           *m_context;
-   Socket            *m_socket;
-   Socket            *m_syncPush;
+   string            m_sharedPath;
    CTrade             m_trade;
    CSymbolMapper      m_mapper;
    CLotSizer          m_lotSizer;
@@ -37,10 +34,18 @@ private:
    int                m_retryDelayMs;
    int                m_heartbeatSeconds;
    datetime           m_lastHeartbeat;
+   long               m_lastHeartbeatValue;
    bool               m_heartbeatWarned;
+   bool               m_baselineSet;
+   STradeSnapshot     m_prevSnapshot;
    SSlaveCopyRecord   m_records[];
 
-   void   ProcessEvent(const STradeEvent &e);
+   void   EstablishBaseline(const STradeSnapshot &snapshot);
+   void   DiffAndProcess(const STradeSnapshot &snapshot);
+   STradeEvent BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos);
+   void   CheckHeartbeat(long snapshotHeartbeat);
+   int    FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const;
+   int    FindSnapshotIndex(ulong ticket) const;
    void   OpenTrade(const STradeEvent &e);
    void   ModifyTrade(const STradeEvent &e);
    void   PartialClose(const STradeEvent &e);
@@ -51,107 +56,54 @@ private:
                          double sl, double tp, long magic, string comment,
                          ulong &outTicket);
    bool   RoundToTickSize(const string symbol, double &price);
-   bool   SendSyncRequest();
 
 public:
-   CSlaveSubscriber() : m_context(NULL), m_socket(NULL), m_syncPush(NULL),
-                        m_maxAgeMinutes(0), m_retryCount(0), m_retryDelayMs(0),
-                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_heartbeatWarned(false) {}
-   bool Init(int port, const string symbolMap, int maxAgeMinutes,
-             int retryCount, int retryDelayMs, int heartbeatSeconds);
+   CSlaveSubscriber() : m_maxAgeMinutes(0), m_retryCount(0), m_retryDelayMs(0),
+                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_lastHeartbeatValue(0),
+                        m_heartbeatWarned(false), m_baselineSet(false)
+   {
+      m_sharedPath = "";
+   }
+   bool Init(const string sharedPath, const string symbolMap,
+             int maxAgeMinutes, int retryCount, int retryDelayMs,
+             int heartbeatSeconds);
    void Deinit();
    void Poll();
 };
 
-bool CSlaveSubscriber::Init(int port, const string symbolMap,
+bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
                             int maxAgeMinutes, int retryCount, int retryDelayMs,
                             int heartbeatSeconds)
 {
+   m_sharedPath = sharedPath;
    m_maxAgeMinutes = maxAgeMinutes;
    m_retryCount = retryCount;
    m_retryDelayMs = retryDelayMs;
    m_heartbeatSeconds = heartbeatSeconds;
    m_lastHeartbeat = 0;
+   m_lastHeartbeatValue = 0;
    m_heartbeatWarned = false;
+   m_baselineSet = false;
    ArrayResize(m_records, 0);
+   ArrayResize(m_prevSnapshot.positions, 0);
 
    m_mapper.Init(symbolMap);
 
-   string address = StringFormat("tcp://127.0.0.1:%d", port);
-   string syncAddress = StringFormat("tcp://127.0.0.1:%d", port + 1);
-
-   m_context = new Context();
-   if(CheckPointer(m_context) == POINTER_INVALID)
+   // Ensure shared directory exists.
+   if(!FolderCreate(m_sharedPath, FILE_COMMON))
    {
-      Print("SlaveSubscriber: failed to create ZMQ context");
-      return false;
+      int err = GetLastError();
+      if(err != ERR_FILE_ALREADY_EXIST)
+      {
+         PrintFormat("SlaveSubscriber: failed to create shared path %s (error %d)", m_sharedPath, err);
+         return false;
+      }
    }
 
-   m_socket = new Socket(m_context, ZMQ_SUB);
-   if(CheckPointer(m_socket) == POINTER_INVALID)
-   {
-      Print("SlaveSubscriber: failed to create ZMQ SUB socket");
-      delete m_context;
-      m_context = NULL;
-      return false;
-   }
+   PrintFormat("SlaveSubscriber: using shared path %s", m_sharedPath);
 
-   if(!m_socket.connect(address))
-   {
-      PrintFormat("SlaveSubscriber: failed to connect SUB to %s", address);
-      delete m_socket;
-      delete m_context;
-      m_socket = NULL;
-      m_context = NULL;
-      return false;
-   }
-
-   if(!m_socket.setSubscribe(""))
-   {
-      Print("SlaveSubscriber: subscribe failed");
-      delete m_socket;
-      delete m_context;
-      m_socket = NULL;
-      m_context = NULL;
-      return false;
-   }
-
-   m_socket.setReceiveTimeout(1);
-   PrintFormat("SlaveSubscriber: connected SUB to %s", address);
-
-   m_syncPush = new Socket(m_context, ZMQ_PUSH);
-   if(CheckPointer(m_syncPush) == POINTER_INVALID)
-   {
-      Print("SlaveSubscriber: failed to create ZMQ PUSH socket");
-      delete m_socket;
-      delete m_context;
-      m_socket = NULL;
-      m_context = NULL;
-      return false;
-   }
-
-   if(!m_syncPush.connect(syncAddress))
-   {
-      PrintFormat("SlaveSubscriber: failed to connect PUSH sync to %s", syncAddress);
-      delete m_syncPush;
-      delete m_socket;
-      delete m_context;
-      m_syncPush = NULL;
-      m_socket = NULL;
-      m_context = NULL;
-      return false;
-   }
-
-   PrintFormat("SlaveSubscriber: connected PUSH sync to %s", syncAddress);
-
-   // Set a short send timeout so starting the slave before the master does not hang init.
-   m_syncPush.setSendTimeout(1000);
-   if(!SendSyncRequest())
-      Print("SlaveSubscriber: sync request could not be delivered; will rely on normal subscription");
-
-   // Start heartbeat timer now that the subscriber is online.
+   // Start heartbeat timer now.
    m_lastHeartbeat = TimeCurrent();
-   m_heartbeatWarned = false;
 
    // Rebuild records for any copied positions already open on the slave account
    // so a restart does not create duplicate trades.
@@ -225,61 +177,139 @@ bool CSlaveSubscriber::Init(int port, const string symbolMap,
    return true;
 }
 
-bool CSlaveSubscriber::SendSyncRequest()
-{
-   if(m_syncPush == NULL)
-      return false;
-
-   STradeEvent e;
-   ZeroMemory(e);
-   e.event = "SYNC_REQUEST";
-   e.timestamp = TimeLocal();
-
-   string msg = CTradeMessage::EventToJson(e);
-   ZmqMsg zmsg(msg);
-   return m_syncPush.send(zmsg);
-}
-
 void CSlaveSubscriber::Deinit()
 {
-   if(CheckPointer(m_syncPush) != POINTER_INVALID)
-      delete m_syncPush;
-   if(CheckPointer(m_socket) != POINTER_INVALID)
-      delete m_socket;
-   if(CheckPointer(m_context) != POINTER_INVALID)
-      delete m_context;
-   m_syncPush = NULL;
-   m_socket = NULL;
-   m_context = NULL;
    ArrayResize(m_records, 0);
+   ArrayResize(m_prevSnapshot.positions, 0);
 }
 
 void CSlaveSubscriber::Poll()
 {
-   if(m_socket == NULL)
-      return;
-
-   ZmqMsg msg;
-   while(m_socket.recv(msg, true))
+   STradeSnapshot snapshot;
+   if(!CSnapshotFile::Read(m_sharedPath, snapshot))
    {
-      string data = msg.getData();
-      STradeEvent e;
-      if(!CTradeMessage::JsonToEvent(data, e))
-      {
-         PrintFormat("SlaveSubscriber: malformed JSON: %s", data);
-         continue;
-      }
-
-      // Any valid event from the master counts as a heartbeat.
-      m_lastHeartbeat = TimeCurrent();
-      m_heartbeatWarned = false;
-
-      ProcessEvent(e);
+      CheckHeartbeat(0);
+      return;
    }
 
-   if(m_heartbeatSeconds > 0 &&
-      m_lastHeartbeat > 0 &&
-      TimeCurrent() - m_lastHeartbeat > m_heartbeatSeconds * 2)
+   CheckHeartbeat(snapshot.heartbeat);
+
+   if(!m_baselineSet)
+   {
+      // First read: establish baseline without generating NEW_TRADE events.
+      EstablishBaseline(snapshot);
+      return;
+   }
+
+   DiffAndProcess(snapshot);
+   m_prevSnapshot = snapshot;
+}
+
+void CSlaveSubscriber::EstablishBaseline(const STradeSnapshot &snapshot)
+{
+   ArrayResize(m_prevSnapshot.positions, 0);
+   int n = ArraySize(snapshot.positions);
+   int count = 0;
+   for(int i = 0; i < n; i++)
+   {
+      if(IsTooOld((datetime)snapshot.positions[i].open_time))
+         continue;
+
+      if(count >= ArraySize(m_prevSnapshot.positions))
+         ArrayResize(m_prevSnapshot.positions, count + 1);
+      m_prevSnapshot.positions[count] = snapshot.positions[i];
+      count++;
+   }
+   ArrayResize(m_prevSnapshot.positions, count);
+   m_baselineSet = true;
+   Print("SlaveSubscriber: baseline established");
+}
+
+void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
+{
+   int n = ArraySize(snapshot.positions);
+
+   // NEW / MODIFIED / PARTIAL_CLOSE
+   for(int i = 0; i < n; i++)
+   {
+      const SPositionSnapshot &curr = snapshot.positions[i];
+      int idx = FindSnapshotIndex(m_prevSnapshot.positions, curr.ticket);
+
+      if(idx < 0)
+      {
+         STradeEvent e = BuildEventFromSnapshot("NEW_TRADE", curr);
+         OpenTrade(e);
+      }
+      else
+      {
+         const SPositionSnapshot &prev = m_prevSnapshot.positions[idx];
+         if(NormalizeDouble(prev.volume - curr.volume, 8) > 0.0)
+         {
+            STradeEvent e = BuildEventFromSnapshot("PARTIAL_CLOSE", curr);
+            PartialClose(e);
+         }
+
+         if(NormalizeDouble(prev.sl - curr.sl, 8) != 0.0 ||
+            NormalizeDouble(prev.tp - curr.tp, 8) != 0.0)
+         {
+            STradeEvent e = BuildEventFromSnapshot("MODIFY_TRADE", curr);
+            ModifyTrade(e);
+         }
+      }
+   }
+
+   // CLOSE_TRADE
+   for(int i = ArraySize(m_prevSnapshot.positions) - 1; i >= 0; i--)
+   {
+      ulong oldTicket = m_prevSnapshot.positions[i].ticket;
+      if(FindSnapshotIndex(snapshot.positions, oldTicket) < 0)
+      {
+         STradeEvent e;
+         ZeroMemory(e);
+         e.event = "CLOSE_TRADE";
+         e.timestamp = (long)TimeLocal();
+         e.magic = MAGIC_BASE + (int)(oldTicket % 900000);
+         e.master_ticket = oldTicket;
+         CloseTrade(e);
+      }
+   }
+}
+
+STradeEvent CSlaveSubscriber::BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos)
+{
+   STradeEvent e;
+   ZeroMemory(e);
+   e.event = eventName;
+   e.timestamp = (long)TimeLocal();
+   e.master_ticket = pos.ticket;
+   e.magic = MAGIC_BASE + (int)(pos.ticket % 900000);
+   e.symbol = pos.symbol;
+   e.side = pos.side;
+   e.open_price = pos.open_price;
+   e.volume = pos.volume;
+   e.sl = pos.sl;
+   e.tp = pos.tp;
+   e.open_time = (datetime)pos.open_time;
+   e.point = pos.point;
+   e.comment = pos.comment;
+   return e;
+}
+
+void CSlaveSubscriber::CheckHeartbeat(long snapshotHeartbeat)
+{
+   datetime now = TimeCurrent();
+   if(snapshotHeartbeat > 0 && snapshotHeartbeat != m_lastHeartbeatValue)
+   {
+      m_lastHeartbeatValue = snapshotHeartbeat;
+      m_lastHeartbeat = now;
+      m_heartbeatWarned = false;
+      return;
+   }
+
+   if(m_heartbeatSeconds <= 0 || m_lastHeartbeat == 0)
+      return;
+
+   if(now - m_lastHeartbeat > m_heartbeatSeconds * 2)
    {
       if(!m_heartbeatWarned)
       {
@@ -289,18 +319,18 @@ void CSlaveSubscriber::Poll()
    }
 }
 
-void CSlaveSubscriber::ProcessEvent(const STradeEvent &e)
+int CSlaveSubscriber::FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const
 {
-   if(e.event == "HEARTBEAT")
-      return;
-   if(e.event == "NEW_TRADE")
-      OpenTrade(e);
-   else if(e.event == "MODIFY_TRADE")
-      ModifyTrade(e);
-   else if(e.event == "PARTIAL_CLOSE")
-      PartialClose(e);
-   else if(e.event == "CLOSE_TRADE")
-      CloseTrade(e);
+   int n = ArraySize(snapshots);
+   for(int i = 0; i < n; i++)
+      if(snapshots[i].ticket == ticket)
+         return i;
+   return -1;
+}
+
+int CSlaveSubscriber::FindSnapshotIndex(ulong ticket) const
+{
+   return FindSnapshotIndex(m_prevSnapshot.positions, ticket);
 }
 
 void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
@@ -322,7 +352,7 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
    if(FindRecord(e.magic) >= 0)
       return;
 
-   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Select(slaveSymbol))
    {
       PrintFormat("Slave: cannot select symbol %s", slaveSymbol);
       return;
@@ -401,7 +431,7 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
    }
 
    string slaveSymbol = PositionGetString(POSITION_SYMBOL);
-   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Select(slaveSymbol))
    {
       PrintFormat("Slave: cannot select symbol %s for modify", slaveSymbol);
       return;
@@ -456,7 +486,7 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
    }
 
    string slaveSymbol = PositionGetString(POSITION_SYMBOL);
-   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Select(slaveSymbol))
       return;
 
    double currentSlaveVolume = PositionGetDouble(POSITION_VOLUME);
@@ -527,7 +557,7 @@ bool CSlaveSubscriber::OpenSlaveOrder(const string symbol, ENUM_ORDER_TYPE type,
                                       double lots, double sl, double tp,
                                       long magic, string comment, ulong &outTicket)
 {
-   if(!m_symbolInfo.Name(symbol) || !m_symbolInfo.Select(symbol))
+   if(!m_symbolInfo.Select(symbol))
    {
       PrintFormat("Slave: cannot select symbol %s for open", symbol);
       return false;

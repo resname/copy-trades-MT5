@@ -1,25 +1,25 @@
 # MT5 Local Trade Copier
 
-A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 account to a slave MT5 account running on the same machine.
+A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 account to one or more slave MT5 accounts running on the same machine.
 
 ## Features
 - Master/Slave dual mode
-- ZeroMQ-based local communication
+- File-based local communication via shared snapshot
 - Manual symbol translation
 - Balance-step lot sizing
 - Point-normalized SL/TP mirroring
 - Full trade lifecycle mirroring (open, modify SL/TP, partial close, close)
+- Multi-slave support from a single master
 
 ## Installation
 
 1. Copy `MQL5/Experts/TradeCopier/TradeCopier.mq5` and the `MQL5/Include/TradeCopier/*.mqh` files into your MetaTrader 5 data folder.
-2. Make sure the MQL5 ZeroMQ binding (`MQL5/Include/Zmq/Zmq.mqh`) is installed.
-   - If missing, install the "ZeroMQ" library from the MetaTrader Market or copy a known-good ZMQ include set.
-3. Open `TradeCopier.mq5` in MetaEditor and compile (F7).
-4. Attach the EA to a chart on the master account; set `CopierMode` to `MASTER`.
-5. Attach the EA to a chart on the slave account; set `CopierMode` to `SLAVE` and configure symbol mapping / lot sizing.
-6. Both MT5 terminals must be running on the same machine.
-7. The sync channel automatically uses `CopierPort + 1`; no extra input is required.
+2. Open `TradeCopier.mq5` in MetaEditor and compile (F7).
+3. Attach the EA to a chart on the master account; set `CopierMode` to `MASTER`.
+4. Attach the EA to a chart on each slave account; set `CopierMode` to `SLAVE` and configure symbol mapping / lot sizing.
+5. Set `SharedDataPath` to the same folder on the master and on every slave, for example `TradeCopier\\Shared\\` (relative to the terminal's `MQL5/Common/Files` folder). All MT5 terminals must be running on the same machine, must use the same MetaTrader 5 installation, and must read the same snapshot file.
+
+You can attach the slave EA to any number of charts/terminals. All slaves must use the same `SharedDataPath`. Each slave has its own `SymbolMap`, `BalanceStepAmount`, and `MaxLotSize` settings.
 
 ## Configuration
 
@@ -28,14 +28,10 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
 | CopierMode | ENUM_COPIER_MODE | COPIER_SLAVE | Run as MASTER or SLAVE |
-| CopierPort | int | 15555 | ZeroMQ TCP port |
-| HeartbeatSeconds | int | 5 | Master heartbeat interval |
-
-### Master Settings
-
-| Input | Type | Default | Description |
-|-------|------|---------|-------------|
-| PublishIntervalMs | int | 500 | Trade change scan interval (ms) |
+| SharedDataPath | string | `TradeCopier\\` | Shared folder for the snapshot file (relative to Common/Files or absolute) |
+| MasterSnapshotIntervalMs | int | 200 | Master snapshot write interval (ms) |
+| SlavePollIntervalMs | int | 257 | Slave snapshot read interval (ms), desynchronized from master |
+| HeartbeatSeconds | int | 5 | Maximum age of heartbeat before slave warns |
 
 ### Slave Settings
 

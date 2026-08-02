@@ -13,11 +13,12 @@ enum ENUM_COPIER_MODE
 
 input group "=== Copier Mode ==="
 input ENUM_COPIER_MODE CopierMode = COPIER_SLAVE; // Run as MASTER or SLAVE
-input int              CopierPort = 15555;        // ZeroMQ TCP port
-input int              HeartbeatSeconds = 5;      // Master heartbeat interval
+input int              HeartbeatSeconds = 5;      // Maximum age of heartbeat before slave warns
 
-input group "=== Master Settings ==="
-input int              PublishIntervalMs = 500;   // Trade change scan interval (ms)
+input group "=== Transport Settings ==="
+input string           SharedDataPath = "TradeCopier\\"; // Shared folder under Common/Files for snapshot file
+input int              MasterSnapshotIntervalMs = 200;     // Master snapshot write interval (ms)
+input int              SlavePollIntervalMs = 257;          // Slave snapshot read interval (ms), desynchronized from master
 
 input group "=== Slave Settings ==="
 input string           SymbolMap = "";            // Symbol mappings: US30=WS30, XAUUSD=GOLD
