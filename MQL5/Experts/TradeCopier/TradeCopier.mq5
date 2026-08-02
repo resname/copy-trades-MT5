@@ -18,24 +18,24 @@ int OnInit()
 {
    if(CopierMode == COPIER_MASTER)
    {
-      if(!g_master.Init(CopierPort, HeartbeatSeconds))
+      if(!g_master.Init(SharedDataPath, HeartbeatSeconds))
       {
          Print("TradeCopier: failed to initialize MASTER");
          return INIT_FAILED;
       }
+      EventSetMillisecondTimer(MasterSnapshotIntervalMs);
       Print("TradeCopier: running as MASTER");
    }
    else
    {
-      if(!g_slave.Init(CopierPort, SymbolMap, MaxTradeAgeMinutes, RetryCount, RetryDelayMs, HeartbeatSeconds))
+      if(!g_slave.Init(SharedDataPath, SymbolMap, MaxTradeAgeMinutes, RetryCount, RetryDelayMs, HeartbeatSeconds))
       {
          Print("TradeCopier: failed to initialize SLAVE");
          return INIT_FAILED;
       }
+      EventSetMillisecondTimer(SlavePollIntervalMs);
       Print("TradeCopier: running as SLAVE");
    }
-
-   EventSetMillisecondTimer(250);
    return(INIT_SUCCEEDED);
 }
 
@@ -60,7 +60,7 @@ void OnTick()
 void OnTimer()
 {
    if(CopierMode == COPIER_MASTER)
-      g_master.PublishChanges(PublishIntervalMs);
+      g_master.PublishChanges(MasterSnapshotIntervalMs);
    else
       g_slave.Poll();
 }
