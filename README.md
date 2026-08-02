@@ -61,18 +61,47 @@ MAGIC_BASE is fixed at `1000000`. The copied position's magic number is computed
 
 With a €5,000 balance and the values above, the slave lot size will be `floor(5000 / 100) * 0.01 = 0.5` lots.
 
-## Manual Testing Checklist (use two demo accounts)
+## Feature Test Checklist
 
-- [ ] Install the same EA on two demo charts: one `MASTER`, one `SLAVE`.
-- [ ] Open a market order on the master; verify the slave opens the corresponding position within ~1 second.
-- [ ] Modify SL/TP on the master; verify the slave position's SL/TP update.
-- [ ] Partially close the master position; verify the slave closes the same fraction.
-- [ ] Fully close the master position; verify the slave position closes.
-- [ ] Restart the slave EA with an open master position older than `MaxTradeAgeMinutes`; verify it is **not** copied.
-- [ ] Restart the slave EA with an open master position newer than `MaxTradeAgeMinutes`; verify it is copied/resynced.
-- [ ] Use a mapped symbol (e.g. `US30=WS30`) and confirm the slave uses `WS30`.
-- [ ] Use an unmapped symbol that exists on both accounts; confirm the slave uses the same name.
-- [ ] Use an unmapped symbol that does **not** exist on the slave; confirm the trade is skipped with an error log.
-- [ ] Verify lot sizing changes when the slave account balance changes.
-- [ ] Verify `MaxLotSize` cap is respected on large balances.
-- [ ] Verify SL/TP price-distance normalization works when master and slave quote different decimal precisions (e.g. master `US30` at 52444.31, slave `WS30` at 52444).
+Use two demo accounts on the same PC. Check each item once it behaves as described.
+
+### Transport & Setup
+- [ ] Compile `TradeCopier.mq5` in MetaEditor without errors.
+- [ ] Attach the EA to a master chart with `CopierMode = MASTER`.
+- [ ] Attach the EA to a slave chart with `CopierMode = SLAVE`.
+- [ ] Verify the file `TradeCopier.snapshot.json` appears in the configured `SharedDataPath` after the first master timer tick.
+- [ ] Confirm both master and slave use the exact same `SharedDataPath`.
+
+### Trade Lifecycle Mirroring
+- [ ] Open a market order on the master; the slave opens the corresponding position within ~1 second.
+- [ ] Modify SL/TP on the master; the slave position's SL/TP updates to the same raw price distance.
+- [ ] Partially close the master position; the slave closes the same fraction of its copied position.
+- [ ] Fully close the master position; the slave position closes.
+- [ ] Close the slave position manually while the master position stays open; the slave does **not** re-open it.
+
+### Symbol Translation
+- [ ] Set `SymbolMap = US30=WS30` and trade `US30` on the master; the slave opens `WS30`.
+- [ ] Trade a symbol that exists on both accounts and is **not** in `SymbolMap`; the slave uses the same symbol name.
+- [ ] Trade a symbol that does **not** exist on the slave account; the slave skips the trade and logs an error.
+
+### Lot Sizing
+- [ ] Change the slave account balance; the copied lot size changes according to `BalanceStepAmount` and `BalanceStepSize`.
+- [ ] Set the slave balance high enough to exceed `MaxLotSize`; the copied lot size is capped at `MaxLotSize`.
+- [ ] Verify lot sizes are rounded down to the slave symbol's `LotsStep`.
+
+### SL/TP Normalization
+- [ ] With `NormalizeSLTPByPriceDistance = true`, master and slave symbols with different decimal precision (e.g. master `US30` at 52444.31, slave `WS30` at 52444) still get the same raw price-distance SL/TP.
+- [ ] With `NormalizeSLTPByPriceDistance = false`, the slave copies the literal master SL/TP prices.
+
+### Restart Recovery
+- [ ] Restart the slave EA with an open master position newer than `MaxTradeAgeMinutes`; the slave resyncs the existing copied position without creating a duplicate.
+- [ ] Restart the slave EA with an open master position older than `MaxTradeAgeMinutes`; the slave ignores it and does not copy.
+
+### Multi-Slave
+- [ ] Attach a second slave EA to another chart/terminal with the same `SharedDataPath` but a different `SymbolMap`; both slaves mirror the same master trade independently.
+- [ ] Close the copied position on one slave; the other slave and the master remain unaffected.
+
+### Heartbeat & Intervals
+- [ ] Stop the master EA; after more than `HeartbeatSeconds * 2`, the slave logs a missing-heartbeat warning.
+- [ ] Restart the master EA; the slave heartbeat warning stops after the next snapshot is read.
+- [ ] Change `MasterSnapshotIntervalMs` and `SlavePollIntervalMs`; observe that the file write and read intervals follow the new values.
