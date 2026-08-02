@@ -13,7 +13,6 @@
 #include "LotSizer.mqh"
 #include "PriceNormalizer.mqh"
 #include "TradeMessage.mqh"
-#include "SnapshotFile.mqh"  // needed for the SPositionSnapshot struct used in the sync baseline
 
 struct SSlaveCopyRecord
 {

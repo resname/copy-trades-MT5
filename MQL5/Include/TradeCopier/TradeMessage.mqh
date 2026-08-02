@@ -26,6 +26,23 @@ struct STradeEvent
 };
 
 //+------------------------------------------------------------------+
+//| Position snapshot structure                                        |
+//+------------------------------------------------------------------+
+struct SPositionSnapshot
+{
+   ulong  ticket;
+   string symbol;
+   int    side;
+   double open_price;
+   double volume;
+   double sl;
+   double tp;
+   long   open_time;
+   double point;
+   string comment;
+};
+
+//+------------------------------------------------------------------+
 //| Minimal JSON helpers (no external dependency)                      |
 //+------------------------------------------------------------------+
 bool GetJsonString(const string json, const string key, string &out);

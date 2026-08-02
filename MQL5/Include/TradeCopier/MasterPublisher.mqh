@@ -8,7 +8,6 @@
 #include <Trade\PositionInfo.mqh>
 #include "CopierConfig.mqh"
 #include "TradeMessage.mqh"
-#include "SnapshotFile.mqh"
 
 class CMasterPublisher
 {
