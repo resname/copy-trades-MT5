@@ -44,7 +44,7 @@ public:
    static string EventToJson(const STradeEvent &e);
    static bool   JsonToEvent(const string json, STradeEvent &e);
 
-private:
+public:
    static string JsonString(const string value);
 };
 
