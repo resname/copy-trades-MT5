@@ -3,12 +3,16 @@
 // MT5 networking uses OVERLAPPED WSASend/WSARecv (IOCP-style), not send/recv:
 //   - WSASend: the buffer is filled BEFORE the call, so we read + log on onEnter.
 //   - WSARecv: the call returns immediately (pending, retval=0) and the buffer is
-//     filled later by the I/O completion. Reading in onLeave gives len=0, so we
-//     schedule a delayed read (setTimeout 60ms) and re-read the WSABUF.len field
-//     that the system updates on completion. This is best-effort for the low-rate
-//     handshake: if completion takes longer than 60ms the read may still see len=0
-//     (silently skipped), and if the WSABUF is freed before the timer fires the
-//     read is wrapped in try/catch and skipped. Good enough for a login spike.
+//     filled later by the I/O completion. Reading in onLeave sees the buffer still
+//     empty, so we schedule a delayed read (setTimeout 60ms) and re-read the
+//     WSABUF.len field. Caveat: WSABUF.len is the buffer CAPACITY on input and is
+//     overwritten with bytes-received only on completion. If the timer fires before
+//     completion it reads the original capacity (e.g. 4096) and logs stale buffer
+//     contents as if they were real IN traffic — such segments are indistinguishable
+//     from real ones in the log. If the WSABUF is freed/recycled by the IOCP pool
+//     before the timer fires, the read is wrapped in try/catch and skipped (or yields
+//     garbage len, which readByteArray safely refuses). Best-effort for the low-rate
+//     handshake; spike/NOTES.md redirects to Wireshark for bulk server->client data.
 //
 // WSABUF layout: { ULONG len; CHAR *buf }. On x64 the struct is 16 bytes due to
 // alignment (len at +0, padding, buf at +8); on x32 it is 8 bytes (len at +0,
@@ -79,7 +83,12 @@ function installHooks() {
           this.buf = args[1];
           this.len = args[2].toInt32();
         } else if (fn === "WSASend") {
-          // OUT: buffer is ready before the call. Read + log now.
+          // OUT: buffer is ready before the call. Read + log now. NOTE: we log on
+          // onEnter regardless of the eventual retval, so a WSASend that returns
+          // SOCKET_ERROR (real failure, not WSA_IO_PENDING) would still emit an OUT
+          // entry for bytes that were never sent. Acceptable over-reporting for a
+          // spike; a correlator that treats every OUT line as actually-sent should
+          // be aware of this.
           this.dir = "OUT";
           var wsaBuf = args[1];
           var count = args[2].toInt32();
