@@ -25,7 +25,6 @@ private:
    static string TempPath(const string basePath);
    static string SnapshotToJson(const STradeSnapshot &snapshot);
    static bool   JsonToSnapshot(const string json, STradeSnapshot &snapshot);
-   static bool   JsonToPositionSnapshot(const string json, SPositionSnapshot &out, int &endPos);
 
 public:
    static bool Write(const string basePath, const STradeSnapshot &snapshot);
@@ -96,28 +95,30 @@ bool CSnapshotFile::JsonToSnapshot(const string json, STradeSnapshot &snapshot)
          ArrayResize(snapshot.positions, count + 1);
       SPositionSnapshot &p = snapshot.positions[count];
 
+      string positionJson = StringSubstr(arrayBody, pos);
+
       string raw;
-      if(GetJsonRawValue(arrayBody, "ticket", raw))
+      if(GetJsonRawValue(positionJson, "ticket", raw))
          p.ticket = (ulong)StringToInteger(raw);
       else
          p.ticket = 0;
 
-      if(GetJsonRawValue(arrayBody, "volume", raw))
+      if(GetJsonRawValue(positionJson, "volume", raw))
          p.volume = StringToDouble(raw);
       else
          p.volume = 0.0;
 
-      if(GetJsonRawValue(arrayBody, "sl", raw))
+      if(GetJsonRawValue(positionJson, "sl", raw))
          p.sl = StringToDouble(raw);
       else
          p.sl = 0.0;
 
-      if(GetJsonRawValue(arrayBody, "tp", raw))
+      if(GetJsonRawValue(positionJson, "tp", raw))
          p.tp = StringToDouble(raw);
       else
          p.tp = 0.0;
 
-      // Advance search to avoid re-parsing the same ticket.
+      // Advance search to the next position object.
       pos += StringLen("\"ticket\":");
       pos = StringFind(arrayBody, "\"ticket\":", pos);
       count++;
