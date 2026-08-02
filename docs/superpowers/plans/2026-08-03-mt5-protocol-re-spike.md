@@ -16,6 +16,8 @@
 - `NOTES.md` is the single source of truth for observed protocol values; later tasks read field offsets/crypto details from it by section name.
 - Stop conditions from the spec are checked explicitly at the end of Task 4 and Task 6; on a stop, write `verdict.md` (Task 7) and do not continue.
 - All work lives under `spike/` in the repo.
+- No `TODO`, `NotImplementedError`, or `FILL_*` placeholder tokens may remain in committed code. Each must be replaced with real values transcribed from `NOTES.md` before the task is complete.
+- Viability must be backed by an assertion-based test, not a manual print run (see Task 6).
 
 ---
 
@@ -33,7 +35,9 @@ spike/
     capture_login.py        # orchestrates: start dumpcap, launch terminal via Frida, stop capture
     parse_server.py         # parse a pcap, print server host/port + TLS-vs-custom verdict
     correlate.py            # merge Wireshark export + Frida logs into one timeline file
-  mt5_proto_spike.py        # standalone cold-login reimplementation
+  proto.py                  # crypto + packet helpers built from NOTES.md
+  mt5_proto_spike.py        # standalone cold-login entrypoint
+  test_spike_login.py       # assertion-based integration test for the cold login (env-gated)
   verdict.md                # pass/fail + evidence + chosen next architecture
   capture/                  # gitignored: *.pcap, *.pcapng, frida_*.log, timeline.tsv
 ```
@@ -626,10 +630,12 @@ git commit -m "feat(spike): proto helpers from observed protocol notes"
 
 **Files:**
 - Create: `spike/mt5_proto_spike.py`
+- Create: `spike/test_spike_login.py`
+- Test: `spike/test_spike_login.py`
 
 **Interfaces:**
-- Consumes: `spike/proto.py` (`build_login_packet`, `decrypt_response`, `parse_account_info`) and `NOTES.md §Server`.
-- Produces: `mt5_proto_spike.py` that logs in cold and prints account info; the pass/fail evidence for `verdict.md`.
+- Consumes: `spike/proto.py` (`derive_key`, `encrypt`, `decrypt`, `build_login_packet`, `parse_account_info`) and `NOTES.md §Server`.
+- Produces: `mt5_proto_spike.py` (`login_once(login, password, server) -> dict`) and `test_spike_login.py` asserting the cold login returns correct account info twice with no terminal running.
 
 - [ ] **Step 1: Write `spike/mt5_proto_spike.py`**
 
@@ -644,8 +650,10 @@ sys.path.insert(0, ".")
 from proto import (derive_key, encrypt, decrypt, build_login_packet, parse_account_info)
 
 # From NOTES.md §Server
-HOST = "FILL_HOST"
-PORT = 0  # FILL_PORT
+HOST = ""   # transcribe from NOTES.md §Server
+PORT = 0    # transcribe from NOTES.md §Server
+HANDSHAKE_INIT = b""        # transcribe from NOTES.md §Handshake
+EXPECTED_RESP_LEN = 0       # transcribe from NOTES.md §Account-info response
 
 def no_terminal_running():
     r = subprocess.run(["tasklist"], capture_output=True, text=True)
@@ -653,11 +661,9 @@ def no_terminal_running():
 
 def login_once(login, password, server):
     with socket.create_connection((HOST, PORT), timeout=10) as s:
-        # 1. TCP + protocol handshake (bytes from NOTES.md §Handshake)
-        s.sendall(b"FILL_HANDSHAKE_INIT")
+        s.sendall(HANDSHAKE_INIT)
         hs = s.recv(4096)
         key = derive_key(hs)
-        # 2. Login
         pkt = encrypt(build_login_packet(login, password, server), key)
         s.sendall(pkt)
         resp = b""
@@ -665,7 +671,7 @@ def login_once(login, password, server):
             chunk = s.recv(4096)
             if not chunk: break
             resp += chunk
-            if len(resp) >= FILL_EXPECTED_RESP_LEN:  # from NOTES.md §Account-info response
+            if len(resp) >= EXPECTED_RESP_LEN:
                 break
         plain = decrypt(resp, key)
         return parse_account_info(plain)
@@ -686,27 +692,69 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Fill the `FILL_*` constants** from `NOTES.md` — `HOST`, `PORT` from §Server; `FILL_HANDSHAKE_INIT` and `FILL_EXPECTED_RESP_LEN` from §Handshake / §Account-info response. Remove the placeholder tokens.
+- [ ] **Step 2: Transcribe all constants from `NOTES.md`** — `HOST`, `PORT` from §Server; `HANDSHAKE_INIT` and `EXPECTED_RESP_LEN` from §Handshake / §Account-info response. No placeholder/empty values may remain in the committed file.
 
-- [ ] **Step 3: Close the terminal and run the cold test**
+- [ ] **Step 3: Write `spike/test_spike_login.py`**
+
+```python
+"""Assertion-based integration test for the cold MT5 login. Env-gated."""
+import os
+import time
+import subprocess
+import pytest
+
+sys_path = ["."]
+import sys; sys.path.insert(0, "spike")
+import mt5_proto_spike as spike
+
+LOGIN = os.environ.get("AVA_LOGIN")
+PASSWORD = os.environ.get("AVA_PASSWORD")
+SERVER = os.environ.get("AVA_SERVER")
+CREDS = LOGIN and PASSWORD and SERVER
+
+@pytest.fixture(autouse=True)
+def require_creds():
+    if not CREDS:
+        pytest.skip("set AVA_LOGIN/AVA_PASSWORD/AVA_SERVER to run the cold-login test")
+
+def test_no_terminal_running():
+    assert spike.no_terminal_running(), "terminal64.exe is running; close it before the cold test"
+
+def test_cold_login_returns_correct_account_twice():
+    login = int(LOGIN)
+    results = []
+    for _ in range(2):
+        results.append(spike.login_once(login, PASSWORD, SERVER))
+        time.sleep(1)
+    for info in results:
+        assert isinstance(info, dict)
+        assert info.get("login") == login
+        assert isinstance(info.get("balance"), (int, float))
+    assert results[0]["login"] == results[1]["login"]
+```
+
+- [ ] **Step 4: Close the terminal and run the test**
 
 Run:
 ```bash
 tasklist | findstr terminal64.exe   # must be empty
-python spike/mt5_proto_spike.py <ava_demo_login> <ava_demo_password> "<ava_demo_server>"
+set AVA_LOGIN=<ava_demo_login>
+set AVA_PASSWORD=<ava_demo_password>
+set AVA_SERVER=<ava_demo_server>
+python -m pytest spike/test_spike_login.py -v
 ```
-Expected (pass): two lines like `attempt 1: {'login': <login>, 'balance': <balance>}` with the real demo balance; exit code 0.
-Expected (fail): exception, no response, decrypt garbage, or wrong balance — record the actual output for `verdict.md`.
+Expected (pass): `test_cold_login_returns_correct_account_twice` passes — both attempts return the real demo login and a numeric balance.
+Expected (fail): assertion error, exception, or decrypt garbage — capture the pytest output for `verdict.md`.
 
-- [ ] **Step 4: Stop-condition check**
+- [ ] **Step 5: Stop-condition check**
 
-If the run only succeeds by reusing key material captured live from a terminal in the same session (i.e. it does not work cold after a full restart), that is a **partial fail** per the spec — record it honestly and go to Task 7 with a fail verdict.
+If the test only passes by reusing key material captured live from a terminal in the same session (i.e. it does not pass cold after a full restart), that is a **partial fail** per the spec — record it honestly and go to Task 7 with a fail verdict.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add spike/mt5_proto_spike.py
-git commit -m "feat(spike): standalone cold-login viability test"
+git add spike/mt5_proto_spike.py spike/test_spike_login.py
+git commit -m "test(spike): assertion-based cold-login viability test"
 ```
 
 ---
