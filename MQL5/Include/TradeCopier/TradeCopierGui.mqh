@@ -9,16 +9,13 @@ const int    ROW_HEIGHT = 22;
 class CTradeCopierGui
 {
 private:
-   int     m_chartId;
+   long    m_chartId;
    string  m_symbolMap;
    int     m_rowCount;
 
    string  MakeName(const string suffix);
-   void    CreatePanel();
-   void    CreateTabs();
    void    CreateGeneralTab();
    void    CreateSymbolsTab();
-   void    CreateTradesTab();
    void    RefreshSymbolRows();
    void    AddSymbolRow(int index, const string master, const string slave);
    void    DestroyAllObjects();
@@ -26,7 +23,7 @@ private:
 public:
    CTradeCopierGui() : m_chartId(0), m_rowCount(0) {}
 
-   void Create(int chartId);
+   void Create(long chartId);
    void Destroy();
    void SetMode(const string mode);
    void SetStatus(const string status);
@@ -42,7 +39,7 @@ string CTradeCopierGui::MakeName(const string suffix)
    return GUI_PREFIX + suffix;
 }
 
-void CTradeCopierGui::Create(int chartId)
+void CTradeCopierGui::Create(long chartId)
 {
    m_chartId = chartId;
    DestroyAllObjects();
@@ -269,14 +266,21 @@ void CTradeCopierGui::OnChartEvent(const int id, const long &lparam, const doubl
             StringReplace(slave, " ", "");
             if(master != "" && slave != "")
             {
-               string entry = master + "=" + slave;
-               int pos = StringFind(m_symbolMap, entry);
-               if(pos >= 0)
+               const string entry = master + "=" + slave;
+               string parts[];
+               const int n = StringSplit(m_symbolMap, ',', parts);
+               string rebuilt = "";
+               for(int k = 0; k < n; k++)
                {
-                  string before = (pos == 0) ? "" : StringSubstr(m_symbolMap, 0, pos - 1);
-                  string after  = StringSubstr(m_symbolMap, pos + StringLen(entry));
-                  if(after != "" && before != "") before += ",";
-                  m_symbolMap = before + after;
+                  string trimmed = parts[k];
+                  StringReplace(trimmed, " ", "");
+                  if(trimmed == entry) continue;
+                  if(rebuilt != "") rebuilt += ",";
+                  rebuilt += trimmed;
+               }
+               if(rebuilt != m_symbolMap)
+               {
+                  m_symbolMap = rebuilt;
                   RefreshSymbolRows();
                }
             }

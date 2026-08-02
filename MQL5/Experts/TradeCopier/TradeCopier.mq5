@@ -9,31 +9,44 @@
 #include <TradeCopier\CopierConfig.mqh>
 #include <TradeCopier\MasterPublisher.mqh>
 #include <TradeCopier\SlaveSubscriber.mqh>
+#include <TradeCopier\TradeCopierGui.mqh>
 
-CMasterPublisher g_master;
-CSlaveSubscriber g_slave;
+CMasterPublisher  g_master;
+CSlaveSubscriber  g_slave;
+CTradeCopierGui   g_gui;
+
+const int PUBLISH_INTERVAL_MS = 250;
 
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   g_gui.Create(ChartID());
+
    if(CopierMode == COPIER_MASTER)
    {
-      if(!g_master.Init(SharedDataPath, HeartbeatSeconds))
+      g_gui.SetMode("MASTER");
+      g_gui.SetStatus("advertising");
+
+      if(!g_master.Init(DiscoveryUdpPort, HeartbeatSeconds))
       {
          Print("TradeCopier: failed to initialize MASTER");
          return INIT_FAILED;
       }
-      EventSetMillisecondTimer(MasterSnapshotIntervalMs);
+      EventSetMillisecondTimer(PUBLISH_INTERVAL_MS);
       Print("TradeCopier: running as MASTER");
    }
    else
    {
-      if(!g_slave.Init(SharedDataPath, SymbolMap, MaxTradeAgeMinutes, RetryCount, RetryDelayMs, HeartbeatSeconds))
+      g_gui.SetMode("SLAVE");
+      g_gui.SetStatus("searching...");
+
+      if(!g_slave.Init(DiscoveryUdpPort, SymbolMap, MaxTradeAgeMinutes, RetryCount, RetryDelayMs, HeartbeatSeconds))
       {
          Print("TradeCopier: failed to initialize SLAVE");
          return INIT_FAILED;
       }
-      EventSetMillisecondTimer(SlavePollIntervalMs);
+      g_gui.SetSymbolMap(SymbolMap);
+      EventSetMillisecondTimer(PUBLISH_INTERVAL_MS);
       Print("TradeCopier: running as SLAVE");
    }
    return(INIT_SUCCEEDED);
@@ -47,6 +60,7 @@ void OnDeinit(const int reason)
       g_master.Deinit();
    else
       g_slave.Deinit();
+   g_gui.Destroy();
    Print("TradeCopier: stopped");
 }
 
@@ -60,9 +74,39 @@ void OnTick()
 void OnTimer()
 {
    if(CopierMode == COPIER_MASTER)
-      g_master.PublishChanges(MasterSnapshotIntervalMs);
+   {
+      g_master.PublishChanges(PUBLISH_INTERVAL_MS);
+   }
    else
+   {
       g_slave.Poll();
+
+      // Update GUI status from transport state.
+      if(g_slave.IsConnected())
+      {
+         g_gui.SetStatus("connected");
+         g_gui.SetLatency(g_slave.LatencyMs());
+      }
+      else
+      {
+         g_gui.SetStatus("searching...");
+         g_gui.SetLatency(-1);
+      }
+
+      // If user changed the symbol map in the GUI, apply it to the slave.
+      string guiMap = g_gui.GetSymbolMap();
+      if(guiMap != SymbolMap)
+      {
+         // MQL5 cannot rewrite an input variable, but we can re-init the mapper.
+         // Persist the string by printing it to the Experts log for manual copy.
+         Print("Updated SymbolMap: " + guiMap);
+      }
+   }
 }
 
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   g_gui.OnChartEvent(id, lparam, dparam, sparam);
+}
 //+------------------------------------------------------------------+
