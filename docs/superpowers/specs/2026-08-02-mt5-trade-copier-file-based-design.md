@@ -34,8 +34,9 @@ The existing MT5 Trade Copier uses ZeroMQ (`<Zmq\Zmq.mqh>`) for local master-to-
                  +-------+   +-------+     +-------+
 ```
 
-- The **master** scans open positions and writes a JSON snapshot file on every timer tick (default 250 ms).
-- The **slave(s)** read the same snapshot file on every timer tick (default 250 ms), compare it with the previous known state, and derive lifecycle events from the diff.
+- The **master** scans open positions and writes a JSON snapshot file on every master timer tick (configurable, default 250 ms).
+- The **slave(s)** read the same snapshot file on every slave timer tick (configurable, default 250 ms), compare it with the previous known state, and derive lifecycle events from the diff.
+- Master and slave intervals are independent: the master can write more or less frequently than the slaves read.
 - Reading and writing happen in a configurable shared directory, e.g. `C:\TradeCopier\Shared\`.
 
 ## File Format
@@ -104,7 +105,7 @@ When a slave starts:
 3. Positions older than `MaxTradeAgeMinutes` are excluded from the baseline.
 4. The slave scans its own open positions for any with a `CPY#<ticket>` comment and rebuilds `m_records` so restarts do not create duplicates.
 
-Because the snapshot is refreshed every 250 ms, no explicit sync request is required.
+Because the snapshot is refreshed at least every `MasterSnapshotIntervalMs`, no explicit sync request is required.
 
 ## Multi-Slave Behavior
 
@@ -122,7 +123,8 @@ Multiple slaves can read the same snapshot file concurrently. The master only wr
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
 | `SharedDataPath` | string | `MQL5/Files/TradeCopier/` | Directory where the snapshot file is written/read. |
-| `SnapshotIntervalMs` | int | 250 | Timer interval for master writes and slave reads. |
+| `MasterSnapshotIntervalMs` | int | 250 | Interval at which the master writes the snapshot file. |
+| `SlavePollIntervalMs` | int | 250 | Interval at which each slave reads the snapshot file. |
 | `HeartbeatSeconds` | int | 5 | Maximum expected age of `heartbeat` before the slave warns. |
 
 Removed inputs:
@@ -149,7 +151,7 @@ Removed inputs:
 | Aspect | ZeroMQ (old) | File-based (new) |
 |--------|--------------|--------------------|
 | External dependency | `Zmq.mqh` required | None |
-| Latency | ~millisecond push | ~250 ms poll |
+| Latency | ~millisecond push | ~`SlavePollIntervalMs` poll |
 | Multi-slave | Native PUB/SUB | Native shared file |
 | Cross-device | Possible with TCP | Not supported |
 | Debuggability | Binary wire protocol | Human-readable JSON file |
