@@ -1,10 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                       SlaveSubscriber.mqh        |
+//|                  MT5 Local Trade Copier Slave (LAN TCP event stream)|
 //+------------------------------------------------------------------+
 #ifndef SLAVE_SUBSCRIBER_MQH
 #define SLAVE_SUBSCRIBER_MQH
 
-#include "SnapshotFile.mqh"
+#include "LanTransport.mqh"
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
 #include "CopierConfig.mqh"
@@ -12,6 +13,7 @@
 #include "LotSizer.mqh"
 #include "PriceNormalizer.mqh"
 #include "TradeMessage.mqh"
+#include "SnapshotFile.mqh"  // needed for the SPositionSnapshot struct used in the sync baseline
 
 struct SSlaveCopyRecord
 {
@@ -24,26 +26,23 @@ struct SSlaveCopyRecord
 class CSlaveSubscriber
 {
 private:
-   string            m_sharedPath;
+   CLanTransport      m_transport;
    CTrade             m_trade;
    CSymbolMapper      m_mapper;
    CLotSizer          m_lotSizer;
    CSymbolInfo        m_symbolInfo;
+   int                m_discoveryUdpPort;
    int                m_maxAgeMinutes;
    int                m_retryCount;
    int                m_retryDelayMs;
    int                m_heartbeatSeconds;
    datetime           m_lastHeartbeat;
-   long               m_lastHeartbeatValue;
    bool               m_heartbeatWarned;
    bool               m_baselineSet;
-   STradeSnapshot     m_prevSnapshot;
+   SPositionSnapshot  m_prevSnapshots[];
    SSlaveCopyRecord   m_records[];
 
-   void   EstablishBaseline(const STradeSnapshot &snapshot);
-   void   DiffAndProcess(const STradeSnapshot &snapshot);
-   STradeEvent BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos);
-   void   CheckHeartbeat(long snapshotHeartbeat);
+   void   CheckHeartbeat();
    int    FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const;
    int    FindSnapshotIndex(ulong ticket) const;
    void   OpenTrade(const STradeEvent &e);
@@ -56,57 +55,106 @@ private:
                          double sl, double tp, long magic, string comment,
                          ulong &outTicket);
    bool   RoundToTickSize(const string symbol, double &price);
+   bool   TryConnect();
+   void   RebuildRecordsFromOpenPositions();
+   void   CommitBaseline();
+   void   ProcessSingleEvent(const STradeEvent &e);
 
 public:
-   CSlaveSubscriber() : m_maxAgeMinutes(0), m_retryCount(0), m_retryDelayMs(0),
-                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_lastHeartbeatValue(0),
+   CSlaveSubscriber() : m_discoveryUdpPort(0), m_maxAgeMinutes(0), m_retryCount(0),
+                        m_retryDelayMs(0), m_heartbeatSeconds(0), m_lastHeartbeat(0),
                         m_heartbeatWarned(false), m_baselineSet(false)
    {
-      m_sharedPath = "";
+      ArrayResize(m_prevSnapshots, 0);
+      ArrayResize(m_records, 0);
    }
-   bool Init(const string sharedPath, const string symbolMap,
+   bool Init(int discoveryUdpPort, const string symbolMap,
              int maxAgeMinutes, int retryCount, int retryDelayMs,
              int heartbeatSeconds);
    void Deinit();
    void Poll();
+   bool IsConnected() const { return m_transport.IsConnected(); }
+   int  LatencyMs() const { return m_transport.LatencyMs(); }
 };
 
-bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
+bool CSlaveSubscriber::Init(int discoveryUdpPort, const string symbolMap,
                             int maxAgeMinutes, int retryCount, int retryDelayMs,
                             int heartbeatSeconds)
 {
-   m_sharedPath = sharedPath;
+   m_discoveryUdpPort = discoveryUdpPort;
    m_maxAgeMinutes = maxAgeMinutes;
    m_retryCount = retryCount;
    m_retryDelayMs = retryDelayMs;
    m_heartbeatSeconds = heartbeatSeconds;
    m_lastHeartbeat = 0;
-   m_lastHeartbeatValue = 0;
    m_heartbeatWarned = false;
    m_baselineSet = false;
    ArrayResize(m_records, 0);
-   ArrayResize(m_prevSnapshot.positions, 0);
+   ArrayResize(m_prevSnapshots, 0);
 
    m_mapper.Init(symbolMap);
 
-   // Ensure shared directory exists.
-   if(!FolderCreate(m_sharedPath, FILE_COMMON))
+   if(!m_transport.StartSlaveListener(m_discoveryUdpPort))
    {
-      int err = GetLastError();
-      if(err != 5052) // ERR_FILE_ALREADY_EXIST
+      Print("SlaveSubscriber: failed to start UDP listener");
+      return false;
+   }
+
+   // Try to find and connect to a master immediately.
+   if(!TryConnect())
+      Print("SlaveSubscriber: no master found yet, will retry on timer");
+
+   // Rebuild records for any copied positions already open on the slave account.
+   RebuildRecordsFromOpenPositions();
+
+   return true;
+}
+
+void CSlaveSubscriber::Deinit()
+{
+   m_transport.StopSlaveListener();
+   ArrayResize(m_records, 0);
+   ArrayResize(m_prevSnapshots, 0);
+}
+
+bool CSlaveSubscriber::TryConnect()
+{
+   string host;
+   ushort port = 0;
+
+   // Prefer UDP broadcast discovery.
+   if(m_transport.DiscoverMaster(host, port, 500))
+   {
+      if(m_transport.ConnectToMaster(host, port))
       {
-         PrintFormat("SlaveSubscriber: failed to create shared path %s (error %d)", m_sharedPath, err);
-         return false;
+         PrintFormat("SlaveSubscriber: connected to master %s:%d", host, port);
+         // Request a full sync.
+         STradeEvent req;
+         ZeroMemory(req);
+         req.event = "SYNC_REQUEST";
+         req.timestamp = (long)TimeLocal();
+         m_transport.SendFrame(CTradeMessage::EventToJson(req));
+         return true;
       }
    }
 
-   PrintFormat("SlaveSubscriber: using shared path %s", m_sharedPath);
+   // Fallback to localhost in case broadcast is blocked.
+   if(m_transport.ConnectToMaster("127.0.0.1", port))
+   {
+      Print("SlaveSubscriber: connected to localhost master");
+      STradeEvent req;
+      ZeroMemory(req);
+      req.event = "SYNC_REQUEST";
+      req.timestamp = (long)TimeLocal();
+      m_transport.SendFrame(CTradeMessage::EventToJson(req));
+      return true;
+   }
 
-   // Start heartbeat timer now.
-   m_lastHeartbeat = TimeCurrent();
+   return false;
+}
 
-   // Rebuild records for any copied positions already open on the slave account
-   // so a restart does not create duplicate trades.
+void CSlaveSubscriber::RebuildRecordsFromOpenPositions()
+{
    int total = PositionsTotal();
    int rebuilt = 0;
    for(int i = 0; i < total; i++)
@@ -131,7 +179,6 @@ bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
       double slaveVolume  = 0.0;
       bool parsedVolumes = false;
 
-      // New format: CPY#<ticket>|MV<master_volume>|SV<slave_volume>
       int pipePos = StringFind(comment, "|", numPos);
       if(pipePos != -1)
       {
@@ -154,7 +201,6 @@ bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
 
       if(!parsedVolumes)
       {
-         // Legacy plain-ticket format: fall back to the current position volume.
          string ticketStr = StringSubstr(comment, numPos);
          if(StringToInteger(ticketStr) <= 0)
             continue;
@@ -173,143 +219,108 @@ bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
    }
 
    if(rebuilt > 0)
-      PrintFormat("SlaveSubscriber: rebuilt %d copied position record(s) from open positions", rebuilt);
-   return true;
-}
-
-void CSlaveSubscriber::Deinit()
-{
-   ArrayResize(m_records, 0);
-   ArrayResize(m_prevSnapshot.positions, 0);
+      PrintFormat("SlaveSubscriber: rebuilt %d copied position record(s)", rebuilt);
 }
 
 void CSlaveSubscriber::Poll()
 {
-   STradeSnapshot snapshot;
-   if(!CSnapshotFile::Read(m_sharedPath, snapshot))
+   if(!m_transport.IsConnected())
    {
-      CheckHeartbeat(0);
-      return;
+      if(TryConnect())
+         m_lastHeartbeat = TimeCurrent();
+      else
+      {
+         CheckHeartbeat();
+         return;
+      }
    }
 
-   CheckHeartbeat(snapshot.heartbeat);
-
-   if(!m_baselineSet)
+   string json;
+   while(m_transport.ReceiveFrame(json, 0))
    {
-      // First read: establish baseline without generating NEW_TRADE events.
-      EstablishBaseline(snapshot);
-      return;
+      m_lastHeartbeat = TimeCurrent();
+      m_heartbeatWarned = false;
+
+      STradeEvent e;
+      if(!CTradeMessage::JsonToEvent(json, e))
+      {
+         PrintFormat("SlaveSubscriber: malformed JSON: %s", json);
+         continue;
+      }
+
+      ProcessSingleEvent(e);
    }
 
-   DiffAndProcess(snapshot);
-   m_prevSnapshot = snapshot;
+   CheckHeartbeat();
 }
 
-void CSlaveSubscriber::EstablishBaseline(const STradeSnapshot &snapshot)
+void CSlaveSubscriber::ProcessSingleEvent(const STradeEvent &e)
 {
-   ArrayResize(m_prevSnapshot.positions, 0);
-   int n = ArraySize(snapshot.positions);
-   int count = 0;
-   for(int i = 0; i < n; i++)
-   {
-      if(IsTooOld((datetime)snapshot.positions[i].open_time))
-         continue;
+   if(e.event == "HEARTBEAT")
+      return;
 
-      if(count >= ArraySize(m_prevSnapshot.positions))
-         ArrayResize(m_prevSnapshot.positions, count + 1);
-      m_prevSnapshot.positions[count] = snapshot.positions[i];
-      count++;
+   if(e.event == "SYNC_RESPONSE")
+   {
+      if(!m_baselineSet)
+      {
+         // Build a temporary snapshot array for baseline only.
+         SPositionSnapshot snap;
+         snap.ticket     = e.master_ticket;
+         snap.symbol     = e.symbol;
+         snap.side       = e.side;
+         snap.open_price = e.open_price;
+         snap.volume     = e.volume;
+         snap.sl         = e.sl;
+         snap.tp         = e.tp;
+         snap.open_time  = (long)e.open_time;
+         snap.point      = e.point;
+         snap.comment    = e.comment;
+
+         if(!IsTooOld(e.open_time))
+         {
+            int n = ArraySize(m_prevSnapshots);
+            ArrayResize(m_prevSnapshots, n + 1);
+            m_prevSnapshots[n] = snap;
+         }
+      }
+      return;
    }
-   ArrayResize(m_prevSnapshot.positions, count);
+
+   if(e.event == "NEW_TRADE")
+   {
+      CommitBaseline();
+      OpenTrade(e);
+   }
+   else if(e.event == "MODIFY_TRADE")
+   {
+      CommitBaseline();
+      ModifyTrade(e);
+   }
+   else if(e.event == "PARTIAL_CLOSE")
+   {
+      CommitBaseline();
+      PartialClose(e);
+   }
+   else if(e.event == "CLOSE_TRADE")
+   {
+      CommitBaseline();
+      CloseTrade(e);
+   }
+}
+
+void CSlaveSubscriber::CommitBaseline()
+{
+   if(m_baselineSet) return;
    m_baselineSet = true;
    Print("SlaveSubscriber: baseline established");
 }
 
-void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
+void CSlaveSubscriber::CheckHeartbeat()
 {
-   int n = ArraySize(snapshot.positions);
-
-   // NEW / MODIFIED / PARTIAL_CLOSE
-   for(int i = 0; i < n; i++)
-   {
-      SPositionSnapshot curr = snapshot.positions[i];
-      int idx = FindSnapshotIndex(m_prevSnapshot.positions, curr.ticket);
-
-      if(idx < 0)
-      {
-         STradeEvent e = BuildEventFromSnapshot("NEW_TRADE", curr);
-         OpenTrade(e);
-      }
-      else
-      {
-         SPositionSnapshot prev = m_prevSnapshot.positions[idx];
-         if(NormalizeDouble(prev.volume - curr.volume, 8) > 0.0)
-         {
-            STradeEvent e = BuildEventFromSnapshot("PARTIAL_CLOSE", curr);
-            PartialClose(e);
-         }
-
-         if(NormalizeDouble(prev.sl - curr.sl, 8) != 0.0 ||
-            NormalizeDouble(prev.tp - curr.tp, 8) != 0.0)
-         {
-            STradeEvent e = BuildEventFromSnapshot("MODIFY_TRADE", curr);
-            ModifyTrade(e);
-         }
-      }
-   }
-
-   // CLOSE_TRADE
-   for(int i = ArraySize(m_prevSnapshot.positions) - 1; i >= 0; i--)
-   {
-      ulong oldTicket = m_prevSnapshot.positions[i].ticket;
-      if(FindSnapshotIndex(snapshot.positions, oldTicket) < 0)
-      {
-         STradeEvent e;
-         ZeroMemory(e);
-         e.event = "CLOSE_TRADE";
-         e.timestamp = (long)TimeLocal();
-         e.magic = MAGIC_BASE + (int)(oldTicket % 900000);
-         e.master_ticket = oldTicket;
-         CloseTrade(e);
-      }
-   }
-}
-
-STradeEvent CSlaveSubscriber::BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos)
-{
-   STradeEvent e;
-   ZeroMemory(e);
-   e.event = eventName;
-   e.timestamp = (long)TimeLocal();
-   e.master_ticket = pos.ticket;
-   e.magic = MAGIC_BASE + (int)(pos.ticket % 900000);
-   e.symbol = pos.symbol;
-   e.side = pos.side;
-   e.open_price = pos.open_price;
-   e.volume = pos.volume;
-   e.sl = pos.sl;
-   e.tp = pos.tp;
-   e.open_time = (datetime)pos.open_time;
-   e.point = pos.point;
-   e.comment = pos.comment;
-   return e;
-}
-
-void CSlaveSubscriber::CheckHeartbeat(long snapshotHeartbeat)
-{
-   datetime now = TimeCurrent();
-   if(snapshotHeartbeat > 0 && snapshotHeartbeat != m_lastHeartbeatValue)
-   {
-      m_lastHeartbeatValue = snapshotHeartbeat;
-      m_lastHeartbeat = now;
-      m_heartbeatWarned = false;
-      return;
-   }
-
    if(m_heartbeatSeconds <= 0 || m_lastHeartbeat == 0)
       return;
 
-   if(now - m_lastHeartbeat > m_heartbeatSeconds * 2)
+   if(TimeCurrent() - m_lastHeartbeat > m_heartbeatSeconds * 2)
    {
       if(!m_heartbeatWarned)
       {
@@ -330,7 +341,7 @@ int CSlaveSubscriber::FindSnapshotIndex(const SPositionSnapshot &snapshots[], ul
 
 int CSlaveSubscriber::FindSnapshotIndex(ulong ticket) const
 {
-   return FindSnapshotIndex(m_prevSnapshot.positions, ticket);
+   return FindSnapshotIndex(m_prevSnapshots, ticket);
 }
 
 void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
