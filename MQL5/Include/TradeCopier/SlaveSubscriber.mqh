@@ -6,7 +6,6 @@
 
 #include "SnapshotFile.mqh"
 #include <Trade\Trade.mqh>
-#include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
 #include "CopierConfig.mqh"
 #include "SymbolMapper.mqh"
@@ -42,7 +41,8 @@ private:
 
    void   EstablishBaseline(const STradeSnapshot &snapshot);
    void   DiffAndProcess(const STradeSnapshot &snapshot);
-   STradeEvent BuildEventFromPosition(const string eventName, const PositionInfo &pos);
+   STradeEvent BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos);
+   void   CheckHeartbeat(long snapshotHeartbeat);
    int    FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const;
    int    FindSnapshotIndex(ulong ticket) const;
    void   OpenTrade(const STradeEvent &e);
@@ -186,22 +186,11 @@ void CSlaveSubscriber::Poll()
    STradeSnapshot snapshot;
    if(!CSnapshotFile::Read(m_sharedPath, snapshot))
    {
-      if(m_heartbeatSeconds > 0 &&
-         m_lastHeartbeat > 0 &&
-         TimeCurrent() - m_lastHeartbeat > m_heartbeatSeconds * 2)
-      {
-         if(!m_heartbeatWarned)
-         {
-            Print("SlaveSubscriber: no heartbeat from master");
-            m_heartbeatWarned = true;
-         }
-      }
+      CheckHeartbeat(0);
       return;
    }
 
-   // Any successful read counts as a heartbeat event.
-   m_lastHeartbeat = TimeCurrent();
-   m_heartbeatWarned = false;
+   CheckHeartbeat(snapshot.heartbeat);
 
    if(!m_baselineSet)
    {
@@ -221,13 +210,7 @@ void CSlaveSubscriber::EstablishBaseline(const STradeSnapshot &snapshot)
    int count = 0;
    for(int i = 0; i < n; i++)
    {
-      // Build a synthetic STradeEvent to reuse age check.
-      STradeEvent e;
-      ZeroMemory(e);
-      e.master_ticket = snapshot.positions[i].ticket;
-      e.open_time = (datetime)0; // age check will skip if open_time missing; adjust if included later
-
-      if(IsTooOld(e.open_time))
+      if(IsTooOld((datetime)snapshot.positions[i].open_time))
          continue;
 
       if(count >= ArraySize(m_prevSnapshot.positions))
@@ -250,15 +233,9 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
       const SPositionSnapshot &curr = snapshot.positions[i];
       int idx = FindSnapshotIndex(m_prevSnapshot.positions, curr.ticket);
 
-      // Need full master position data to build STradeEvent; fetch from account.
-      PositionInfo pos;
-      if(!pos.SelectByTicket(curr.ticket))
-         continue;
-
       if(idx < 0)
       {
-         STradeEvent e = BuildEventFromPosition("NEW_TRADE", pos);
-         e.volume = curr.volume;
+         STradeEvent e = BuildEventFromSnapshot("NEW_TRADE", curr);
          OpenTrade(e);
       }
       else
@@ -266,16 +243,14 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
          const SPositionSnapshot &prev = m_prevSnapshot.positions[idx];
          if(NormalizeDouble(prev.volume - curr.volume, 8) > 0.0)
          {
-            STradeEvent e = BuildEventFromPosition("PARTIAL_CLOSE", pos);
-            e.volume = curr.volume;
+            STradeEvent e = BuildEventFromSnapshot("PARTIAL_CLOSE", curr);
             PartialClose(e);
          }
 
          if(NormalizeDouble(prev.sl - curr.sl, 8) != 0.0 ||
             NormalizeDouble(prev.tp - curr.tp, 8) != 0.0)
          {
-            STradeEvent e = BuildEventFromPosition("MODIFY_TRADE", pos);
-            e.volume = curr.volume;
+            STradeEvent e = BuildEventFromSnapshot("MODIFY_TRADE", curr);
             ModifyTrade(e);
          }
       }
@@ -298,24 +273,47 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
    }
 }
 
-STradeEvent CSlaveSubscriber::BuildEventFromPosition(const string eventName, const PositionInfo &pos)
+STradeEvent CSlaveSubscriber::BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos)
 {
    STradeEvent e;
    ZeroMemory(e);
    e.event = eventName;
    e.timestamp = (long)TimeLocal();
-   e.master_ticket = pos.Ticket();
-   e.magic = MAGIC_BASE + (int)(pos.Ticket() % 900000);
-   e.symbol = pos.Symbol();
-   e.side = (int)pos.PositionType();
-   e.open_price = pos.PriceOpen();
-   e.volume = pos.Volume();
-   e.sl = pos.StopLoss();
-   e.tp = pos.TakeProfit();
-   e.open_time = pos.Time();
-   e.point = SymbolInfoDouble(pos.Symbol(), SYMBOL_POINT);
-   e.comment = pos.Comment();
+   e.master_ticket = pos.ticket;
+   e.magic = MAGIC_BASE + (int)(pos.ticket % 900000);
+   e.symbol = pos.symbol;
+   e.side = pos.side;
+   e.open_price = pos.open_price;
+   e.volume = pos.volume;
+   e.sl = pos.sl;
+   e.tp = pos.tp;
+   e.open_time = (datetime)pos.open_time;
+   e.point = pos.point;
+   e.comment = pos.comment;
    return e;
+}
+
+void CSlaveSubscriber::CheckHeartbeat(long snapshotHeartbeat)
+{
+   datetime now = TimeCurrent();
+   if(snapshotHeartbeat > 0)
+   {
+      m_lastHeartbeat = now;
+      m_heartbeatWarned = false;
+      return;
+   }
+
+   if(m_heartbeatSeconds <= 0 || m_lastHeartbeat == 0)
+      return;
+
+   if(now - m_lastHeartbeat > m_heartbeatSeconds * 2)
+   {
+      if(!m_heartbeatWarned)
+      {
+         Print("SlaveSubscriber: no heartbeat from master");
+         m_heartbeatWarned = true;
+      }
+   }
 }
 
 int CSlaveSubscriber::FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const
