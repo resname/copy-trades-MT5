@@ -60,7 +60,7 @@ string CSnapshotFile::SnapshotToJson(const STradeSnapshot &snapshot)
    int n = ArraySize(snapshot.positions);
    for(int i = 0; i < n; i++)
    {
-      const SPositionSnapshot &p = snapshot.positions[i];
+      SPositionSnapshot p = snapshot.positions[i];
       json += "{";
       json += "\"ticket\":" + IntegerToString((long)p.ticket) + ",";
       json += "\"symbol\":" + CTradeMessage::JsonString(p.symbol) + ",";
@@ -105,7 +105,7 @@ bool CSnapshotFile::JsonToSnapshot(const string json, STradeSnapshot &snapshot)
    {
       if(count >= ArraySize(snapshot.positions))
          ArrayResize(snapshot.positions, count + 1);
-      SPositionSnapshot &p = snapshot.positions[count];
+      SPositionSnapshot p;
 
       string positionJson = StringSubstr(arrayBody, pos);
 
@@ -163,6 +163,10 @@ bool CSnapshotFile::JsonToSnapshot(const string json, STradeSnapshot &snapshot)
       // Advance search to the next position object.
       pos += StringLen("\"ticket\":");
       pos = StringFind(arrayBody, "\"ticket\":", pos);
+
+      if(count >= ArraySize(snapshot.positions))
+         ArrayResize(snapshot.positions, count + 1);
+      snapshot.positions[count] = p;
       count++;
    }
 
@@ -192,7 +196,7 @@ bool CSnapshotFile::Write(const string basePath, const STradeSnapshot &snapshot)
    }
    FileClose(handle);
 
-   if(!FileMove(tmpPath, finalPath, FILE_REWRITE|FILE_COMMON))
+   if(!FileMove(tmpPath, FILE_COMMON, finalPath, FILE_COMMON|FILE_REWRITE))
    {
       PrintFormat("CSnapshotFile: failed to move %s to %s", tmpPath, finalPath);
       return false;

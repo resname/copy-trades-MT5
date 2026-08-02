@@ -69,7 +69,7 @@ string CSymbolMapper::Resolve(const string masterSymbol)
 
 bool CSymbolMapper::ExistsOnSlave(const string symbol)
 {
-   return m_symbolInfo.Name(symbol) && m_symbolInfo.Select(symbol);
+   return m_symbolInfo.Name(symbol) && m_symbolInfo.Select();
 }
 
 #endif

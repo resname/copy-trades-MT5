@@ -93,7 +93,7 @@ bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
    if(!FolderCreate(m_sharedPath, FILE_COMMON))
    {
       int err = GetLastError();
-      if(err != ERR_FILE_ALREADY_EXIST)
+      if(err != ERR_FILE_ALREADY_EXISTS)
       {
          PrintFormat("SlaveSubscriber: failed to create shared path %s (error %d)", m_sharedPath, err);
          return false;
@@ -232,7 +232,7 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
    // NEW / MODIFIED / PARTIAL_CLOSE
    for(int i = 0; i < n; i++)
    {
-      const SPositionSnapshot &curr = snapshot.positions[i];
+      SPositionSnapshot curr = snapshot.positions[i];
       int idx = FindSnapshotIndex(m_prevSnapshot.positions, curr.ticket);
 
       if(idx < 0)
@@ -242,7 +242,7 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
       }
       else
       {
-         const SPositionSnapshot &prev = m_prevSnapshot.positions[idx];
+         SPositionSnapshot prev = m_prevSnapshot.positions[idx];
          if(NormalizeDouble(prev.volume - curr.volume, 8) > 0.0)
          {
             STradeEvent e = BuildEventFromSnapshot("PARTIAL_CLOSE", curr);
@@ -352,7 +352,7 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
    if(FindRecord(e.magic) >= 0)
       return;
 
-   if(!m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select())
    {
       PrintFormat("Slave: cannot select symbol %s", slaveSymbol);
       return;
@@ -486,7 +486,7 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
    }
 
    string slaveSymbol = PositionGetString(POSITION_SYMBOL);
-   if(!m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select())
       return;
 
    double currentSlaveVolume = PositionGetDouble(POSITION_VOLUME);
@@ -557,7 +557,7 @@ bool CSlaveSubscriber::OpenSlaveOrder(const string symbol, ENUM_ORDER_TYPE type,
                                       double lots, double sl, double tp,
                                       long magic, string comment, ulong &outTicket)
 {
-   if(!m_symbolInfo.Select(symbol))
+   if(!m_symbolInfo.Name(symbol) || !m_symbolInfo.Select())
    {
       PrintFormat("Slave: cannot select symbol %s for open", symbol);
       return false;

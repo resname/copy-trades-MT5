@@ -25,7 +25,7 @@ double CLotSizer::CalculateLots(double balance, double stepAmount, double stepSi
       return 0.0;
    }
 
-   if(!m_symbolInfo.Select(symbol))
+   if(!m_symbolInfo.Name(symbol) || !m_symbolInfo.Select())
    {
       PrintFormat("LotSizer: cannot select symbol %s", symbol);
       return 0.0;
