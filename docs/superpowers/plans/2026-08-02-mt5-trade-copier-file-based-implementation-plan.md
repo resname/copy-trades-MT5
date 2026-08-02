@@ -13,7 +13,7 @@
 - No external dependencies: `Zmq.mqh` and any related includes must be removed.
 - Shared path: all MT5 terminals must point to the same directory via `SharedDataPath`.
 - Default intervals: master writes every 200 ms; slave polls every 257 ms (intentionally desynchronized).
-- Heartbeat: each snapshot carries a `heartbeat` timestamp; slave warns if it is older than `HeartbeatSeconds * 2`.
+- Heartbeat: each snapshot carries a `heartbeat` timestamp; slave compares the snapshot's `heartbeat` to `TimeLocal()` and warns if it is older than `HeartbeatSeconds * 2` (not merely when file reads fail).
 - Atomic writes: master writes to `.tmp` and renames to `.json` to avoid half-read files.
 - Multi-slave: any number of slaves may read the same snapshot without coordination.
 - Restart recovery: slave startup rebuilds `m_records` from existing `CPY#` positions and treats the first read snapshot as a baseline (no `NEW_TRADE` events for existing positions).
@@ -90,9 +90,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `STradeEvent` from `TradeMessage.mqh`.
 - Produces:
-  - `struct SPositionSnapshot { ulong ticket; double volume; double sl; double tp; }`
+  - `struct SPositionSnapshot { ulong ticket; string symbol; int side; double open_price; double volume; double sl; double tp; long open_time; double point; string comment; }`
   - `struct STradeSnapshot { long timestamp; long heartbeat; SPositionSnapshot positions[]; }`
-  - `class CSnapshotFile` with `static bool Write(const string path, const STradeSnapshot &snapshot)` and `static bool Read(const string path, STradeSnapshot &snapshot)`.
+  - `class CSnapshotFile` with `static bool Write(const string path, const STradeSnapshot &snapshot)` and `static bool Read(const string path, STradeSnapshot &snapshot`).
 
 - [ ] **Step 1: Create the snapshot model and writer**
 
@@ -107,9 +107,15 @@ Create `MQL5/Include/TradeCopier/SnapshotFile.mqh`:
 struct SPositionSnapshot
 {
    ulong  ticket;
+   string symbol;
+   int    side;
+   double open_price;
    double volume;
    double sl;
    double tp;
+   long   open_time;
+   double point;
+   string comment;
 };
 
 struct STradeSnapshot
@@ -165,9 +171,15 @@ string CSnapshotFile::SnapshotToJson(const STradeSnapshot &snapshot)
       const SPositionSnapshot &p = snapshot.positions[i];
       json += "{";
       json += "\"ticket\":" + IntegerToString((long)p.ticket) + ",";
+      json += "\"symbol\":" + CTradeMessage::JsonString(p.symbol) + ",";
+      json += "\"side\":" + IntegerToString(p.side) + ",";
+      json += "\"open_price\":" + DoubleToString(p.open_price, 8) + ",";
       json += "\"volume\":" + DoubleToString(p.volume, 8) + ",";
       json += "\"sl\":" + DoubleToString(p.sl, 8) + ",";
-      json += "\"tp\":" + DoubleToString(p.tp, 8);
+      json += "\"tp\":" + DoubleToString(p.tp, 8) + ",";
+      json += "\"open_time\":" + IntegerToString(p.open_time) + ",";
+      json += "\"point\":" + DoubleToString(p.point, 8) + ",";
+      json += "\"comment\":" + CTradeMessage::JsonString(p.comment);
       json += "}";
       if(i < n - 1) json += ",";
    }
@@ -210,27 +222,55 @@ bool CSnapshotFile::JsonToSnapshot(const string json, STradeSnapshot &snapshot)
       SPositionSnapshot &p = snapshot.positions[count];
 
       string raw;
-      if(GetJsonRawValue(arrayBody, "ticket", raw))
+      string positionJson = StringSubstr(arrayBody, pos);
+
+      if(GetJsonRawValue(positionJson, "ticket", raw))
          p.ticket = (ulong)StringToInteger(raw);
       else
          p.ticket = 0;
 
-      if(GetJsonRawValue(arrayBody, "volume", raw))
+      if(!GetJsonString(positionJson, "symbol", p.symbol))
+         p.symbol = "";
+
+      if(GetJsonRawValue(positionJson, "side", raw))
+         p.side = (int)StringToInteger(raw);
+      else
+         p.side = 0;
+
+      if(GetJsonRawValue(positionJson, "open_price", raw))
+         p.open_price = StringToDouble(raw);
+      else
+         p.open_price = 0.0;
+
+      if(GetJsonRawValue(positionJson, "volume", raw))
          p.volume = StringToDouble(raw);
       else
          p.volume = 0.0;
 
-      if(GetJsonRawValue(arrayBody, "sl", raw))
+      if(GetJsonRawValue(positionJson, "sl", raw))
          p.sl = StringToDouble(raw);
       else
          p.sl = 0.0;
 
-      if(GetJsonRawValue(arrayBody, "tp", raw))
+      if(GetJsonRawValue(positionJson, "tp", raw))
          p.tp = StringToDouble(raw);
       else
          p.tp = 0.0;
 
-      // Advance search to avoid re-parsing the same ticket.
+      if(GetJsonRawValue(positionJson, "open_time", raw))
+         p.open_time = StringToInteger(raw);
+      else
+         p.open_time = 0;
+
+      if(GetJsonRawValue(positionJson, "point", raw))
+         p.point = StringToDouble(raw);
+      else
+         p.point = 0.0;
+
+      if(!GetJsonString(positionJson, "comment", p.comment))
+         p.comment = "";
+
+      // Advance search to the next position object.
       pos += StringLen("\"ticket\":");
       pos = StringFind(arrayBody, "\"ticket\":", pos);
       count++;
@@ -467,11 +507,28 @@ void PublishChanges(int intervalMs)
 }
 ```
 
-- [ ] **Step 6: Update helper methods**
+- [ ] **Step 6: Update `BuildCurrentSnapshots` to fill all fields**
 
-Keep `BuildCurrentSnapshots`, `FindSnapshotIndex`, and `ReplaceSnapshots` unchanged, but remove `BuildEvent`, `SendEvent`, `Send`, and `ProcessSyncRequests`.
+`SPositionSnapshot` now carries the full trade-event payload. Update the fill loop inside `BuildCurrentSnapshots`:
 
-- [ ] **Step 7: Commit**
+```cpp
+      out[count].ticket     = ticket;
+      out[count].symbol     = pos.Symbol();
+      out[count].side       = (int)pos.PositionType();
+      out[count].open_price = pos.PriceOpen();
+      out[count].volume     = pos.Volume();
+      out[count].sl         = pos.StopLoss();
+      out[count].tp         = pos.TakeProfit();
+      out[count].open_time  = (long)pos.Time();
+      out[count].point      = SymbolInfoDouble(pos.Symbol(), SYMBOL_POINT);
+      out[count].comment    = pos.Comment();
+```
+
+- [ ] **Step 7: Remove unused helper methods**
+
+Remove `BuildEvent`, `SendEvent`, `Send`, and `ProcessSyncRequests`. Keep `FindSnapshotIndex` and `ReplaceSnapshots` unchanged.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add MQL5/Include/TradeCopier/MasterPublisher.mqh
@@ -666,11 +723,13 @@ void CSlaveSubscriber::Poll()
 {
    STradeSnapshot snapshot;
    if(!CSnapshotFile::Read(m_sharedPath, snapshot))
+   {
+      CheckHeartbeat(0); // no fresh heartbeat available
       return;
+   }
 
-   // Any successful read counts as a heartbeat event.
-   m_lastHeartbeat = TimeCurrent();
-   m_heartbeatWarned = false;
+   // Validate snapshot heartbeat against local clock.
+   CheckHeartbeat(snapshot.heartbeat);
 
    if(!m_baselineSet)
    {
@@ -694,13 +753,7 @@ void CSlaveSubscriber::EstablishBaseline(const STradeSnapshot &snapshot)
    int count = 0;
    for(int i = 0; i < n; i++)
    {
-      // Build a synthetic STradeEvent to reuse age check.
-      STradeEvent e;
-      ZeroMemory(e);
-      e.master_ticket = snapshot.positions[i].ticket;
-      e.open_time = (datetime)0; // age check will skip if open_time missing; adjust if included later
-
-      if(IsTooOld(e.open_time))
+      if(IsTooOld((datetime)snapshot.positions[i].open_time))
          continue;
 
       if(count >= ArraySize(m_prevSnapshot.positions))
@@ -727,15 +780,9 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
       const SPositionSnapshot &curr = snapshot.positions[i];
       int idx = FindSnapshotIndex(m_prevSnapshot.positions, curr.ticket);
 
-      // Need full master position data to build STradeEvent; fetch from account.
-      PositionInfo pos;
-      if(!pos.SelectByTicket(curr.ticket))
-         continue;
-
       if(idx < 0)
       {
-         STradeEvent e = BuildEventFromPosition("NEW_TRADE", pos);
-         e.volume = curr.volume;
+         STradeEvent e = BuildEventFromSnapshot("NEW_TRADE", curr);
          OpenTrade(e);
       }
       else
@@ -743,16 +790,14 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
          const SPositionSnapshot &prev = m_prevSnapshot.positions[idx];
          if(NormalizeDouble(prev.volume - curr.volume, 8) > 0.0)
          {
-            STradeEvent e = BuildEventFromPosition("PARTIAL_CLOSE", pos);
-            e.volume = curr.volume;
+            STradeEvent e = BuildEventFromSnapshot("PARTIAL_CLOSE", curr);
             PartialClose(e);
          }
 
          if(NormalizeDouble(prev.sl - curr.sl, 8) != 0.0 ||
             NormalizeDouble(prev.tp - curr.tp, 8) != 0.0)
          {
-            STradeEvent e = BuildEventFromPosition("MODIFY_TRADE", pos);
-            e.volume = curr.volume;
+            STradeEvent e = BuildEventFromSnapshot("MODIFY_TRADE", curr);
             ModifyTrade(e);
          }
       }
@@ -775,24 +820,48 @@ void CSlaveSubscriber::DiffAndProcess(const STradeSnapshot &snapshot)
    }
 }
 
-STradeEvent CSlaveSubscriber::BuildEventFromPosition(const string eventName, const PositionInfo &pos)
+STradeEvent CSlaveSubscriber::BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos)
 {
    STradeEvent e;
    ZeroMemory(e);
    e.event = eventName;
    e.timestamp = (long)TimeLocal();
-   e.master_ticket = pos.Ticket();
-   e.magic = MAGIC_BASE + (int)(pos.Ticket() % 900000);
-   e.symbol = pos.Symbol();
-   e.side = (int)pos.PositionType();
-   e.open_price = pos.PriceOpen();
-   e.volume = pos.Volume();
-   e.sl = pos.StopLoss();
-   e.tp = pos.TakeProfit();
-   e.open_time = pos.Time();
-   e.point = SymbolInfoDouble(pos.Symbol(), SYMBOL_POINT);
-   e.comment = pos.Comment();
+   e.master_ticket = pos.ticket;
+   e.magic = MAGIC_BASE + (int)(pos.ticket % 900000);
+   e.symbol = pos.symbol;
+   e.side = pos.side;
+   e.open_price = pos.open_price;
+   e.volume = pos.volume;
+   e.sl = pos.sl;
+   e.tp = pos.tp;
+   e.open_time = (datetime)pos.open_time;
+   e.point = pos.point;
+   e.comment = pos.comment;
    return e;
+}
+
+void CSlaveSubscriber::CheckHeartbeat(long snapshotHeartbeat)
+{
+   datetime now = TimeCurrent();
+   if(snapshotHeartbeat > 0)
+   {
+      // A fresh snapshot was read; reset heartbeat tracking.
+      m_lastHeartbeat = now;
+      m_heartbeatWarned = false;
+      return;
+   }
+
+   if(m_heartbeatSeconds <= 0 || m_lastHeartbeat == 0)
+      return;
+
+   if(now - m_lastHeartbeat > m_heartbeatSeconds * 2)
+   {
+      if(!m_heartbeatWarned)
+      {
+         Print("SlaveSubscriber: no heartbeat from master");
+         m_heartbeatWarned = true;
+      }
+   }
 }
 
 int CSlaveSubscriber::FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const
@@ -812,7 +881,8 @@ Add to private declarations:
 ```cpp
    void        EstablishBaseline(const STradeSnapshot &snapshot);
    void        DiffAndProcess(const STradeSnapshot &snapshot);
-   STradeEvent BuildEventFromPosition(const string eventName, const PositionInfo &pos);
+   STradeEvent BuildEventFromSnapshot(const string eventName, const SPositionSnapshot &pos);
+   void        CheckHeartbeat(long snapshotHeartbeat);
    int         FindSnapshotIndex(const SPositionSnapshot &snapshots[], ulong ticket) const;
    int         FindSnapshotIndex(ulong ticket) const;
 ```
@@ -1041,3 +1111,4 @@ No placeholders found. Every task provides concrete code, file paths, and expect
 - `CSlaveSubscriber::Init` now takes `(const string sharedPath, const string symbolMap, int maxAgeMinutes, int retryCount, int retryDelayMs, int heartbeatSeconds)`.
 - `EventSetMillisecondTimer` receives `MasterSnapshotIntervalMs` or `SlavePollIntervalMs`.
 - `STradeSnapshot` and `SPositionSnapshot` field names are consistent across write and parse.
+- `SPositionSnapshot` carries the full trade-event payload; `SlaveSubscriber` builds `STradeEvent` from the snapshot, not from local `PositionInfo`.
