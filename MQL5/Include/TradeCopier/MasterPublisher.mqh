@@ -44,7 +44,7 @@ bool CMasterPublisher::Init(const string sharedPath, int heartbeatSeconds)
    if(!FolderCreate(m_sharedPath, FILE_COMMON))
    {
       int err = GetLastError();
-      if(err != ERR_FILE_ALREADY_EXISTS)
+      if(err != 5052) // ERR_FILE_ALREADY_EXIST
       {
          PrintFormat("MasterPublisher: failed to create shared path %s (error %d)", m_sharedPath, err);
          return false;

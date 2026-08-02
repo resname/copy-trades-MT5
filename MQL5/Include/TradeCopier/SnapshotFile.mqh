@@ -56,7 +56,8 @@ string CSnapshotFile::SnapshotToJson(const STradeSnapshot &snapshot)
    string json = "{";
    json += "\"timestamp\":" + IntegerToString(snapshot.timestamp) + ",";
    json += "\"heartbeat\":" + IntegerToString(snapshot.heartbeat) + ",";
-   json += "\"positions":[";
+   json += "\"positions\":";
+   json += "[";
    int n = ArraySize(snapshot.positions);
    for(int i = 0; i < n; i++)
    {

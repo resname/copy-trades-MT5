@@ -93,7 +93,7 @@ bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
    if(!FolderCreate(m_sharedPath, FILE_COMMON))
    {
       int err = GetLastError();
-      if(err != ERR_FILE_ALREADY_EXISTS)
+      if(err != 5052) // ERR_FILE_ALREADY_EXIST
       {
          PrintFormat("SlaveSubscriber: failed to create shared path %s (error %d)", m_sharedPath, err);
          return false;
@@ -431,7 +431,7 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
    }
 
    string slaveSymbol = PositionGetString(POSITION_SYMBOL);
-   if(!m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select())
    {
       PrintFormat("Slave: cannot select symbol %s for modify", slaveSymbol);
       return;
