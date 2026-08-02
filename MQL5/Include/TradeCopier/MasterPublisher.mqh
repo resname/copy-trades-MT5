@@ -116,10 +116,16 @@ void CMasterPublisher::BuildCurrentSnapshots(SPositionSnapshot &out[])
       if(count >= ArraySize(out))
          ArrayResize(out, count + 1);
 
-      out[count].ticket = ticket;
-      out[count].volume = pos.Volume();
-      out[count].sl = pos.StopLoss();
-      out[count].tp = pos.TakeProfit();
+      out[count].ticket     = ticket;
+      out[count].symbol     = pos.Symbol();
+      out[count].side       = (int)pos.PositionType();
+      out[count].open_price = pos.PriceOpen();
+      out[count].volume     = pos.Volume();
+      out[count].sl         = pos.StopLoss();
+      out[count].tp         = pos.TakeProfit();
+      out[count].open_time  = (long)pos.Time();
+      out[count].point      = SymbolInfoDouble(pos.Symbol(), SYMBOL_POINT);
+      out[count].comment    = pos.Comment();
       count++;
    }
 }
