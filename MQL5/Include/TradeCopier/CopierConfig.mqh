@@ -13,10 +13,10 @@ enum ENUM_COPIER_MODE
 
 input group "=== Copier Mode ==="
 input ENUM_COPIER_MODE CopierMode = COPIER_SLAVE; // Run as MASTER or SLAVE
-input int              HeartbeatSeconds = 5;      // Master heartbeat interval
+input int              HeartbeatSeconds = 5;      // Maximum age of heartbeat before slave warns
 
 input group "=== Transport Settings ==="
-input string           SharedDataPath = "TradeCopier\\"; // Shared folder for snapshot file (relative to Common/Files or absolute)
+input string           SharedDataPath = "TradeCopier\\"; // Shared folder under Common/Files for snapshot file
 input int              MasterSnapshotIntervalMs = 200;     // Master snapshot write interval (ms)
 input int              SlavePollIntervalMs = 257;          // Slave snapshot read interval (ms), desynchronized from master
 

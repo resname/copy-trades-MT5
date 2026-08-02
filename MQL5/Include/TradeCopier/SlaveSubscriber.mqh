@@ -34,6 +34,7 @@ private:
    int                m_retryDelayMs;
    int                m_heartbeatSeconds;
    datetime           m_lastHeartbeat;
+   long               m_lastHeartbeatValue;
    bool               m_heartbeatWarned;
    bool               m_baselineSet;
    STradeSnapshot     m_prevSnapshot;
@@ -58,8 +59,8 @@ private:
 
 public:
    CSlaveSubscriber() : m_maxAgeMinutes(0), m_retryCount(0), m_retryDelayMs(0),
-                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_heartbeatWarned(false),
-                        m_baselineSet(false)
+                        m_heartbeatSeconds(0), m_lastHeartbeat(0), m_lastHeartbeatValue(0),
+                        m_heartbeatWarned(false), m_baselineSet(false)
    {
       m_sharedPath = "";
    }
@@ -80,6 +81,7 @@ bool CSlaveSubscriber::Init(const string sharedPath, const string symbolMap,
    m_retryDelayMs = retryDelayMs;
    m_heartbeatSeconds = heartbeatSeconds;
    m_lastHeartbeat = 0;
+   m_lastHeartbeatValue = 0;
    m_heartbeatWarned = false;
    m_baselineSet = false;
    ArrayResize(m_records, 0);
@@ -296,8 +298,9 @@ STradeEvent CSlaveSubscriber::BuildEventFromSnapshot(const string eventName, con
 void CSlaveSubscriber::CheckHeartbeat(long snapshotHeartbeat)
 {
    datetime now = TimeCurrent();
-   if(snapshotHeartbeat > 0)
+   if(snapshotHeartbeat > 0 && snapshotHeartbeat != m_lastHeartbeatValue)
    {
+      m_lastHeartbeatValue = snapshotHeartbeat;
       m_lastHeartbeat = now;
       m_heartbeatWarned = false;
       return;
@@ -349,7 +352,7 @@ void CSlaveSubscriber::OpenTrade(const STradeEvent &e)
    if(FindRecord(e.magic) >= 0)
       return;
 
-   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Select(slaveSymbol))
    {
       PrintFormat("Slave: cannot select symbol %s", slaveSymbol);
       return;
@@ -428,7 +431,7 @@ void CSlaveSubscriber::ModifyTrade(const STradeEvent &e)
    }
 
    string slaveSymbol = PositionGetString(POSITION_SYMBOL);
-   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Select(slaveSymbol))
    {
       PrintFormat("Slave: cannot select symbol %s for modify", slaveSymbol);
       return;
@@ -483,7 +486,7 @@ void CSlaveSubscriber::PartialClose(const STradeEvent &e)
    }
 
    string slaveSymbol = PositionGetString(POSITION_SYMBOL);
-   if(!m_symbolInfo.Name(slaveSymbol) || !m_symbolInfo.Select(slaveSymbol))
+   if(!m_symbolInfo.Select(slaveSymbol))
       return;
 
    double currentSlaveVolume = PositionGetDouble(POSITION_VOLUME);
@@ -554,7 +557,7 @@ bool CSlaveSubscriber::OpenSlaveOrder(const string symbol, ENUM_ORDER_TYPE type,
                                       double lots, double sl, double tp,
                                       long magic, string comment, ulong &outTicket)
 {
-   if(!m_symbolInfo.Name(symbol) || !m_symbolInfo.Select(symbol))
+   if(!m_symbolInfo.Select(symbol))
    {
       PrintFormat("Slave: cannot select symbol %s for open", symbol);
       return false;

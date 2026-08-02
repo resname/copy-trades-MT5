@@ -7,7 +7,6 @@
 #include "SnapshotFile.mqh"
 #include <Trade\PositionInfo.mqh>
 #include "CopierConfig.mqh"
-#include "TradeMessage.mqh"
 
 class CMasterPublisher
 {
@@ -105,7 +104,7 @@ void CMasterPublisher::BuildCurrentSnapshots(SPositionSnapshot &out[])
    int count = 0;
    for(int i = 0; i < total; i++)
    {
-      PositionInfo pos;
+      CPositionInfo pos;
       if(!pos.SelectByIndex(i))
          continue;
 

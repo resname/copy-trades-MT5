@@ -176,7 +176,7 @@ bool CSnapshotFile::Write(const string basePath, const STradeSnapshot &snapshot)
    string tmpPath = TempPath(basePath);
    string finalPath = SnapshotPath(basePath);
 
-   int handle = FileOpen(tmpPath, FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_READ);
+   int handle = FileOpen(tmpPath, FILE_WRITE|FILE_TXT|FILE_COMMON);
    if(handle == INVALID_HANDLE)
    {
       PrintFormat("CSnapshotFile: cannot open tmp file %s", tmpPath);
@@ -203,7 +203,7 @@ bool CSnapshotFile::Write(const string basePath, const STradeSnapshot &snapshot)
 bool CSnapshotFile::Read(const string basePath, STradeSnapshot &snapshot)
 {
    string path = SnapshotPath(basePath);
-   int handle = FileOpen(path, FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ);
+   int handle = FileOpen(path, FILE_READ|FILE_TXT|FILE_COMMON);
    if(handle == INVALID_HANDLE)
       return false;
 

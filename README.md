@@ -17,7 +17,7 @@ A single MetaTrader 5 Expert Advisor that copies trades from a master MT5 accoun
 2. Open `TradeCopier.mq5` in MetaEditor and compile (F7).
 3. Attach the EA to a chart on the master account; set `CopierMode` to `MASTER`.
 4. Attach the EA to a chart on each slave account; set `CopierMode` to `SLAVE` and configure symbol mapping / lot sizing.
-5. Set `SharedDataPath` to the same folder on the master and on every slave, for example `C:\\TradeCopier\\Shared\\`. All MT5 terminals must be running on the same machine and must read the same snapshot file.
+5. Set `SharedDataPath` to the same folder on the master and on every slave, for example `TradeCopier\\Shared\\` (relative to the terminal's `MQL5/Common/Files` folder). All MT5 terminals must be running on the same machine, must use the same MetaTrader 5 installation, and must read the same snapshot file.
 
 You can attach the slave EA to any number of charts/terminals. All slaves must use the same `SharedDataPath`. Each slave has its own `SymbolMap`, `BalanceStepAmount`, and `MaxLotSize` settings.
 
@@ -31,7 +31,7 @@ You can attach the slave EA to any number of charts/terminals. All slaves must u
 | SharedDataPath | string | `TradeCopier\\` | Shared folder for the snapshot file (relative to Common/Files or absolute) |
 | MasterSnapshotIntervalMs | int | 200 | Master snapshot write interval (ms) |
 | SlavePollIntervalMs | int | 257 | Slave snapshot read interval (ms), desynchronized from master |
-| HeartbeatSeconds | int | 5 | Master heartbeat interval |
+| HeartbeatSeconds | int | 5 | Maximum age of heartbeat before slave warns |
 
 ### Slave Settings
 
