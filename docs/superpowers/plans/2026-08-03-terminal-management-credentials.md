@@ -1437,34 +1437,22 @@ def test_wait_for_slaves_ready_returns_true_when_ready():
         sup.shutdown()
 
 
-def test_wait_for_slaves_ready_times_out_when_slave_never_reports_status():
-    """A slave that sends SymbolInfo but never Status (e.g. crashed mid-init)
-    must cause wait_for_slaves_ready to return False, not hang."""
+def test_wait_for_slaves_ready_times_out_when_status_missing():
+    """A slave that reported SymbolInfo but never Status (e.g. crashed
+    mid-init) must cause wait_for_slaves_ready to return False, not hang.
+    Pure unit test: construct the handle directly so the outcome is
+    deterministic rather than racing a real fake worker's init."""
     eng = _engine()
-    sup = Supervisor(eng, poll_timeout=0.02)
-    # slave state with an account so SI is sent, but we will kill it before
-    # the Status round-trips by giving a status interval far in the future.
-    state = {"symbol_infos": {"EURUSD": SI},
-             "account": {"login": 2, "balance": 1000.0, "equity": 1000.0,
-                         "currency": "USD", "server": "Demo"},
-             "ticks": {"EURUSD": (1.10000, 1.10010)}}
-    sup.spawn_slave("s1", _slave_cfg(), "pw", adapter_kind="fake",
-                    fake_state=state)
-    try:
-        # give it a moment, then force the handle to "missing status" by
-        # clearing the flag a fake would have set — simulate by asserting the
-        # gate returns False within a short timeout when status never lands.
-        # Use a very short timeout; the slave DOES send status on init in the
-        # fake, so instead kill the slave right after spawn to drop status.
-        _tick_until(sup, lambda: sup._handles["s1"].got_symbol_info, timeout=2.0)
-        # terminate the slave so its Status never lands
-        sup._handles["s1"].proc.terminate()
-        sup._handles["s1"].proc.join(2.0)
-        # now the gate should time out (status flag stays False)
-        ok = sup.wait_for_slaves_ready(timeout=0.3)
-        assert ok is False
-    finally:
-        sup.shutdown()
+    sup = Supervisor(eng, poll_timeout=0.0)
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
+        password="", adapter_kind="fake", fake_state=None,
+        got_symbol_info=True, got_status=False, last_msg_ts=time.time())
+    # _StubProc is alive and last_msg_ts is now, so _health_check never
+    # restarts; tick is a fast no-op. The gate polls until the wall-clock
+    # timeout elapses and returns False because got_status stays False.
+    ok = sup.wait_for_slaves_ready(timeout=0.1)
+    assert ok is False
 
 
 def test_readiness_gate_prevents_permanent_skip_of_first_snapshot():
@@ -1567,15 +1555,26 @@ def test_restart_backoff_resets_on_message():
     sup._handles["s1"] = WorkerHandle(
         name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
         password="", adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
+    # First death: immediate respawn; backoff (1.0s) scheduled for the NEXT death.
     sup._handles["s1"].proc.terminate()
-    sup._restart("s1")          # immediate spawn, restart_count=1
-    spawned[-1].proc.terminate()
-    # simulate a message resetting backoff
-    sup._handles["s1"].restart_count = 0
-    sup._handles["s1"].next_restart_at = 0.0
+    sup._restart("s1")
+    assert len(spawned) == 1
+    first = spawned[-1]
+    assert first.restart_count == 1 and first.next_restart_at == 1.0
+    # A message arrives on the new worker -> backoff resets to zero.
+    first.restart_count = 0
+    first.next_restart_at = 0.0
+    # Second death: only 0.5s later, but backoff was reset so respawn is
+    # immediate (no skip). Without the reset, 0.5 < 1.0 would have skipped.
+    first.proc.terminate()
     clock.t = 0.5
-    sup._restart("s1")          # should spawn immediately (backoff reset)
-    assert len(spawned) == 3
+    sup._restart("s1")
+    assert len(spawned) == 2
+    # And the next backoff window is the BASE (1.0s), not doubled (2.0s),
+    # because restart_count was 0 going in.
+    second = spawned[-1]
+    assert second.restart_count == 1
+    assert second.next_restart_at == 1.5  # 0.5 + base 1.0, not 0.5 + 2.0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1708,12 +1707,19 @@ class WorkerHandle:
                 pass
         if h.role == "slave":
             self._engine.reset_slave(name)  # recovery re-seeds on reconnect
-        # schedule the NEXT backoff before spawning this one
+        # Schedule the backoff for the NEXT death from the CURRENT count,
+        # then carry that state onto the freshly-spawned handle (the new
+        # handle defaults to restart_count=0/next_restart_at=0.0, so without
+        # carrying it over a respawn would reset the backoff and a death storm
+        # would never throttle).
         delay = min(self.BASE_BACKOFF * (2 ** h.restart_count), self.MAX_BACKOFF)
-        h.restart_count += 1
-        h.next_restart_at = now + delay
-        self._handles[name] = self._spawn(name, h.role, h.config, h.password,
-                                          h.adapter_kind, h.fake_state)
+        new_count = h.restart_count + 1
+        new_next = now + delay
+        new_h = self._spawn(name, h.role, h.config, h.password,
+                            h.adapter_kind, h.fake_state)
+        new_h.restart_count = new_count
+        new_h.next_restart_at = new_next
+        self._handles[name] = new_h
         if self.on_restart:
             self.on_restart(name, h.role)
 ```
@@ -1771,7 +1777,7 @@ git commit -m "feat(supervisor): startup readiness gate + exponential restart ba
 
 **4. Potential gotchas flagged for implementers.**
 - Task 4 test `test_provision_instance_runs_installer_and_waits_for_exe`: the fake runner extracts the install dir from `cmd[2][len("/path:"):]` — `provision_command` guarantees `cmd = [setup_path, "/auto", "/path:<dir>"]`, so `cmd[2]` is the `/path:` element. Keep that extraction.
-- Task 6 `test_wait_for_slaves_ready_times_out_when_slave_never_reports_status`: the fake slave DOES send status on init (`_slave_loop` sends rec/si/st immediately), so the test kills the slave after SI lands but before Status is observed, then asserts the gate returns False within 0.3s. If the fake's status arrives faster than the SI assertion, flip the order: clear `got_status` manually after killing. The implementer may adjust the test mechanics as long as the contract (gate returns False when a slave never reaches ready) holds.
+- Task 6 `test_wait_for_slaves_ready_times_out_when_status_missing`: a pure unit test — it constructs a `WorkerHandle` directly with `got_symbol_info=True, got_status=False` and asserts the gate returns False within a 0.1s wall timeout. Do not rewrite it to use a real fake worker (that races the fake's init sequence); the direct-handle form is the deterministic contract.
 - Task 6 backoff tests use `sup._spawn = fake_spawn` (monkeypatch) and `_StubProc` — same pattern as the existing `test_consecutive_stale_failures_restart`, so the implementer should mirror that test's structure.
 
 No issues found that require a plan edit. The plan is complete.
