@@ -39,3 +39,23 @@ def test_main_returns_zero_before_event_loop(qapp, monkeypatch):
     monkeypatch.setattr(entry.QApplication, "exec", lambda self: 0)
     rc = entry.main([])
     assert rc == 0
+
+
+def test_main_version_flag(capsys):
+    import manager.__main__ as entry
+    from manager._version import __version__
+    rc = entry.main(["--version"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert __version__ in out
+
+
+def test_main_update_subcommand(monkeypatch):
+    import manager.__main__ as entry
+    import manager.updater as updater
+    called = []
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit: called.append(on_quit))
+    rc = entry.main(["update"])
+    assert rc == 0
+    assert len(called) == 1  # on_quit passed through, not invoked here
