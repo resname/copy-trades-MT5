@@ -4,14 +4,22 @@
 // timeline so the manual capture (capture_crypto.py) can correlate them via
 // correlate.py. Three coverage layers:
 //
-//   Layer A (PRIMARY, AES-NI-proof): Windows CryptoAPI/CNG hooks. MT5 uses
-//   Windows crypto APIs (the enumeration found the CryptoAPI algorithm-name
-//   string "...WithSHA1And128BitRC4"). These functions are EXPORTED by
-//   bcrypt.dll / advapi32.dll, so they are hooked by name with no disassembly.
-//   BCryptEncrypt/BCryptDecrypt/CryptEncrypt/CryptDecrypt additionally dump
-//   their explicit input/output buffers in onLeave -- the highest-value
-//   plaintext source, AES-NI-proof because the API boundary abstracts the
-//   primitive.
+//   Layer A (AES-NI-proof coverage): Windows CryptoAPI/CNG hooks. These cover
+//   the Windows-crypto surface IN CASE the login routes through it (the image
+//   references the CryptoAPI algorithm-name string "...WithSHA1And128BitRC4").
+//   The functions are EXPORTED by bcrypt.dll / advapi32.dll, so they are hooked
+//   by name with no disassembly. BCryptEncrypt/BCryptDecrypt/CryptEncrypt/
+//   CryptDecrypt additionally dump their explicit input/output buffers in
+//   onLeave -- the highest-value plaintext source, AES-NI-proof because the API
+//   boundary abstracts the primitive.
+//
+//   CAPTURE RESULT (see spike/verdict.md and spike/NOTES.md §Crypto): the
+//   trade-server login does NOT route through any of these. BCryptEncrypt/
+//   BCryptDecrypt and CryptEncrypt/CryptDecrypt fired 0 times; the only AES-NI
+//   encrypt that fired (cand_aes_enc_0) is SChannel's TLS for MT5's HTTPS web
+//   APIs. The login cipher is a custom software implementation with no
+//   hooked-crypto surface and was not located. The hooks below are kept because
+//   they produced the 0-call evidence that rules this surface out.
 //
 //   Layer B: AES-NI function-entry probes in CRYPTO_FUNCS, resolved by
 //   opcode-scanning the terminal64.exe image (AESENC/AESENCLAST/AESDEC/
@@ -45,7 +53,8 @@
 // asynchronously), ws2_32.dll resolution is retried until the module is loaded.
 
 // ---------------------------------------------------------------------------
-// CRYPTO_FUNCS: filled from Frida enumeration (Step 3/4). See task-4-report.md.
+// CRYPTO_FUNCS: filled from Frida enumeration (Step 3/4). See spike/NOTES.md
+// §Crypto for the offsets and the capture result.
 //   - cand_aes_enc_0: AES-NI encrypt block function. 26 AESENC + 2 AESENCLAST
 //     sites inside it = unrolled AES round loop (AES-128/256 encrypt block).
 //   - cand_aes_enc_1: second AES encrypt-related function (1 AESENCLAST site).
