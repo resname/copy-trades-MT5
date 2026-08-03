@@ -94,6 +94,20 @@ def test_install_metatrader_button_opens_download_page(qapp, monkeypatch):
     assert "custom" in w.install_disclaimer_label.text().lower()
 
 
+def test_launch_button_labeled_for_login(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    assert w.launch_terminal_button.text() == "Open terminal for login"
+    assert w.install_metatrader_button.text() == "Install MetaTrader"
+
+
+def test_install_button_is_left_of_launch_button(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    row = w.term_row
+    assert row.indexOf(w.install_metatrader_button) < row.indexOf(w.launch_terminal_button)
+
+
 def test_stop_button_calls_controller_stop(qapp):
     from manager.gui.main_window import MainWindow
     c = FakeController()

@@ -67,6 +67,14 @@ def test_slave_editor_launch_button_runs_terminal64_exe(qapp, monkeypatch):
     assert popped == [["C:/i0/terminal64.exe"]]
 
 
+def test_slave_editor_launch_button_labeled_for_login(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    class _C:
+        def discover_instances(self): return []
+    dlg = SlaveEditor(_C())
+    assert dlg.launch_terminal_button.text() == "Open terminal for login"
+
+
 def _inst(exe):
     from manager.terminal.discovery import TerminalInstance
     return TerminalInstance(exe.rsplit("/terminal64.exe", 1)[0], exe, "appdata")

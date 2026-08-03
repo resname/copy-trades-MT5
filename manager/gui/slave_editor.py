@@ -14,7 +14,7 @@ from manager.app.controller import AccountSpec
 class SlaveEditor(QDialog):
     """A modal dialog to add/edit one slave account: terminal-path dropdown
     (auto-populated, required — the user manually logs in to the terminal),
-    a Launch-terminal button, a master->slave symbol map table, lot-sizing
+    an Open-terminal-for-login button, a master->slave symbol map table, lot-sizing
     fields, maxLot, maxTradeAge, and the normalize-SL/TP toggle. ``spec()``
     returns the configured AccountSpec (None if cancelled)."""
 
@@ -35,7 +35,7 @@ class SlaveEditor(QDialog):
         form.addRow("Slave id", self.id_edit)
         form.addRow("Terminal", self.terminal)
         term_row = QHBoxLayout()
-        self.launch_terminal_button = QPushButton("Launch terminal")
+        self.launch_terminal_button = QPushButton("Open terminal for login")
         term_row.addWidget(self.launch_terminal_button)
         form.addRow("", term_row)
         root.addLayout(form)

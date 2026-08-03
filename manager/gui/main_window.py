@@ -64,10 +64,11 @@ class MainWindow(QMainWindow):
         self.master_terminal.setEditable(True)
         mform.addRow("Terminal", self.master_terminal)
         term_row = QHBoxLayout()
-        self.launch_terminal_button = QPushButton("Launch terminal")
         self.install_metatrader_button = QPushButton("Install MetaTrader")
-        term_row.addWidget(self.launch_terminal_button)
+        self.launch_terminal_button = QPushButton("Open terminal for login")
         term_row.addWidget(self.install_metatrader_button)
+        term_row.addWidget(self.launch_terminal_button)
+        self.term_row = term_row
         mform.addRow("", term_row)
         self.install_disclaimer_label = QLabel(
             "Install MetaTrader opens the download page. Download and run "
