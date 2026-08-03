@@ -1,7 +1,10 @@
+import multiprocessing
 import time
 
 from manager.engine.models import Position, SymbolInfo, BUY
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
+from manager.ipc.messages import ErrorMsg
+from manager.ipc.pipe_framing import send_msg
 from manager.supervisor import Supervisor, WorkerHandle
 
 SI = SymbolInfo(point=0.00001, digits=5, tick_size=0.00001,
@@ -178,3 +181,79 @@ def test_shutdown_terminates_workers():
     _tick_until(sup, lambda: sup._handles["s1"].proc.is_alive())
     sup.shutdown()
     assert sup._handles == {}
+
+
+def test_fatal_master_error_stops_restart_cycle_and_surfaces():
+    """Regression: a master that reports a FATAL ErrorMsg (mt5.initialize
+    failed because the terminal isn't logged in) must NOT be restarted.
+    Restarting calls kill_terminal (closes the terminal) then re-spawns
+    (mt5.initialize re-opens it), which fails the same way -> the terminal
+    blinks open/closed forever. The fatal error must surface via on_error
+    instead, so the user sees the reason rather than a silent cycle."""
+    fake_now = [0.0]
+    eng = _engine()
+    killed = []
+    spawned = []
+    sup = Supervisor(eng, time_fn=lambda: fake_now[0], poll_timeout=0.0,
+                     kill_terminal=lambda p: killed.append(p))
+    errors = []
+    sup.on_error = lambda name, msg: errors.append((name, msg))
+
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
+        h = WorkerHandle(name=name, role=role, proc=_StubProc(), pipe=None,
+                        config=config, adapter_kind=adapter_kind,
+                        fake_state=fake_state, last_msg_ts=fake_now[0])
+        spawned.append(h)
+        return h
+    sup._spawn = fake_spawn
+
+    parent, child = multiprocessing.Pipe(duplex=True)
+    send_msg(child, ErrorMsg(source_id="master",
+            message="initialize failed: (-1, 'no connection')", fatal=True))
+    child.close()
+    sup._handles["master"] = WorkerHandle(
+        name="master", role="master", proc=_StubProc(), pipe=parent,
+        config={"terminal_path": "C:/t/m.exe"}, adapter_kind="fake",
+        fake_state=None, last_msg_ts=fake_now[0])
+
+    # tick reads the fatal ErrorMsg -> marks handle fatal, surfaces via on_error
+    sup.tick(timeout=0.0)
+    assert sup._handles["master"].fatal is True, "fatal ErrorMsg must mark the handle"
+    assert errors, "fatal error must surface via on_error"
+    assert "initialize failed" in errors[-1][1]
+
+    # the real worker exits right after sending the fatal error
+    sup._handles["master"].proc._alive = False
+    fake_now[0] += 1.0
+    # a dead, fatal worker must NOT be restarted on subsequent ticks
+    for _ in range(3):
+        sup.tick(timeout=0.0)
+    assert spawned == [], "fatal-failed master must not be restarted"
+    assert killed == [], "fatal-failed master must not cycle the terminal"
+
+
+def test_nonfatal_error_does_not_stop_restart():
+    """A non-fatal ErrorMsg is surfaced but does NOT mark the handle fatal,
+    so the normal restart-on-death recovery path still works."""
+    fake_now = [0.0]
+    eng = _engine()
+    sup = Supervisor(eng, time_fn=lambda: fake_now[0], poll_timeout=0.0)
+    errors = []
+    sup.on_error = lambda name, msg: errors.append((name, msg))
+
+    parent, child = multiprocessing.Pipe(duplex=True)
+    send_msg(child, ErrorMsg(source_id="s1", message="transient retcode 10004",
+            fatal=False))
+    # keep the child end open through the tick so the drain loop's re-poll
+    # returns False (peer alive) rather than raising BrokenPipeError; the
+    # supervisor's own BrokenPipeError-on-poll handling is exercised by the
+    # fatal test's dead-worker ticks.
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=parent,
+        config={"terminal_path": "C:/t/s.exe"}, adapter_kind="fake",
+        fake_state=None, last_msg_ts=fake_now[0])
+
+    sup.tick(timeout=0.0)
+    child.close()
+    assert sup._handles["s1"].fatal is False, "non-fatal error must not mark fatal"
+    assert errors and "transient retcode 10004" in errors[-1][1]

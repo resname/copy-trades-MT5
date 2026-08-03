@@ -175,3 +175,53 @@ def test_execute_open_failure_returns_failed_ack():
                      side=BUY, magic=1, comment="x")
     ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
     assert ack.ok is False and ack.retcode == 10004
+
+
+def test_worker_loop_exception_surfaces_as_fatal_error(monkeypatch):
+    """An unhandled exception in the master loop must be surfaced as a FATAL
+    ErrorMsg (not swallowed), so the supervisor stops instead of silently
+    restarting a crashing worker (which would cycle the terminal). Before the
+    fix, worker_main only caught EOFError, so any other exception killed the
+    subprocess with no message back to the manager."""
+    import multiprocessing
+    from manager.ipc.messages import StartMsg, ErrorMsg, StatusMsg
+    from manager.ipc.pipe_framing import send_msg, recv_msg
+    from manager.worker import mt5_worker
+
+    class BoomMt5(FakeMt5):
+        def positions_get(self):
+            raise RuntimeError("boom in loop")
+
+    monkeypatch.setattr(mt5_worker, "FakeMt5", BoomMt5)
+
+    parent, child = multiprocessing.Pipe(duplex=True)
+    send_msg(parent, StartMsg(config={"terminal_path": "C:/t/m.exe",
+                                      "master_interval_ms": 10}))
+    escaped = None
+    try:
+        mt5_worker.worker_main(child, "master", "fake", {})
+    except BaseException as exc:
+        escaped = exc
+    child.close()
+
+    # Drain everything the worker wrote. On Windows a poll(0) on a
+    # peer-closed empty pipe raises BrokenPipeError, so guard the drain.
+    msgs = []
+    while True:
+        try:
+            if not parent.poll(0):
+                break
+        except (BrokenPipeError, EOFError, OSError):
+            break
+        try:
+            msgs.append(recv_msg(parent))
+        except (EOFError, OSError, BrokenPipeError):
+            break
+    parent.close()
+
+    assert escaped is None, f"loop exception must not escape worker_main: {escaped!r}"
+    fatal = [m for m in msgs if isinstance(m, ErrorMsg) and m.fatal]
+    assert fatal, "loop exception must be surfaced as a fatal ErrorMsg"
+    assert "boom in loop" in fatal[0].message
+    # the initial StatusMsg is still sent before the crash
+    assert any(isinstance(m, StatusMsg) for m in msgs)
