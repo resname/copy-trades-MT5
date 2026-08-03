@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from manager.app.controller import AccountSpec
+from manager.gui.server_picker import BrokerServerPicker
 
 
 class SlaveEditor(QDialog):
@@ -31,14 +32,14 @@ class SlaveEditor(QDialog):
         self.id_edit.setPlaceholderText("s1")
         self.login = QLineEdit()
         self.login.setPlaceholderText("integer login")
-        self.server = QLineEdit()
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.terminal = QComboBox()
         self.terminal.setEditable(True)
         form.addRow("Slave id", self.id_edit)
         form.addRow("Login", self.login)
-        form.addRow("Server", self.server)
+        self._picker = BrokerServerPicker(self._controller)
+        form.addRow(self._picker)
         form.addRow("Password", self.password)
         form.addRow("Terminal (override)", self.terminal)
         root.addLayout(form)
@@ -129,7 +130,7 @@ class SlaveEditor(QDialog):
             return None
         return self._spec_from_fields(
             self.id_edit.text().strip() or "s1",
-            self.login.text().strip(), self.server.text().strip(),
+            self.login.text().strip(), self._picker.server(),
             self.password.text(), self.step_amount.text(),
             self.step_size.text(), self.max_lot.text(),
             self.max_trade_age_minutes.text(),

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from manager.app.controller import AccountSpec, StatusUpdate
+from manager.gui.server_picker import BrokerServerPicker
 
 
 class _UpdateWorker(QThread):
@@ -57,15 +58,14 @@ class MainWindow(QMainWindow):
         mform = QFormLayout()
         self.master_login = QLineEdit()
         self.master_login.setPlaceholderText("integer login (e.g. 5001)")
-        self.master_server = QLineEdit()
-        self.master_server.setPlaceholderText("server name")
         self.master_password = QLineEdit()
         self.master_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.master_password.setPlaceholderText("demo account password")
         self.master_terminal = QComboBox()
         self.master_terminal.setEditable(True)
         mform.addRow("Login", self.master_login)
-        mform.addRow("Server", self.master_server)
+        self.master_picker = BrokerServerPicker(self._controller)
+        mform.addRow(self.master_picker)
         mform.addRow("Password", self.master_password)
         mform.addRow("Terminal", self.master_terminal)
         master_box.setLayout(mform)
@@ -189,7 +189,7 @@ class MainWindow(QMainWindow):
             return
         master = AccountSpec(
             id="master", login=login,
-            server=self.master_server.text().strip(),
+            server=self.master_picker.server(),
             password=self.master_password.text(),
             terminal_path=self.master_terminal.currentText().strip() or None)
         try:

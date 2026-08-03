@@ -17,6 +17,11 @@ class FakeController:
         self.stopped = True
     def is_running(self):
         return self.started and not self.stopped
+    def get_catalog(self):
+        from manager.brokers.catalog import BrokerCatalog
+        return BrokerCatalog()
+    def refresh_brokers(self):
+        return self.get_catalog()
 
 
 def test_main_window_constructs(qapp):
@@ -25,7 +30,7 @@ def test_main_window_constructs(qapp):
     assert w.windowTitle()  # has a title
     # core controls exist
     assert w.master_login is not None
-    assert w.master_server is not None
+    assert w.master_picker is not None
     assert w.master_terminal is not None
     assert w.start_button is not None
     assert w.stop_button is not None
@@ -52,7 +57,7 @@ def test_start_button_calls_controller_start(qapp):
     w = MainWindow(c)
     # provide a master login + server so start() is callable
     w.master_login.setText("5001")
-    w.master_server.setText("Demo")
+    w.master_picker.set_server("Demo")
     w.start_button.click()
     assert c.started
 
