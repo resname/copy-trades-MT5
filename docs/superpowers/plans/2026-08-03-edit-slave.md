@@ -672,45 +672,39 @@ def test_set_spec_round_trips_through_spec(qapp):
     assert out.normalize_sltp is True
 
 
-def test_edit_slave_keeps_identity_and_returns_edited_trading_params(qapp):
-    from manager.gui.slave_editor import edit_slave
+def test_edit_slave_pre_populates_with_locked_identity(qapp, monkeypatch):
+    """edit_slave opens a SlaveEditor pre-populated with `spec` and returns the
+    edited spec. We avoid the real modal loop by patching exec to accept
+    immediately, so spec() reflects the pre-populated (unchanged) values and
+    identity stays locked."""
+    from manager.gui.slave_editor import edit_slave, SlaveEditor
     from manager.app.controller import AccountSpec
+    from PySide6.QtWidgets import QDialog
+
+    def stub_exec(self):
+        self.setResult(QDialog.DialogCode.Accepted)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(SlaveEditor, "exec", stub_exec)
+
+    class _Win:
+        def __init__(self):
+            self._controller = FakeController([_inst("C:/s1/terminal64.exe")])
+
+    win = _Win()
     orig = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
                        symbol_map_csv="EURUSD=EURUSD", step_amount=100.0,
                        step_size=0.01, max_lot=10.0, max_trade_age_minutes=10.0,
                        normalize_sltp=True)
-
-    class _Win:
-        def __init__(self): self._controller = FakeController(
-            [_inst("C:/s1/terminal64.exe")])
-
-    # Drive the modal dialog programmatically: accept immediately so spec()
-    # reflects the pre-populated (unchanged) values; identity stays locked.
-    from PySide6.QtWidgets import QApplication
-    win = _Win()
-    from manager.gui.slave_editor import SlaveEditor
-    # Patch SlaveEditor.__init__ to auto-accept on shown; simplest: call
-    # edit_slave via a real dialog and accept it through a queued timer.
-    QApplication.instance().processEvents()
-    # Use a short timer to accept whichever dialog opens.
-    from PySide6.QtCore import QTimer
-    QTimer.singleShot(0, lambda: _accept_top_dialog())
     out = edit_slave(win, orig)
     assert out is not None
-    assert out.id == "s1"  # locked
-    assert out.terminal_path == "C:/s1/terminal64.exe"  # locked
-
-
-def _accept_top_dialog():
-    from PySide6.QtWidgets import QApplication
-    for w in QApplication.topLevelWidgets():
-        if w.__class__.__name__ == "SlaveEditor":
-            w.findChild(type(w.ok_button), None)  # noqa  (just ensure built)
-            w.accept()
-            return
+    # identity locked (unchanged), trading params round-trip from set_spec
+    assert out.id == "s1"
+    assert out.terminal_path == "C:/s1/terminal64.exe"
+    assert out.symbol_map_csv == "EURUSD=EURUSD"
+    assert out.step_amount == 100.0 and out.normalize_sltp is True
 ```
 
-(Note: the third test uses a zero-delay `QTimer.singleShot` to accept the modal `SlaveEditor` that `edit_slave` opens, so `edit_slave` returns the pre-populated spec. The `_accept_top_dialog` helper finds the open `SlaveEditor` and calls its `accept()`.)
+(Note: the third test patches `SlaveEditor.exec` to accept immediately, avoiding a real modal loop; `set_spec` runs before `exec` inside `edit_slave`, so `spec()` returns the pre-populated values.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
