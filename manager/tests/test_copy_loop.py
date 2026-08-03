@@ -197,3 +197,69 @@ def test_close_of_failed_open_cleans_up_record():
     cmds = eng.ingest_snapshot(_snap([]), now=NOW)["s1"]
     assert cmds == []
     assert eng._slaves["s1"].table.has(42) is False  # cleaned up
+
+
+def test_update_slave_config_updates_fields_without_rebuilding_mapper():
+    eng = _engine(infos={"s1": {"EURUSD": SI}})
+    changed = eng.update_slave_config(
+        "s1", step_amount=200.0, step_size=0.02, max_lot=20.0,
+        max_trade_age_minutes=5, symbol_map_csv="EURUSD=EURUSD",
+        normalize_sltp=False)
+    assert changed is False  # symbol_map_csv unchanged -> no mapper rebuild
+    cfg = eng._slaves["s1"].config
+    assert cfg.step_amount == 200.0 and cfg.step_size == 0.02
+    assert cfg.max_lot == 20.0 and cfg.max_trade_age_minutes == 5
+    assert cfg.normalize_sltp is False
+
+
+def test_update_slave_config_rebuilds_mapper_when_map_changes():
+    eng = _engine(infos={"s1": {"EURUSD": SI, "GBPUSD": SI}})
+    changed = eng.update_slave_config(
+        "s1", step_amount=100.0, step_size=0.01, max_lot=10.0,
+        max_trade_age_minutes=10, symbol_map_csv="EURUSD=GBPUSD",
+        normalize_sltp=True)
+    assert changed is True
+    # master EURUSD now resolves to slave GBPUSD on the next NEW
+    cmds = eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)["s1"]
+    assert len(cmds) == 1 and cmds[0].action == "OPEN"
+    assert cmds[0].symbol == "GBPUSD"
+
+
+def test_update_slave_config_new_open_uses_new_lots():
+    eng = _engine(infos={"s1": {"EURUSD": SI}})  # balance 1000
+    eng.update_slave_config(
+        "s1", step_amount=500.0, step_size=0.02, max_lot=99.0,
+        max_trade_age_minutes=10, symbol_map_csv="EURUSD=EURUSD",
+        normalize_sltp=True)
+    cmds = eng.ingest_snapshot(_snap([_pos(99)]), now=NOW)["s1"]
+    # steps=floor(1000/500)=2; lots=2*0.02=0.04 (volume_step 0.01)
+    assert cmds[0].action == "OPEN"
+    assert cmds[0].volume == pytest.approx(0.04, abs=1e-8)
+
+
+def test_update_slave_config_does_not_affect_open_trades():
+    """An edit must not alter MODIFY/PARTIAL_CLOSE/CLOSE for an already-open
+    position: those route via the RecordTable (slave_ticket + stored open
+    volumes), not the live config. Only NEW reads the config/mapper."""
+    eng = _engine(infos={"s1": {"EURUSD": SI}})
+    eng.apply_recovery("s1", [Record(42, magic_for(42), 777, 0.5, 0.10)])
+    eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)  # establish prev (NEW skipped, in table)
+    # edit everything the engine holds
+    eng.update_slave_config(
+        "s1", step_amount=999.0, step_size=0.5, max_lot=99.0,
+        max_trade_age_minutes=1, symbol_map_csv="EURUSD=EURUSD",
+        normalize_sltp=False)
+    # MODIFY on the open position: still routed to slave_ticket 777
+    cmds = eng.ingest_snapshot(
+        _snap([_pos(42, sl=1.09000, tp=1.11000)]), now=NOW)["s1"]
+    assert len(cmds) == 1 and cmds[0].action == "MODIFY"
+    assert cmds[0].slave_ticket == 777
+    # ack the MODIFY so the ticket leaves pending (otherwise the next event
+    # would be coalesced into `held`, which would mask the safety assertion)
+    from manager.ipc.messages import AckMsg
+    eng.apply_ack("s1", AckMsg(slave_id="s1", action="MODIFY", master_ticket=42,
+                              ok=True, slave_ticket=777, retcode=10009))
+    # PARTIAL_CLOSE uses stored open volumes (0.5 / 0.10), NOT the new step params
+    cmds2 = eng.ingest_snapshot(_snap([_pos(42, volume=0.30)]), now=NOW)["s1"]
+    assert cmds2[0].action == "PARTIAL_CLOSE"
+    assert cmds2[0].master_open_volume == 0.5 and cmds2[0].slave_open_volume == 0.10

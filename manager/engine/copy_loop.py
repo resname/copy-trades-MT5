@@ -127,6 +127,30 @@ class CopyEngine:
         state.pending.clear()
         state.held.clear()
 
+    def update_slave_config(self, slave_id: str, *, step_amount: float,
+                            step_size: float, max_lot: float,
+                            max_trade_age_minutes: int,
+                            symbol_map_csv: str,
+                            normalize_sltp: bool) -> bool:
+        """Live-update a running slave's config in place. Returns whether
+        symbol_map_csv changed (caller may then ask the worker to re-report
+        SymbolInfo). Safe for open trades: derive_command routes
+        MODIFY/PARTIAL_CLOSE/CLOSE via the RecordTable (slave_ticket + stored
+        open volumes), and only NEW reads these fields / the mapper."""
+        state = self._slaves[slave_id]
+        cfg = state.config
+        map_changed = cfg.symbol_map_csv != symbol_map_csv
+        cfg.step_amount = step_amount
+        cfg.step_size = step_size
+        cfg.max_lot = max_lot
+        cfg.max_trade_age_minutes = max_trade_age_minutes
+        cfg.normalize_sltp = normalize_sltp
+        cfg.symbol_map_csv = symbol_map_csv
+        if map_changed:
+            state.mapper = SymbolMapper(
+                symbol_map_csv, lambda s: s in state.symbol_infos)
+        return map_changed
+
     def ingest_snapshot(self, snapshot: Snapshot,
                         now: int) -> dict[str, list[CommandMsg]]:
         events = diff(self._prev, list(snapshot.positions))
