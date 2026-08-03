@@ -39,9 +39,28 @@ A standalone Windows desktop application that:
 | Safety controls | EA-level only (`maxLot` + `maxTradeAge`) |
 | Run mode | Tray / background capable — closing the window minimizes to tray and the engine keeps running |
 
-## Critical constraint
+## Critical constraints
 
-The `MetaTrader5` Python package holds a **single terminal connection per process** (global `mt5.initialize()` state; no documented way to hold two connections in one process). Driving a master terminal plus one or more slave terminals concurrently therefore requires **one worker subprocess per terminal connection**. This shapes the entire architecture.
+The `MetaTrader5` Python package holds a **single terminal connection per process** (global `mt5.initialize()` state; a second `initialize()` against a different `terminal64.exe` from the same process fails with IPC error `-10003`). Driving a master terminal plus one or more slave terminals concurrently therefore requires **one worker subprocess per terminal connection**. This shapes the entire architecture. Confirmed by two production projects that use exactly this pattern (mcp-mt5, TradeWolk self-hosting ~50 accounts on one VPS).
+
+Additional constraints confirmed by research:
+
+- **Programmatic login is possible.** `mt5.initialize(path, login, password, server)` **launches the terminal and logs into the specified account automatically** — the user does not manually log into each terminal. The manager's login form feeds these values straight into the call. The terminal process runs (a window appears; minimized is fine) — there is no officially supported headless mode, but no manual terminal interaction is required.
+- **`login` must be an `int`, not a string.** Passing a string yields `(-2, 'Terminal: Invalid params')`. The login form validates and converts to int before passing to the worker.
+- **One terminal install per concurrent account** (each in its own directory — two terminals cannot run from the same folder). See **Terminal instance management** below for discovery + auto-provisioning.
+- **Keep terminal windows visible** (minimized is acceptable). Production findings show Win32 `SW_HIDE` message handling becomes unreliable under load, so the manager does not force-hide terminal windows; it just spawns them and lets them be.
+
+## Terminal instance management
+
+Each concurrent account (master + every slave) needs its own MT5 terminal instance in a separate directory. The manager therefore owns terminal-instance lifecycle: **discover** existing instances, **provision** more when there aren't enough, and **assign** one instance per account.
+
+**Discovery.** Enumerate `%APPDATA%\MetaQuotes\Terminal\<hash>\` directories; each contains an `origin.txt` (UTF-16) whose first line is the install directory of the terminal that owns that data folder. (This is the same discovery the repo's `sync_and_compile.py` already performs.) Also detect the default `C:\Program Files\MetaTrader 5\` install. The result is a list of available terminal installs with their `terminal64.exe` paths, shown in each login form's terminal-path dropdown.
+
+**Provisioning.** Required instances = 1 (master) + number of slaves. If discovery finds fewer than required, the manager installs the shortfall **unattended**: run `mt5setup.exe /auto /path:"<custom path>"` — the official web installer's silent mode with a custom install directory (confirmed supported by MetaQuotes' advanced-installation help). Each new instance is installed to a user-writable custom path under `%LOCALAPPDATA%\CopyTradesMT5\terminals\instance_<n>` (avoids UAC; requires internet, since `mt5setup.exe` is a web installer that downloads components from MetaQuotes). The manager downloads/caches `mt5setup.exe`, runs it once per missing instance, waits for completion, then re-discovers. Provisioned instances are launched with `portable=True` so each keeps a self-contained data folder inside its install directory (clean per-account isolation; cleanup = delete the folder).
+
+**Assignment.** On Start, the manager assigns one discovered/provisioned terminal instance to each account (master + each slave), defaulting to auto-assignment but letting the user override per account in the login form. The assigned instance path is passed to that account's worker subprocess, which calls `mt5.initialize(path, login=<int>, password, server, portable=<True for provisioned instances>)`.
+
+**Visibility.** Terminal windows are not force-hidden (unreliable under load — see Critical constraints). They run as normal processes (minimized is acceptable); the manager does not manage their window state beyond launching them.
 
 ## Architecture
 
@@ -54,13 +73,14 @@ Two process tiers:
 
 **Manager-side components:**
 
-- **GUI** (PySide6): Master pane (login + terminal path), a Slave list (add/remove; each slave = login + terminal path + editable symbol-map table + lot-sizing fields + SL/TP-normalize toggle + maxLot + maxTradeAge), Start/Stop, a live status panel (per-slave latency / last action / errors), and a log view. Minimizes to a system-tray icon.
+- **GUI** (PySide6): Master pane (login + terminal-path dropdown auto-populated from discovered instances), a Slave list (add/remove; each slave = login + terminal-path dropdown + editable symbol-map table + lot-sizing fields + SL/TP-normalize toggle + maxLot + maxTradeAge), Start/Stop, a live status panel (per-slave latency / last action / errors), and a log view. If discovery finds fewer terminal instances than 1 + number of slaves, the Start action first auto-provisions the shortfall (see **Terminal instance management**) with a progress indicator. Minimizes to a system-tray icon.
 - **Engine** — the brain, a direct port of the EA's logic to Python:
   - `SnapshotDiff` — detect NEW / MODIFY (SL or TP changed) / PARTIAL (volume down) / CLOSE (ticket gone) by master ticket.
   - `Baseline` + `maxTradeAge` filter (per-slave) — the recent+forward start behavior.
   - `Transform` per slave: `SymbolMapper`, `LotSizer` (balance-step + lot-step rounding + min/max cap), `PriceNormalizer` (raw-distance SL/TP + tick rounding).
   - `RecordTable` per slave — master ticket → {slave ticket, master open volume, slave open volume}, the linkage for modify/partial/close and for recovery.
 - **Worker supervisor** — spawns workers, watches for subprocess exit, restarts on crash, routes pipe messages.
+- **Terminal manager** — discovers installed MT5 instances (`%APPDATA%\MetaQuotes\Terminal\<hash>\origin.txt`), provisions the shortfall via `mt5setup.exe /auto /path:"..."`, and assigns one instance per account. See **Terminal instance management**.
 - **Settings store** — DPAPI-encrypted credentials + per-account/global config, saved under `%APPDATA%\CopyTradesMT5\`.
 
 **Worker-side components (`mt5_worker.py`, role-parameterized):**
@@ -82,9 +102,10 @@ This is the linkage key for MODIFY/PARTIAL/CLOSE and for restart recovery. Reusi
 **Startup:**
 
 1. User fills the Master pane + adds Slaves (each with its own config), clicks **Start**.
-2. Manager DPAPI-decrypts credentials in-process and spawns one worker subprocess per account, passing config + credentials over the pipe (never argv).
-3. Each worker `mt5.initialize(path, login, password, server)`. On success it reports `Status(connected, account_info)`. On failure it reports `Error` and the supervisor retries connect with backoff.
-4. Slave workers run restart recovery immediately on connect and send `RecoveryRecords` up; the manager seeds each slave's `RecordTable` from it.
+2. **Terminal manager** discovers installed MT5 instances; if fewer than 1 + number of slaves, it auto-provisions the shortfall via `mt5setup.exe /auto /path:"..."` (with a GUI progress indicator), then assigns one instance per account.
+3. Manager DPAPI-decrypts credentials in-process and spawns one worker subprocess per account, passing the assigned terminal path + config + credentials over the pipe (never argv).
+4. Each worker `mt5.initialize(path, login, password, server)`. On success it reports `Status(connected, account_info)`. On failure it reports `Error` and the supervisor retries connect with backoff.
+5. Slave workers run restart recovery immediately on connect and send `RecoveryRecords` up; the manager seeds each slave's `RecordTable` from it.
 
 **Steady-state copy loop (every `masterIntervalMs`):**
 
@@ -116,7 +137,7 @@ This is the linkage key for MODIFY/PARTIAL/CLOSE and for restart recovery. Reusi
 
 ## Error handling and recovery
 
-**Worker crash / subprocess exit.** The supervisor watches each worker's process handle. On unexpected exit it logs the error, marks that account "disconnected" in the status panel, and offers reconnect. Reconnect re-spawns the worker; the slave worker re-runs restart recovery and re-sends `RecoveryRecords`, so the manager's `RecordTable` is rebuilt — no duplicated trades.
+**Worker crash / subprocess exit.** The supervisor watches each worker's process handle and treats a worker as dead only after **consecutive** health-check failures (not cumulative — a single transient failure does not trigger a respawn, matching the TradeWolk production finding). On declared death it logs the error, marks that account "disconnected" in the status panel, **kills any leftover `terminal64.exe` for that instance** before respawning (avoids the IPC `-10003` collision with a stale terminal), and re-spawns the worker. The worker owns its terminal's `initialize`/`shutdown` lifecycle — terminals are never started out-of-band. On reconnect, the slave worker re-runs restart recovery and re-sends `RecoveryRecords`, so the manager's `RecordTable` is rebuilt — no duplicated trades.
 
 **Manager restart / crash.** If the manager dies, workers lose their pipe and detect EOF → each worker calls `mt5.shutdown()` and self-terminates gracefully (no orphaned terminal connections). On manager relaunch, Start → workers spawn → recovery runs → copying resumes from current master state. Positions that closed on the master while the manager was down are detected as `CLOSE` on the first diff (if the slave still holds the position, it closes it); positions that opened are `NEW` (copied subject to `maxTradeAge`). Brief gap, no duplication.
 
@@ -166,6 +187,10 @@ manager/
   settings/
     store.py             # config load/save (JSON)
     credentials.py       # DPAPI encrypt/decrypt via pywin32
+  terminal/
+    discovery.py         # enumerate installed MT5 instances via origin.txt
+    provisioning.py      # silent-install shortfall instances (mt5setup.exe /auto /path)
+    manager.py           # discover + provision + assign one instance per account
   supervisor.py          # spawn/watch/restart workers, route IPC
   tests/
     test_snapshot_diff.py
@@ -201,6 +226,7 @@ Three tiers, bottom-up.
 - `test_linkage.py` — `MAGIC_BASE + ticket % 900000` encode/decode round-trip; `CPY#..|MV|SV` comment parse, including malformed comment.
 - `test_record_table.py` — record add/lookup/drop; partial-close bookkeeping (master open volume vs current volume).
 - `test_baseline.py` — `EstablishBaseline` marks old positions seen (skip) and lets recent ones through, per `maxTradeAge`.
+- `test_terminal_discovery.py` — parse a fake `origin.txt` (UTF-16) fixture and enumerate a temp dir of fake `<hash>` terminal folders; assert the install paths are extracted correctly. (Provisioning itself — running `mt5setup.exe` — is covered by the manual smoke test, not unit tests.)
 
 **2. Integration test (pytest, no real terminal):** a fake master worker that replays a scripted sequence of snapshots and a fake slave worker that records the `Command`s it receives (no `order_send`), driven through the *real* `copy_loop` + IPC framing. Asserts the full event → transform → command flow end-to-end: a scripted master open/modify/partial/close produces the expected OPEN/MODIFY/PARTIAL_CLOSE/CLOSE commands with correct lots, SL/TP, and slave-ticket linkage. Also covers restart recovery (fake slave reports `RecoveryRecords` → manager seeds `RecordTable` → no duplicate OPEN) and the heartbeat warning (no snapshot for `heartbeatSeconds * 2` → warning fires).
 
@@ -211,6 +237,7 @@ Three tiers, bottom-up.
 - Restart mid-copy: kill the manager, relaunch, Start → verify recovery rebuilds state and no duplicate trades; verify a master close during the gap closes the slave position.
 - Tray: minimize to tray, confirm copying continues; restore, confirm live status.
 - Disconnect: stop the master terminal → heartbeat warning fires; restart it → copying resumes.
+- Auto-provision: configure master + 2 slaves with only one terminal instance installed → Start → verify the manager silently installs two more instances to custom paths under `%LOCALAPPDATA%\CopyTradesMT5\terminals\`, assigns one per account, and all three log in and copy.
 
 **Definition of done for the spec:** tiers 1 + 2 green in the repo; tier 3 documented as a runbook the user executes against their own demo accounts (a real terminal cannot be run in this build environment).
 
@@ -222,8 +249,9 @@ Per-account and global config persisted as JSON under `%APPDATA%\CopyTradesMT5\`
 - `master.json` — terminal path, login, server (password stored DPAPI-encrypted in a separate `credentials.bin`).
 - `slave_<login>.json` — terminal path, login, server, symbol map (`master=slave` pairs), `balanceStepAmount`, `balanceStepSize`, `maxLot`, `maxTradeAgeMinutes`, `normalizeSLTP`, `retryCount`, `retryDelayMs`.
 - `credentials.bin` — DPAPI-encrypted blob holding all account passwords.
+- `terminals.json` — registry of terminal instances the manager knows about: path, `provisioned_by_manager` flag, and the account it is assigned to. Tracks which instances the manager installed (so it can offer to clean them up) versus ones the user had already installed.
 
-Settings fields mirror the EA's `SCopierSettings` so configuration knowledge transfers.
+The per-account terminal-path field (in `master.json` / `slave_<login>.json`) records which instance is assigned to that account; it is auto-filled from discovery and re-validated on Start. Settings fields otherwise mirror the EA's `SCopierSettings` so configuration knowledge transfers.
 
 ## Open items deferred to the implementation plan
 
