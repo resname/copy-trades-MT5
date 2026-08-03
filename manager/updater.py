@@ -2,11 +2,11 @@
 
 Headless (no Qt). Compares the installed ``manager._version.__version__`` to
 the latest release's ``version.txt`` on GitHub Releases. ``apply_update_and_restart``
-spawns a detached PowerShell that downloads ``install.ps1`` from GitHub Releases
-and runs it with ``-Yes`` (so the newest installer logic always runs, non-interactively)
-and then calls ``on_quit`` so the caller can stop the engine and exit. The detached
-installer detects any running manager instance, stops it gracefully then force,
-waits for exit, reinstalls the latest wheel, and relaunches.
+ensures a verified wheel is ready (cached_wheel, else cached_update(), else
+download now + verify), then spawns a detached ``manager.update_helper`` with
+``(wheel, parent_pid)`` and calls ``on_quit`` so the caller can stop the engine
+and exit. The helper waits for this process to exit, reinstalls the wheel, and
+relaunches the manager.
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from pathlib import Path
 
 REPO = "resname/copy-trades-MT5"
 BASE = f"https://github.com/{REPO}/releases/latest/download"
-INSTALL_PS1_URL = f"{BASE}/install.ps1"
 VERSION_URL = f"{BASE}/version.txt"
 WHEEL_URL = f"{BASE}/manager-latest.whl"
 WHEEL_SHA_URL = f"{BASE}/manager-latest.whl.sha256"
@@ -48,17 +47,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
-
-# Process-creation flags for the background installer. CREATE_NO_WINDOW
-# (0x08000000) gives the child a console (so ``powershell -Command`` actually
-# executes its body) but no visible window. CREATE_NEW_PROCESS_GROUP (0x00000200)
-# decouples Ctrl-C so the installer survives the parent quitting.
-#
-# Do NOT use DETACHED_PROCESS (0x00000008): a console-less ``powershell.exe
-# -Command`` exits without running the script body, so the installer never runs
-# and the "Update & restart" button silently does nothing (the app quits via
-# on_quit but nothing reinstalls/relaunches).
-_BG_FLAGS = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
 
 
 @dataclass
@@ -163,16 +151,34 @@ def check_for_update(timeout: float = 5.0) -> UpdateInfo:
     return UpdateInfo(available=available, current=cur, latest=latest)
 
 
-def apply_update_and_restart(on_quit) -> None:
-    """Spawn a detached installer running the latest ``install.ps1`` with
-    ``-Yes`` (newest installer logic, non-interactive), then call ``on_quit()``
-    so the caller stops the engine and exits. The detached installer detects
-    any running manager instance, stops it gracefully then force, waits for
-    exit, reinstalls the latest wheel, and relaunches."""
-    cmd = ["powershell", "-NoProfile", "-Command",
-           f"& ([scriptblock]::Create((irm '{INSTALL_PS1_URL}'))) -Yes"]
+def _helper_exe() -> str:
+    """The interpreter to run the detached helper windowless: prefer the venv's
+    pythonw.exe (sibling of sys.executable), fall back to sys.executable."""
+    exe = sys.executable
+    sibling = Path(exe).parent / "pythonw.exe"
+    return str(sibling) if sibling.exists() else exe
+
+
+def apply_update_and_restart(on_quit, cached_wheel: Path | None = None) -> None:
+    """Ensure a verified wheel is ready (cached_wheel, else cached_update(),
+    else download now + verify). On failure, return WITHOUT calling on_quit
+    so the app stays running. On success: spawn the detached update_helper with
+    (wheel, parent_pid), then call on_quit() so the caller stops the engine and
+    exits. The helper waits for this process to exit, reinstalls the wheel, and
+    relaunches the manager."""
+    wheel = cached_wheel
+    if wheel is None:
+        wheel = cached_update()
+    if wheel is None:
+        try:
+            wheel = download_update()
+        except UpdateDownloadError:
+            return
+    parent_pid = os.getpid()
     kwargs: dict = {"close_fds": True}
     if sys.platform == "win32":
-        kwargs["creationflags"] = _BG_FLAGS
-    subprocess.Popen(cmd, **kwargs)
+        kwargs["creationflags"] = _DETACHED_FLAGS
+    subprocess.Popen(
+        [_helper_exe(), "-m", "manager.update_helper", str(wheel), str(parent_pid)],
+        **kwargs)
     on_quit()
