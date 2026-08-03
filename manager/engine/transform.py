@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Callable
 
 
@@ -41,3 +42,40 @@ class SymbolMapper:
             return master_symbol
         # 3. not found
         return ""
+
+
+def calculate_lots(
+    balance: float,
+    step_amount: float,
+    step_size: float,
+    max_lot: float,
+    lot_step: float,
+    min_lot: float,
+    max_lot_symbol: float,
+) -> float:
+    """Balance-step lot sizing. Ported from CLotSizer::CalculateLots.
+
+    steps = floor(balance / step_amount); lots = steps * step_size;
+    round DOWN to lot_step; clamp up to min_lot; cap at min(symbol max, max_lot).
+    Returns 0.0 on invalid inputs (step/lot_step <= 0).
+    """
+    if step_amount <= 0.0 or step_size <= 0.0:
+        return 0.0
+    if lot_step <= 0.0:
+        return 0.0
+
+    steps = math.floor(balance / step_amount)
+    lots = steps * step_size
+
+    # round down to the lot-step grid
+    lots = math.floor(lots / lot_step) * lot_step
+
+    # clamp up to min, then cap at the two maxima
+    lots = max(lots, min_lot)
+    lots = min(lots, max_lot_symbol)
+    lots = min(lots, max_lot)
+
+    # normalize floating-point noise to the lot-step's digit count
+    lot_digits = max(0, int(round(-math.log10(lot_step))))
+    lots = round(lots, lot_digits)
+    return lots

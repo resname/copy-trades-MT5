@@ -37,3 +37,43 @@ def test_resolve_explicit_overrides_fallback():
     # check on the mapped symbol).
     mapper = SymbolMapper("EURUSD=EURUSD_Z", exists_check=lambda s: False)
     assert mapper.resolve("EURUSD") == "EURUSD_Z"
+
+
+from manager.engine.transform import calculate_lots
+
+
+def test_lots_basic_on_grid():
+    # balance 1000, 100 per 0.01 step -> 10 steps -> 0.10 lot
+    assert calculate_lots(1000, 100, 0.01, 10, 0.01, 0.01, 100) == 0.10
+
+
+def test_lots_rounds_down_to_lot_step():
+    # 2 steps * 0.05 = 0.10, lot step 0.1 -> floor(0.10/0.1)*0.1 = 0.1
+    assert calculate_lots(250, 100, 0.05, 10, 0.1, 0.01, 100) == 0.1
+
+
+def test_lots_clamps_up_to_min_lot():
+    # balance 50 < step 100 -> 0 steps -> 0 -> clamped up to min 0.01
+    assert calculate_lots(50, 100, 0.01, 10, 0.01, 0.01, 100) == 0.01
+
+
+def test_lots_caps_at_max_lot_setting():
+    # 100 steps * 0.01 = 1.0, capped at max_lot 0.5
+    assert calculate_lots(10000, 100, 0.01, 0.5, 0.01, 0.01, 100) == 0.5
+
+
+def test_lots_caps_at_symbol_max_lot():
+    # 100 steps * 0.01 = 1.0, capped at symbol max 0.2
+    assert calculate_lots(10000, 100, 0.01, 10, 0.01, 0.01, 0.2) == 0.2
+
+
+def test_lots_invalid_step_amount_returns_zero():
+    assert calculate_lots(1000, 0, 0.01, 10, 0.01, 0.01, 100) == 0.0
+
+
+def test_lots_invalid_step_size_returns_zero():
+    assert calculate_lots(1000, 100, 0.0, 10, 0.01, 0.01, 100) == 0.0
+
+
+def test_lots_invalid_lot_step_returns_zero():
+    assert calculate_lots(1000, 100, 0.01, 10, 0.0, 0.01, 100) == 0.0
