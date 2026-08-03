@@ -192,3 +192,40 @@ def test_update_restart_refuses_while_running(qapp):
     w._cached_wheel = None
     w._on_update_restart()  # is_running() True -> logs, does not call apply
     assert "stop" in w.log_view.toPlainText().lower()
+
+
+def test_about_to_quit_persists_config(qapp, tmp_path):
+    """Guards the aboutToQuit→_save_config hook (requirement #6): both tray
+    Quit and update-quit reduce to QApplication.quit() → aboutToQuit, so this
+    one test covers both quit paths. If the connect line is removed, this fails."""
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    from PySide6.QtWidgets import QApplication
+    store = SettingsStore(path=tmp_path / "settings.json")
+    w = MainWindow(FakeController(), store=store)
+    w.master_terminal.setEditText("C:/m/terminal64.exe")
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe")]
+    # emit the signal the way QApplication.quit() would
+    QApplication.instance().aboutToQuit.emit()
+    cfg = store.load_config()
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+    assert len(cfg["slaves"]) == 1
+    assert cfg["slaves"][0]["id"] == "s1"
+
+
+def test_about_to_quit_saves_once_not_twice(qapp, tmp_path):
+    """A single aboutToQuit must produce a single save (no double-connect)."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from PySide6.QtWidgets import QApplication
+    store = SettingsStore(path=tmp_path / "settings.json")
+    w = MainWindow(FakeController(), store=store)
+    calls = []
+    real_save = store.save_config
+    def counting_save(cfg):
+        calls.append(cfg)
+        real_save(cfg)
+    store.save_config = counting_save
+    QApplication.instance().aboutToQuit.emit()
+    assert len(calls) == 1

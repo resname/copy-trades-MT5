@@ -54,7 +54,7 @@ def test_main_update_subcommand(monkeypatch):
     import manager.updater as updater
     called = []
     monkeypatch.setattr(updater, "apply_update_and_restart",
-                        lambda on_quit: called.append(on_quit))
+                        lambda on_quit, cached_wheel=None: called.append(on_quit))
     rc = entry.main(["update"])
     assert rc == 0
     assert len(called) == 1  # on_quit passed through, not invoked here
