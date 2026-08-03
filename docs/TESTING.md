@@ -66,6 +66,8 @@ Tests live in `manager/tests/` and mirror the package structure:
 | `test_terminal_discovery.py`, `test_terminal_manager.py`, `test_terminal_provisioning.py` | Terminal discovery / assignment / provisioning |
 | `test_credentials.py`, `test_settings_store.py` | DPAPI encrypt/decrypt + atomic settings store |
 | `test_controller.py` | `CopyController` orchestration (terminal mgmt + gate + creds) |
+| `test_catalog.py`, `test_default.py`, `test_live.py`, `test_learned.py` | Broker catalog merge/dedup/demo-first sort, shipped snapshot loader, live fetch + cache (best-effort, never raises), learned-servers persistence |
+| `test_server_picker.py` | BrokerServerPicker: broker→server population, demo-first, free-text server entry (skip without PySide6) |
 | `test_version.py` | `_version.__version__` single source of truth |
 | `test_updater.py` | `parse_version` numeric compare, `check_for_update`, `apply_update_and_restart` (headless, mocked HTTP + Popen) |
 | `test_main_window.py`, `test_slave_editor.py`, `test_tray.py`, `test_main_entry.py` | GUI construction + app-graph wiring (skip without PySide6) |
