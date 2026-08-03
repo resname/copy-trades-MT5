@@ -2,10 +2,11 @@
 
 Headless (no Qt). Compares the installed ``manager._version.__version__`` to
 the latest release's ``version.txt`` on GitHub Releases. ``apply_update_and_restart``
-spawns a detached PowerShell running ``irm <install.ps1> | iex`` (so the newest
-installer logic always runs) and then calls ``on_quit`` so the caller can stop
-the engine and exit; the detached installer waits for this process to exit,
-reinstalls the latest wheel, and relaunches.
+spawns a detached PowerShell that downloads ``install.ps1`` from GitHub Releases
+and runs it with ``-Yes`` (so the newest installer logic always runs, non-interactively)
+and then calls ``on_quit`` so the caller can stop the engine and exit. The detached
+installer detects any running manager instance, stops it gracefully then force,
+waits for exit, reinstalls the latest wheel, and relaunches.
 """
 from __future__ import annotations
 
@@ -79,12 +80,13 @@ def check_for_update(timeout: float = 5.0) -> UpdateInfo:
 
 
 def apply_update_and_restart(on_quit) -> None:
-    """Spawn a detached ``irm INSTALL_PS1_URL | iex`` (newest installer logic),
-    then call ``on_quit()`` so the caller stops the engine and exits. The
-    detached installer polls for this process to exit, swaps the wheel, and
-    relaunches."""
+    """Spawn a detached installer running the latest ``install.ps1`` with
+    ``-Yes`` (newest installer logic, non-interactive), then call ``on_quit()``
+    so the caller stops the engine and exits. The detached installer detects
+    any running manager instance, stops it gracefully then force, waits for
+    exit, reinstalls the latest wheel, and relaunches."""
     cmd = ["powershell", "-NoProfile", "-Command",
-           f"irm {INSTALL_PS1_URL} | iex"]
+           f"& ([scriptblock]::Create((irm '{INSTALL_PS1_URL}'))) -Yes"]
     kwargs: dict = {"close_fds": True}
     if sys.platform == "win32":
         # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS

@@ -49,7 +49,7 @@ if (-not $PyExe) {
       --accept-source-agreements --accept-package-agreements
   } else {
     $inst = "$env:TEMP\python-3.12.7-amd64.exe"
-    Invoke-WebRequest "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" -OutFile $inst
+    Invoke-WebRequest "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" -OutFile $inst -UseBasicParsing
     Start-Process -FilePath $inst -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_pip=1" -Wait
   }
   $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + $env:Path
@@ -101,8 +101,8 @@ if ($running.Count -gt 0) {
 $tmp = Join-Path $env:TEMP ("copytrades-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $wheelPath = Join-Path $tmp "manager-latest.whl"
-Invoke-WebRequest $WheelUrl -OutFile $wheelPath
-$expected = ((Invoke-WebRequest $ShaUrl).Content.Trim() -split '\s+')[0]
+Invoke-WebRequest $WheelUrl -OutFile $wheelPath -UseBasicParsing
+$expected = ((Invoke-WebRequest $ShaUrl -UseBasicParsing).Content.Trim() -split '\s+')[0]
 $actual = (Get-FileHash $wheelPath -Algorithm SHA256).Hash.ToLower()
 if ($actual -ne $expected.ToLower()) {
   Write-Error "Wheel checksum mismatch (expected $expected got $actual). Aborting; existing install untouched."
