@@ -168,7 +168,7 @@ class RealMt5:
             out.append(Position(ticket=p.ticket, symbol=p.symbol, side=p.type,
                                 open_price=p.price_open, volume=p.volume,
                                 sl=p.sl, tp=p.tp, open_time=p.time, point=point,
-                                comment=p.comment))
+                                comment=p.comment, magic=p.magic))
         return out
 
     def position_by_ticket(self, ticket):
