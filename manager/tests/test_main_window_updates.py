@@ -17,6 +17,30 @@ class FakeController:
         return []
 
 
+class _StubSignal:
+    """Stand-in for a Qt Signal: accepts .connect() and does nothing."""
+    def connect(self, *args, **kwargs):
+        pass
+
+
+class _NoThreadUpdateWorker:
+    """Test double for manager.gui.main_window._UpdateWorker.
+
+    _on_update_checked(available=True) starts a real fire-and-forget QThread
+    running updater.download_update(). In the real app that is fine (process
+    exit reaps the thread), but in the pytest session an unjoined QThread is
+    destroyed while still running at interpreter shutdown → the process exits
+    non-zero (on CI: no "X passed" summary line). These tests only check the
+    label/button state, so they substitute this no-op worker to avoid leaking
+    a running thread (and a real network download) into the test session.
+    """
+    done = _StubSignal()
+    def __init__(self, fn, parent=None):
+        self._fn = fn
+    def start(self):
+        pass  # no real thread, no network I/O
+
+
 def test_update_ui_exists(qapp):
     from manager.gui.main_window import MainWindow
     w = MainWindow(FakeController())
@@ -24,8 +48,9 @@ def test_update_ui_exists(qapp):
     assert w.update_restart_button.isVisibleTo(w) is False
 
 
-def test_update_available_enables_restart_only_when_idle(qapp):
+def test_update_available_enables_restart_only_when_idle(qapp, monkeypatch):
     from manager.gui.main_window import MainWindow
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
     w = MainWindow(FakeController(running=False))
     w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
     assert "0.1.2" in w.update_label.text()
@@ -33,8 +58,9 @@ def test_update_available_enables_restart_only_when_idle(qapp):
     assert w.update_restart_button.isEnabled() is True
 
 
-def test_update_available_disables_restart_while_running(qapp):
+def test_update_available_disables_restart_while_running(qapp, monkeypatch):
     from manager.gui.main_window import MainWindow
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
     w = MainWindow(FakeController(running=True))
     w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
     assert w.update_restart_button.isEnabled() is False
