@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import subprocess
+import webbrowser
+
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel, QGroupBox,
 )
 
 from manager.app.controller import AccountSpec, StatusUpdate
-from manager.gui.server_picker import BrokerServerPicker
+
+MT5_DOWNLOAD_URL = "https://www.metatrader5.com/en/download"
 
 
 class _UpdateWorker(QThread):
@@ -53,21 +57,25 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # Master pane
+        # Master pane — terminal-path only (manual login)
         master_box = QGroupBox("Master")
         mform = QFormLayout()
-        self.master_login = QLineEdit()
-        self.master_login.setPlaceholderText("integer login (e.g. 5001)")
-        self.master_password = QLineEdit()
-        self.master_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.master_password.setPlaceholderText("demo account password")
         self.master_terminal = QComboBox()
         self.master_terminal.setEditable(True)
-        mform.addRow("Login", self.master_login)
-        self.master_picker = BrokerServerPicker(self._controller)
-        mform.addRow(self.master_picker)
-        mform.addRow("Password", self.master_password)
         mform.addRow("Terminal", self.master_terminal)
+        term_row = QHBoxLayout()
+        self.launch_terminal_button = QPushButton("Launch terminal")
+        self.install_metatrader_button = QPushButton("Install MetaTrader")
+        term_row.addWidget(self.launch_terminal_button)
+        term_row.addWidget(self.install_metatrader_button)
+        mform.addRow("", term_row)
+        self.install_disclaimer_label = QLabel(
+            "Install MetaTrader opens the download page. Download and run "
+            "mt5setup.exe, and choose a CUSTOM install path for each terminal "
+            "— the default path collides with existing terminals. Log in to a "
+            "DEMO account only.")
+        self.install_disclaimer_label.setWordWrap(True)
+        mform.addRow("", self.install_disclaimer_label)
         master_box.setLayout(mform)
 
         # Slave list
@@ -122,6 +130,8 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self._on_stop)
         self.add_slave_button.clicked.connect(self._on_add_slave)
         self.remove_slave_button.clicked.connect(self._on_remove_slave)
+        self.launch_terminal_button.clicked.connect(self._on_launch_terminal)
+        self.install_metatrader_button.clicked.connect(self._on_install_metatrader)
         self.check_update_button.clicked.connect(self.check_for_updates_now)
         self.update_restart_button.clicked.connect(self._on_update_restart)
 
@@ -182,16 +192,11 @@ class MainWindow(QMainWindow):
 
     # ---- handlers ----
     def _on_start(self):
-        try:
-            login = int(self.master_login.text().strip())
-        except ValueError:
-            self.append_log("master login must be an integer")
+        terminal_path = self.master_terminal.currentText().strip()
+        if not terminal_path:
+            self.append_log("select a master terminal first")
             return
-        master = AccountSpec(
-            id="master", login=login,
-            server=self.master_picker.server(),
-            password=self.master_password.text(),
-            terminal_path=self.master_terminal.currentText().strip() or None)
+        master = AccountSpec(id="master", terminal_path=terminal_path)
         try:
             self._controller.start(master, list(self._slaves))
             self.set_running(True)
@@ -202,15 +207,26 @@ class MainWindow(QMainWindow):
         self._controller.stop()
         self.set_running(False)
 
+    def _on_launch_terminal(self):
+        exe = self.master_terminal.currentText().strip()
+        if not exe:
+            self.append_log("select a terminal first")
+            return
+        try:
+            subprocess.Popen([exe])
+        except OSError as exc:
+            self.append_log(f"failed to launch terminal: {exc}")
+
+    def _on_install_metatrader(self):
+        webbrowser.open(MT5_DOWNLOAD_URL)
+
     def _on_add_slave(self):
-        # SlaveEditor (Task 3) is wired here in Task 3; for now a no-op stub
-        # keeps construction + Start/Stop testable in isolation.
         from manager.gui.slave_editor import SlaveEditor, add_slave
         spec = add_slave(self)
         if spec is not None:
             self._slaves.append(spec)
-            self.slave_list.addItem(f"{spec.id}: login={spec.login} "
-                                    f"server={spec.server}")
+            label = spec.terminal_path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            self.slave_list.addItem(f"{spec.id}: {label}")
 
     def _on_remove_slave(self):
         row = self.slave_list.currentRow()

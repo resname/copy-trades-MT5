@@ -9,11 +9,6 @@ class FakeController:
         self._instances = instances or []
     def discover_instances(self):
         return self._instances
-    def get_catalog(self):
-        from manager.brokers.catalog import BrokerCatalog
-        return BrokerCatalog()
-    def refresh_brokers(self):
-        return self.get_catalog()
 
 
 def test_slave_editor_constructs(qapp):
@@ -21,9 +16,8 @@ def test_slave_editor_constructs(qapp):
     from manager.terminal.discovery import TerminalInstance
     c = FakeController([TerminalInstance("C:/i0", "C:/i0/terminal64.exe", "appdata")])
     dlg = SlaveEditor(c)
-    assert dlg.login is not None
-    assert dlg._picker is not None
     assert dlg.terminal is not None
+    assert dlg.launch_terminal_button is not None
     assert dlg.symbol_table is not None
     assert dlg.step_amount is not None
     assert dlg.max_lot is not None
@@ -35,11 +29,9 @@ def test_slave_editor_constructs(qapp):
 def test_slave_editor_spec_returns_accountspec(qapp):
     from manager.gui.slave_editor import SlaveEditor
     from manager.app.controller import AccountSpec
-    dlg = SlaveEditor(FakeController())
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
     dlg.id_edit.setText("s1")
-    dlg.login.setText("5002")
-    dlg._picker.set_server("Demo")
-    dlg.password.setText("pw")
+    dlg.terminal.setCurrentIndex(0)
     dlg.step_amount.setText("100")
     dlg.step_size.setText("0.01")
     dlg.max_lot.setText("10")
@@ -48,8 +40,7 @@ def test_slave_editor_spec_returns_accountspec(qapp):
     spec = dlg.spec()
     assert isinstance(spec, AccountSpec)
     assert spec.id == "s1"
-    assert spec.login == 5002
-    assert spec.server == "Demo"
+    assert spec.terminal_path == "C:/i0/terminal64.exe"
     assert spec.max_lot == 10.0
     assert spec.normalize_sltp is True
 
@@ -60,12 +51,27 @@ def test_slave_editor_symbol_table_round_trips_into_csv(qapp):
     dlg.symbol_table.setRowCount(1)
     dlg.symbol_table.setItem(0, 0, _qitem("EURUSD"))
     dlg.symbol_table.setItem(0, 1, _qitem("EURUSD"))
-    spec = dlg._spec_from_fields("s2", 5003, "Demo", "pw", "100", "0.01",
+    spec = dlg._spec_from_fields("s2", "C:/i0/terminal64.exe", "100", "0.01",
                                  "10", "10", True)
     assert "EURUSD=EURUSD" in spec.symbol_map_csv
 
 
+def test_slave_editor_launch_button_runs_terminal64_exe(qapp, monkeypatch):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    dlg.terminal.setCurrentIndex(0)
+    popped = []
+    monkeypatch.setattr("manager.gui.slave_editor.subprocess.Popen",
+                        lambda cmd, **k: popped.append(cmd) or object())
+    dlg.launch_terminal_button.click()
+    assert popped == [["C:/i0/terminal64.exe"]]
+
+
+def _inst(exe):
+    from manager.terminal.discovery import TerminalInstance
+    return TerminalInstance(exe.rsplit("/terminal64.exe", 1)[0], exe, "appdata")
+
+
 def _qitem(text):
     from PySide6.QtWidgets import QTableWidgetItem
-    it = QTableWidgetItem(text)
-    return it
+    return QTableWidgetItem(text)

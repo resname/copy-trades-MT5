@@ -18,8 +18,8 @@ def _engine():
 
 
 def _slave_cfg():
-    return {"slave_id": "s1", "terminal_path": "C:/t/s.exe", "login": 2,
-            "server": "Demo", "symbol_map_csv": "EURUSD=EURUSD",
+    return {"slave_id": "s1", "terminal_path": "C:/t/s.exe",
+            "symbol_map_csv": "EURUSD=EURUSD",
             "normalize_sltp": True, "retry_count": 1, "retry_delay_ms": 0,
             "slave_status_interval_ms": 60000}
 
@@ -57,11 +57,10 @@ def test_end_to_end_open_through_subprocesses():
     # would be ingested with an empty symbol-info table, the OPEN skipped, and
     # the engine's prev-snapshot set -- never re-NEW'ing the position. Ordering
     # the spawn guarantees the SI is present for the first ingest.
-    sup.spawn_slave("s1", _slave_cfg(), "pw", adapter_kind="fake",
+    sup.spawn_slave("s1", _slave_cfg(), adapter_kind="fake",
                     fake_state=_slave_state())
     _tick_until(sup, lambda: bool(eng._slaves["s1"].symbol_infos))
-    sup.spawn_master({"terminal_path": "C:/t/m.exe", "login": 1,
-                      "server": "Demo", "master_interval_ms": 20}, "pw",
+    sup.spawn_master({"terminal_path": "C:/t/m.exe", "master_interval_ms": 20},
                      adapter_kind="fake", fake_state=master_state)
     try:
         ok = _tick_until(
@@ -80,7 +79,7 @@ def test_restart_on_process_death():
     eng = _engine()
     sup = Supervisor(eng, stale_seconds=1000, consecutive_failures=5,
                      poll_timeout=0.02)
-    sup.spawn_slave("s1", _slave_cfg(), "pw", adapter_kind="fake",
+    sup.spawn_slave("s1", _slave_cfg(), adapter_kind="fake",
                     fake_state=_slave_state())
     try:
         _tick_until(sup, lambda: sup._handles["s1"].proc.is_alive())
@@ -105,8 +104,7 @@ def test_master_death_restarts_master():
         "symbol_infos": {"EURUSD": SI},
         "account": {"login": 1, "balance": 0.0, "equity": 0.0,
                     "currency": "USD", "server": "Demo"}}
-    sup.spawn_master({"terminal_path": "C:/t/m.exe", "login": 1,
-                      "server": "Demo", "master_interval_ms": 20}, "pw",
+    sup.spawn_master({"terminal_path": "C:/t/m.exe", "master_interval_ms": 20},
                      adapter_kind="fake", fake_state=master_state)
     try:
         _tick_until(sup, lambda: sup._handles["master"].proc.is_alive())
@@ -136,12 +134,12 @@ def test_consecutive_stale_failures_restart():
                     time_fn=lambda: fake_now[0], poll_timeout=0.0)
     sup._handles["s1"] = WorkerHandle(
         name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
-        password="", adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
     # stub _spawn so restart doesn't create a real subprocess
     spawned = []
-    def fake_spawn(name, role, config, password, adapter_kind, fake_state):
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
         h = WorkerHandle(name=name, role=role, proc=_StubProc(), pipe=None,
-                        config=config, password=password, adapter_kind=adapter_kind,
+                        config=config, adapter_kind=adapter_kind,
                         fake_state=fake_state, last_msg_ts=fake_now[0])
         spawned.append(h)
         return h
@@ -163,7 +161,7 @@ def test_message_resets_fail_count():
                     time_fn=lambda: fake_now[0], poll_timeout=0.0)
     sup._handles["s1"] = WorkerHandle(
         name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
-        password="", adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
     fake_now[0] = 100.0
     sup._health_check(); assert sup._handles["s1"].fail_count == 1
     # a fresh message resets the staleness window
@@ -175,7 +173,7 @@ def test_message_resets_fail_count():
 def test_shutdown_terminates_workers():
     eng = _engine()
     sup = Supervisor(eng, poll_timeout=0.02)
-    sup.spawn_slave("s1", _slave_cfg(), "pw", adapter_kind="fake",
+    sup.spawn_slave("s1", _slave_cfg(), adapter_kind="fake",
                     fake_state=_slave_state())
     _tick_until(sup, lambda: sup._handles["s1"].proc.is_alive())
     sup.shutdown()

@@ -6,20 +6,11 @@ pytest.importorskip("PySide6")
 class FakeTerminalManager:
     def __init__(self): self._instances = []
     def discover_all(self): return []
-    def provision_shortfall(self, n, setup_path=None): return []
     def assign(self, accounts): return {}
     def kill_terminal(self, exe): return 0
 
 
 class _FakeStore:
-    # The real SettingsStore exposes a ``path`` the broker cache lives next to;
-    # ``CopyController.get_catalog`` reads ``self._store.path.parent``. Point at a
-    # temp file so the read-only cache lookup finds nothing (load_cache never
-    # raises on a missing file) and nothing is written in the worktree.
-    def __init__(self):
-        import pathlib
-        import tempfile
-        self.path = pathlib.Path(tempfile.gettempdir()) / "copytrades_test_settings.json"
     def load(self): return {}
     def save(self, d): pass
 

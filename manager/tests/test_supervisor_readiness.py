@@ -19,8 +19,8 @@ def _engine():
 
 
 def _slave_cfg():
-    return {"slave_id": "s1", "terminal_path": "C:/t/s.exe", "login": 2,
-            "server": "Demo", "symbol_map_csv": "EURUSD=EURUSD",
+    return {"slave_id": "s1", "terminal_path": "C:/t/s.exe",
+            "symbol_map_csv": "EURUSD=EURUSD",
             "normalize_sltp": True, "retry_count": 1, "retry_delay_ms": 0,
             "slave_status_interval_ms": 60000}
 
@@ -44,7 +44,7 @@ def _tick_until(sup, predicate, timeout=5.0):
 def test_slave_ready_requires_symbol_info_and_status():
     eng = _engine()
     sup = Supervisor(eng, poll_timeout=0.02)
-    sup.spawn_slave("s1", _slave_cfg(), "pw", adapter_kind="fake",
+    sup.spawn_slave("s1", _slave_cfg(), adapter_kind="fake",
                     fake_state=_slave_state())
     try:
         # not ready immediately after spawn
@@ -59,7 +59,7 @@ def test_slave_ready_requires_symbol_info_and_status():
 def test_wait_for_slaves_ready_returns_true_when_ready():
     eng = _engine()
     sup = Supervisor(eng, poll_timeout=0.02)
-    sup.spawn_slave("s1", _slave_cfg(), "pw", adapter_kind="fake",
+    sup.spawn_slave("s1", _slave_cfg(), adapter_kind="fake",
                     fake_state=_slave_state())
     try:
         assert sup.wait_for_slaves_ready(timeout=5.0)
@@ -77,7 +77,7 @@ def test_wait_for_slaves_ready_times_out_when_status_missing():
     sup = Supervisor(eng, poll_timeout=0.0)
     sup._handles["s1"] = WorkerHandle(
         name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
-        password="", adapter_kind="fake", fake_state=None,
+        adapter_kind="fake", fake_state=None,
         got_symbol_info=True, got_status=False, last_msg_ts=time.time())
     # _StubProc is alive and last_msg_ts is now, so _health_check never
     # restarts; tick is a fast no-op. The gate polls until the wall-clock
@@ -97,11 +97,10 @@ def test_readiness_gate_prevents_permanent_skip_of_first_snapshot():
         "symbol_infos": {"EURUSD": SI},
         "account": {"login": 1, "balance": 0.0, "equity": 0.0,
                     "currency": "USD", "server": "Demo"}}
-    sup.spawn_slave("s1", _slave_cfg(), "pw", adapter_kind="fake",
+    sup.spawn_slave("s1", _slave_cfg(), adapter_kind="fake",
                     fake_state=_slave_state())
     assert sup.wait_for_slaves_ready(timeout=5.0)
-    sup.spawn_master({"terminal_path": "C:/t/m.exe", "login": 1,
-                      "server": "Demo", "master_interval_ms": 20}, "pw",
+    sup.spawn_master({"terminal_path": "C:/t/m.exe", "master_interval_ms": 20},
                      adapter_kind="fake", fake_state=master_state)
     try:
         ok = _tick_until(
@@ -137,9 +136,9 @@ def test_restart_backoff_delays_respawn_of_dead_worker():
     sup.BASE_BACKOFF = 1.0
     spawned = []
 
-    def fake_spawn(name, role, config, password, adapter_kind, fake_state):
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
         h = WorkerHandle(name=name, role=role, proc=_StubProc(), pipe=None,
-                         config=config, password=password,
+                         config=config,
                          adapter_kind=adapter_kind, fake_state=fake_state,
                          last_msg_ts=clock.t)
         spawned.append(h)
@@ -147,7 +146,7 @@ def test_restart_backoff_delays_respawn_of_dead_worker():
     sup._spawn = fake_spawn
     sup._handles["s1"] = WorkerHandle(
         name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
-        password="", adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
     # kill it
     sup._handles["s1"].proc.terminate()
     assert not sup._handles["s1"].proc.is_alive()
@@ -175,9 +174,9 @@ def test_restart_backoff_resets_on_message():
     sup.BASE_BACKOFF = 1.0
     spawned = []
 
-    def fake_spawn(name, role, config, password, adapter_kind, fake_state):
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
         h = WorkerHandle(name=name, role=role, proc=_StubProc(), pipe=None,
-                         config=config, password=password,
+                         config=config,
                          adapter_kind=adapter_kind, fake_state=fake_state,
                          last_msg_ts=clock.t)
         spawned.append(h)
@@ -185,7 +184,7 @@ def test_restart_backoff_resets_on_message():
     sup._spawn = fake_spawn
     sup._handles["s1"] = WorkerHandle(
         name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
-        password="", adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
     # First death: immediate respawn; backoff (1.0s) scheduled for the NEXT death.
     sup._handles["s1"].proc.terminate()
     sup._restart("s1")

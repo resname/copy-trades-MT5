@@ -75,8 +75,7 @@ def test_slave_init_emits_recovery_symbolinfo_status():
     cmt = encode_comment(42, 0.50, 0.10)
     mt = _adapter(positions=[Position(777, "EURUSD", BUY, 1.10, 0.10, 0, 0, 0,
                                       0.00001, comment=cmt)])
-    cfg = {"slave_id": "s1", "symbol_map_csv": "EURUSD=EURUSD",
-          "login": 123, "server": "Demo"}
+    cfg = {"slave_id": "s1", "symbol_map_csv": "EURUSD=EURUSD"}
     rec, si, st = slave_init(mt, cfg)
     assert isinstance(rec, RecoveryMsg) and rec.records[0].master_ticket == 42
     assert isinstance(si, SymbolInfoMsg) and "EURUSD" in si.infos

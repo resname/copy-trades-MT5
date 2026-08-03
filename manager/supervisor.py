@@ -21,7 +21,6 @@ class WorkerHandle:
     proc: multiprocessing.Process
     pipe: object
     config: dict
-    password: str
     adapter_kind: str
     fake_state: dict | None
     got_symbol_info: bool = False
@@ -58,17 +57,14 @@ class Supervisor:
         self._stop = threading.Event()
         self._thread = None
         self.on_restart = None  # callback(name, role) for GUI status (Plan 4)
-        self.on_status_msg = None  # callback(name, role, StatusMsg) for the
-                                   # learned-server hook (broker browser plan)
 
-    def spawn_master(self, config, password, adapter_kind="real", fake_state=None):
+    def spawn_master(self, config, adapter_kind="real", fake_state=None):
         self._handles["master"] = self._spawn("master", "master", config,
-                                              password, adapter_kind, fake_state)
+                                               adapter_kind, fake_state)
 
-    def spawn_slave(self, slave_id, config, password, adapter_kind="real",
-                    fake_state=None):
+    def spawn_slave(self, slave_id, config, adapter_kind="real", fake_state=None):
         self._handles[slave_id] = self._spawn(slave_id, "slave", config,
-                                              password, adapter_kind, fake_state)
+                                              adapter_kind, fake_state)
 
     def slave_ready(self, slave_id) -> bool:
         """A slave is ready once it has reported BOTH SymbolInfoMsg and its
@@ -94,17 +90,16 @@ class Supervisor:
                 return True
         return all(self.slave_ready(i) for i in ids)
 
-    def _spawn(self, name, role, config, password, adapter_kind, fake_state):
+    def _spawn(self, name, role, config, adapter_kind, fake_state):
         parent_pipe, child_pipe = multiprocessing.Pipe(duplex=True)
         proc = multiprocessing.Process(target=worker_main,
             args=(child_pipe, role, adapter_kind, fake_state), daemon=True)
         proc.start()
         child_pipe.close()  # parent owns only the parent end
-        send_msg(parent_pipe, StartMsg(config=config, password=password))
+        send_msg(parent_pipe, StartMsg(config=config))
         return WorkerHandle(name=name, role=role, proc=proc, pipe=parent_pipe,
-                            config=config, password=password,
-                            adapter_kind=adapter_kind, fake_state=fake_state,
-                            last_msg_ts=self._time_fn())
+                            config=config, adapter_kind=adapter_kind,
+                            fake_state=fake_state, last_msg_ts=self._time_fn())
 
     def tick(self, timeout=None) -> bool:
         to = self._poll_timeout if timeout is None else timeout
@@ -140,8 +135,6 @@ class Supervisor:
                 self._send(slave_id, cmd)
         elif isinstance(msg, StatusMsg):
             self._engine.apply_status(slave_id, msg)
-            if self.on_status_msg is not None:
-                self.on_status_msg(slave_id, "slave", msg)
         elif isinstance(msg, RecoveryMsg):
             self._engine.apply_recovery(slave_id, msg.records)
         elif isinstance(msg, SymbolInfoMsg):
@@ -180,8 +173,7 @@ class Supervisor:
                     for cmd in clist:
                         self._send(slave_id, cmd)
             elif isinstance(msg, StatusMsg):
-                if self.on_status_msg is not None:
-                    self.on_status_msg("master", "master", msg)
+                pass
             elif isinstance(msg, ErrorMsg):
                 self.errors.append(f"master: {msg.message}")
             return True
@@ -250,8 +242,7 @@ class Supervisor:
         delay = min(self.BASE_BACKOFF * (2 ** h.restart_count), self.MAX_BACKOFF)
         new_count = h.restart_count + 1
         new_next = now + delay
-        new_h = self._spawn(name, h.role, h.config, h.password,
-                            h.adapter_kind, h.fake_state)
+        new_h = self._spawn(name, h.role, h.config, h.adapter_kind, h.fake_state)
         new_h.restart_count = new_count
         new_h.next_restart_at = new_next
         self._handles[name] = new_h

@@ -88,9 +88,51 @@ def test_order_send_full_close_removes_position():
 
 def test_initialize_shutdown_last_error():
     mt = _fake()
-    assert mt.initialize("C:/t/terminal64.exe", 123, "pw", "Demo") is True
+    assert mt.initialize("C:/t/terminal64.exe") is True
     assert mt.last_error() == (0, "")
     mt.shutdown()
+
+
+def test_fake_initialize_path_only_no_credentials():
+    mt = _fake()
+    # no login/server/password -> path-only initialize still succeeds
+    assert mt.initialize("C:/t/terminal64.exe") is True
+    assert mt.initialize("C:/t/terminal64.exe", portable=True) is True
+
+
+class _FakeMt5Module:
+    """Stand-in for the lazy-imported MetaTrader5 module so RealMt5's
+    conditional-kwargs behavior is unit-testable without MT5 installed."""
+    def __init__(self):
+        self.init_kwargs = None
+        self._err = (0, "")
+    def initialize(self, **kwargs):
+        self.init_kwargs = dict(kwargs)
+        return True
+    def last_error(self):
+        return self._err
+
+
+def test_real_initialize_path_only_omits_credentials_kwargs():
+    from manager.worker.mt5_adapter import RealMt5
+    r = RealMt5()
+    r._mt5 = _FakeMt5Module()  # bypass the lazy MetaTrader5 import
+    ok = r.initialize("C:/t/terminal64.exe")
+    assert ok is True
+    kw = r._mt5.init_kwargs
+    assert kw == {"path": "C:/t/terminal64.exe", "portable": False}
+    assert "login" not in kw and "password" not in kw and "server" not in kw
+
+
+def test_real_initialize_with_credentials_passes_all_kwargs():
+    from manager.worker.mt5_adapter import RealMt5
+    r = RealMt5()
+    r._mt5 = _FakeMt5Module()
+    r.initialize("C:/t/terminal64.exe", login=123, password="pw", server="Demo",
+                 portable=True)
+    kw = r._mt5.init_kwargs
+    assert kw == {"path": "C:/t/terminal64.exe", "login": 123, "password": "pw",
+                  "server": "Demo", "portable": True}
 
 
 def test_failed_order_send_records_retcode():

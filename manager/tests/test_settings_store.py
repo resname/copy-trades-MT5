@@ -17,29 +17,9 @@ def test_load_missing_file_returns_empty_dict():
 def test_save_then_load_round_trip(tmp_path):
     store = _store(tmp_path)
     data = {"accounts": {"master": {"login": 5001, "server": "Demo-Server"}},
-            "provisioned_instances": [], "global": {"heartbeat_seconds": 5},
-            "learned_servers": []}
+            "provisioned_instances": [], "global": {"heartbeat_seconds": 5}}
     store.save(data)
     assert store.load() == data
-
-
-def test_load_defaults_learned_servers_list(tmp_path):
-    store = _store(tmp_path)
-    store.save({"accounts": {}, "provisioned_instances": [], "global": {}})
-    assert store.load()["learned_servers"] == []
-
-
-def test_password_blob_survives_round_trip(tmp_path):
-    """The store is crypto-agnostic: an opaque base64 password blob stored
-    in an account dict is returned byte-for-byte after a save/load cycle."""
-    store = _store(tmp_path)
-    acct = {"login": 5001, "server": "Demo-Server",
-            "password_blob": "ZW5jcnlwdGVk"}
-    store.save({"accounts": {"s1": acct}, "provisioned_instances": [],
-                "global": {}})
-    loaded = store.load()
-    assert loaded["accounts"]["s1"]["password_blob"] == "ZW5jcnlwdGVk"
-    assert loaded["accounts"]["s1"]["login"] == 5001
 
 
 def test_load_corrupt_json_returns_empty_dict(tmp_path):

@@ -48,12 +48,6 @@ def _mgr(**kw):
     return TerminalManager(store=store, **kw)
 
 
-def test_required_count_is_one_plus_slaves():
-    m = _mgr()
-    assert m.required_count(0) == 1
-    assert m.required_count(3) == 4
-
-
 def test_discover_all_merges_appdata_default_and_provisioned():
     store = FakeStore()
     store.add_provisioned_instance(r"C:\prov\instance_0")
@@ -85,40 +79,6 @@ def test_discover_all_dedups_by_exe_path():
                         sleep_fn=lambda s: None, time_fn=lambda: 0.0)
     insts = m.discover_all()
     assert len(insts) == 1
-
-
-def test_provision_shortfall_installs_and_registers():
-    store = FakeStore()
-    m = TerminalManager(store=store,
-                        discover_fn=lambda **k: [],  # nothing installed yet
-                        provision_fn=lambda index, setup_path, install_root=None,
-                                       **k: fr"C:\prov\instance_{index}",
-                        download_fn=lambda cache_path=None: r"C:\cache\mt5setup.exe",
-                        process_iter_fn=lambda attrs=None: [],
-                        sleep_fn=lambda s: None, time_fn=lambda: 0.0)
-    new_dirs = m.provision_shortfall(num_slaves=2,
-                                     setup_path=r"C:\cache\mt5setup.exe")
-    # required = 3, available = 0 -> 3 new
-    assert new_dirs == [r"C:\prov\instance_0", r"C:\prov\instance_1",
-                       r"C:\prov\instance_2"]
-    assert store.list_provisioned_instances() == new_dirs
-
-
-def test_provision_shortfall_only_installs_the_gap():
-    store = FakeStore()
-    store.add_provisioned_instance(r"C:\existing\instance_0")
-    m = TerminalManager(store=store,
-                        discover_fn=lambda **k: [
-                            TerminalInstance(r"C:\existing\instance_0",
-                                             r"C:\existing\instance_0\terminal64.exe",
-                                             "provisioned")],
-                        provision_fn=lambda index, setup_path, install_root=None, **k:
-                            fr"C:\prov\instance_{index}",
-                        download_fn=lambda cache_path=None: r"C:\cache\mt5setup.exe",
-                        process_iter_fn=lambda attrs=None: [],
-                        sleep_fn=lambda s: None, time_fn=lambda: 0.0)
-    new_dirs = m.provision_shortfall(num_slaves=1)  # required 2, available 1
-    assert len(new_dirs) == 1
 
 
 def test_assign_one_instance_per_account_auto():
