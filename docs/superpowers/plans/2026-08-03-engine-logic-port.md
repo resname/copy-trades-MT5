@@ -253,7 +253,8 @@ def test_decode_comment_ticket_only_no_pipe():
 
 
 def test_decode_comment_missing_sv():
-    assert decode_comment("CPY#12345|MV0.50000000") == (12345, 0.5, None)
+    # EA requires BOTH |MV and |SV to parse volumes; missing SV -> no volumes (None)
+    assert decode_comment("CPY#12345|MV0.50000000") == (12345, None, None)
 
 
 def test_decode_comment_no_prefix():
