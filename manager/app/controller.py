@@ -26,10 +26,10 @@ class ControllerError(Exception):
 @dataclass
 class AccountSpec:
     id: str
-    login: int
-    server: str
-    password: str
     terminal_path: str | None = None
+    login: int = 0
+    server: str = ""
+    password: str = ""
     symbol_map_csv: str = ""
     step_amount: float = 100.0
     step_size: float = 0.01

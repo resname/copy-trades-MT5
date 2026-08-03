@@ -12,14 +12,6 @@ class FakeTerminalManager:
 
 
 class _FakeStore:
-    # The real SettingsStore exposes a ``path`` the broker cache lives next to;
-    # ``CopyController.get_catalog`` reads ``self._store.path.parent``. Point at a
-    # temp file so the read-only cache lookup finds nothing (load_cache never
-    # raises on a missing file) and nothing is written in the worktree.
-    def __init__(self):
-        import pathlib
-        import tempfile
-        self.path = pathlib.Path(tempfile.gettempdir()) / "copytrades_test_settings.json"
     def load(self): return {}
     def save(self, d): pass
 

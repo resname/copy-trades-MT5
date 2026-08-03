@@ -1,22 +1,22 @@
 # manager/gui/slave_editor.py
 from __future__ import annotations
 
+import subprocess
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QFormLayout, QLineEdit, QComboBox,
+    QDialog, QVBoxLayout, QFormLayout, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QCheckBox,
     QHeaderView,
 )
 
 from manager.app.controller import AccountSpec
-from manager.gui.server_picker import BrokerServerPicker
 
 
 class SlaveEditor(QDialog):
-    """A modal dialog to add/edit one slave account: login, server, password,
-    terminal-path override dropdown (auto-populated), a master->slave symbol
-    map table, lot-sizing fields, maxLot, maxTradeAge, and the normalize-SL/TP
-    toggle. ``spec()`` returns the configured AccountSpec (None-equivalent if
-    the user cancelled — caller checks accepted state)."""
+    """A modal dialog to add/edit one slave account: terminal-path dropdown
+    (auto-populated, required — the user manually logs in to the terminal),
+    a Launch-terminal button, a master->slave symbol map table, lot-sizing
+    fields, maxLot, maxTradeAge, and the normalize-SL/TP toggle. ``spec()``
+    returns the configured AccountSpec (None if cancelled)."""
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -30,21 +30,16 @@ class SlaveEditor(QDialog):
         form = QFormLayout()
         self.id_edit = QLineEdit()
         self.id_edit.setPlaceholderText("s1")
-        self.login = QLineEdit()
-        self.login.setPlaceholderText("integer login")
-        self.password = QLineEdit()
-        self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.terminal = QComboBox()
         self.terminal.setEditable(True)
         form.addRow("Slave id", self.id_edit)
-        form.addRow("Login", self.login)
-        self._picker = BrokerServerPicker(self._controller)
-        form.addRow(self._picker)
-        form.addRow("Password", self.password)
-        form.addRow("Terminal (override)", self.terminal)
+        form.addRow("Terminal", self.terminal)
+        term_row = QHBoxLayout()
+        self.launch_terminal_button = QPushButton("Launch terminal")
+        term_row.addWidget(self.launch_terminal_button)
+        form.addRow("", term_row)
         root.addLayout(form)
 
-        # symbol map table
         self.symbol_table = QTableWidget(0, 2)
         self.symbol_table.setHorizontalHeaderLabels(["Master symbol", "Slave symbol"])
         self.symbol_table.horizontalHeader().setSectionResizeMode(
@@ -59,7 +54,6 @@ class SlaveEditor(QDialog):
         self.add_sym_button.clicked.connect(self._add_sym_row)
         self.del_sym_button.clicked.connect(self._del_sym_row)
 
-        # lot-sizing + toggles
         sizing = QFormLayout()
         self.step_amount = QLineEdit("100")
         self.step_size = QLineEdit("0.01")
@@ -74,7 +68,6 @@ class SlaveEditor(QDialog):
         root.addLayout(sizing)
         root.addWidget(self.normalize_sltp)
 
-        # ok/cancel
         buttons = QHBoxLayout()
         self.ok_button = QPushButton("OK")
         self.cancel_button = QPushButton("Cancel")
@@ -83,6 +76,16 @@ class SlaveEditor(QDialog):
         root.addLayout(buttons)
         self.ok_button.clicked.connect(self.accept)
         self.cancel_button.clicked.connect(self.reject)
+        self.launch_terminal_button.clicked.connect(self._on_launch_terminal)
+
+    def _on_launch_terminal(self):
+        exe = self.terminal.currentText().strip()
+        if not exe:
+            return
+        try:
+            subprocess.Popen([exe])
+        except OSError:
+            pass
 
     def _add_sym_row(self):
         self.symbol_table.insertRow(self.symbol_table.rowCount())
@@ -115,11 +118,10 @@ class SlaveEditor(QDialog):
                 pairs.append(f"{mt}={st}")
         return ",".join(pairs)
 
-    def _spec_from_fields(self, sid, login, server, password, step_amount,
-                          step_size, max_lot, max_age, normalize) -> AccountSpec:
+    def _spec_from_fields(self, sid, terminal_path, step_amount, step_size,
+                          max_lot, max_age, normalize) -> AccountSpec:
         return AccountSpec(
-            id=sid, login=int(login), server=server, password=password,
-            terminal_path=self.terminal.currentText().strip() or None,
+            id=sid, terminal_path=terminal_path or None,
             symbol_map_csv=self._symbol_map_csv(),
             step_amount=float(step_amount), step_size=float(step_size),
             max_lot=float(max_lot), max_trade_age_minutes=float(max_age),
@@ -130,10 +132,9 @@ class SlaveEditor(QDialog):
             return None
         return self._spec_from_fields(
             self.id_edit.text().strip() or "s1",
-            self.login.text().strip(), self._picker.server(),
-            self.password.text(), self.step_amount.text(),
-            self.step_size.text(), self.max_lot.text(),
-            self.max_trade_age_minutes.text(),
+            self.terminal.currentText().strip(),
+            self.step_amount.text(), self.step_size.text(),
+            self.max_lot.text(), self.max_trade_age_minutes.text(),
             self.normalize_sltp.isChecked())
 
 
