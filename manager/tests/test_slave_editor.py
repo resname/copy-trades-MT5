@@ -39,6 +39,7 @@ def test_slave_editor_spec_returns_accountspec(qapp):
     dlg.step_size.setText("0.01")
     dlg.max_lot.setText("10")
     dlg.max_trade_age_minutes.setText("10")
+    dlg.accept()                      # simulate the user clicking OK
     spec = dlg.spec()
     assert isinstance(spec, AccountSpec)
     assert spec.id == "s1"

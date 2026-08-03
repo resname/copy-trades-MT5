@@ -1,9 +1,8 @@
 # manager/gui/slave_editor.py
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QFormLayout, QLineEdit, QComboBox,
+    QDialog, QVBoxLayout, QFormLayout, QLineEdit, QComboBox,
     QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QCheckBox,
     QHeaderView,
 )
