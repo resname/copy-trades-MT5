@@ -22,6 +22,17 @@ VERSION_URL = f"{BASE}/version.txt"
 WHEEL_URL = f"{BASE}/manager-latest.whl"
 WHEEL_SHA_URL = f"{BASE}/manager-latest.whl.sha256"
 
+# Process-creation flags for the background installer. CREATE_NO_WINDOW
+# (0x08000000) gives the child a console (so ``powershell -Command`` actually
+# executes its body) but no visible window. CREATE_NEW_PROCESS_GROUP (0x00000200)
+# decouples Ctrl-C so the installer survives the parent quitting.
+#
+# Do NOT use DETACHED_PROCESS (0x00000008): a console-less ``powershell.exe
+# -Command`` exits without running the script body, so the installer never runs
+# and the "Update & restart" button silently does nothing (the app quits via
+# on_quit but nothing reinstalls/relaunches).
+_BG_FLAGS = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+
 
 @dataclass
 class UpdateInfo:
@@ -89,7 +100,6 @@ def apply_update_and_restart(on_quit) -> None:
            f"& ([scriptblock]::Create((irm '{INSTALL_PS1_URL}'))) -Yes"]
     kwargs: dict = {"close_fds": True}
     if sys.platform == "win32":
-        # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
-        kwargs["creationflags"] = 0x00000200 | 0x00000008
+        kwargs["creationflags"] = _BG_FLAGS
     subprocess.Popen(cmd, **kwargs)
     on_quit()
