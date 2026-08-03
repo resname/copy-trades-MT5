@@ -1,5 +1,8 @@
 # manager/tests/test_updater.py
+import shutil
 import subprocess
+import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -61,3 +64,28 @@ def test_apply_update_and_restart_spawns_and_quits(monkeypatch):
     assert cmd is not None
     assert any("install.ps1" in str(part) for part in cmd)
     assert quit_called == [True]
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"),
+                    reason="background-spawn execution is Windows + PowerShell specific")
+def test_background_spawn_actually_runs_command_body(tmp_path):
+    # Regression for the silent "Update & restart does nothing" bug.
+    # apply_update_and_restart spawns the installer with _BG_FLAGS; a
+    # console-less DETACHED_PROCESS makes `powershell -Command` exit without
+    # running the body, so the installer never runs. CREATE_NO_WINDOW gives the
+    # child a console (so the body executes) with no visible window. This test
+    # spawns a trivial marker-writing command with the production flags and
+    # asserts the body actually ran.
+    marker = tmp_path / "ran.txt"
+    ps_cmd = f"Set-Content -Path '{marker}' -Value 'ran'"
+    cmd = ["powershell", "-NoProfile", "-Command", ps_cmd]
+    kwargs = {"close_fds": True}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = apply_update_and_restart.__globals__["_BG_FLAGS"]
+    subprocess.Popen(cmd, **kwargs)
+    for _ in range(60):
+        if marker.exists():
+            break
+        time.sleep(0.25)
+    assert marker.exists(), "background powershell spawn did not execute its command body"
+    assert marker.read_text().strip() == "ran"
