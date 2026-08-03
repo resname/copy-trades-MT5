@@ -96,6 +96,32 @@ def test_restart_on_process_death():
         sup.shutdown()
 
 
+def test_master_death_restarts_master():
+    eng = _engine()
+    sup = Supervisor(eng, stale_seconds=1000, consecutive_failures=5,
+                     poll_timeout=0.02)
+    master_state = {
+        "positions": [],
+        "symbol_infos": {"EURUSD": SI},
+        "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                    "currency": "USD", "server": "Demo"}}
+    sup.spawn_master({"terminal_path": "C:/t/m.exe", "login": 1,
+                      "server": "Demo", "master_interval_ms": 20}, "pw",
+                     adapter_kind="fake", fake_state=master_state)
+    try:
+        _tick_until(sup, lambda: sup._handles["master"].proc.is_alive())
+        old = sup._handles["master"].proc
+        old.terminate(); old.join(2.0)
+        assert not old.is_alive()
+        ok = _tick_until(
+            sup,
+            lambda: sup._handles["master"].proc is not old
+            and sup._handles["master"].proc.is_alive())
+        assert ok, "master was not restarted after death"
+    finally:
+        sup.shutdown()
+
+
 class _StubProc:
     def __init__(self): self._alive = True
     def is_alive(self): return self._alive

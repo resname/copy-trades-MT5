@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, fields
-from typing import Any
+from dataclasses import dataclass, fields
 
 from manager.engine.models import Position, Record, SymbolInfo
 

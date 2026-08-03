@@ -5,16 +5,6 @@ from manager.ipc.messages import SnapshotMsg, CommandMsg
 from manager.ipc.pipe_framing import send_msg, recv_msg
 
 
-class FakeConn:
-    """In-memory bidirectional pipe: peers share a list of byte blobs."""
-    def __init__(self, peer):
-        self._out = peer._in
-        self._in = []
-        peer._out = self._in
-        peer._in = peer._in  # noqa: keep peer's in-buffer
-    # The shared-buffer dance above is fiddly; use the helper below instead.
-
-
 def _make_pair():
     class End:
         def __init__(self, inbox, outbox):

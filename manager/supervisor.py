@@ -89,6 +89,7 @@ class Supervisor:
                     msg = recv_msg(h.pipe)
                 except EOFError:
                     self.errors.append(f"slave {name} pipe closed")
+                    h.pipe = None
                     break
                 self._dispatch_slave(name, msg)
                 h.last_msg_ts = self._time_fn()
@@ -115,7 +116,15 @@ class Supervisor:
             try:
                 msg = recv_msg(h.pipe)
             except EOFError:
-                return False
+                # Master pipe closed: don't stop the supervisor. Close the
+                # pipe, clear the handle, and let the tick loop continue so
+                # _health_check observes the dead master and restarts it.
+                try:
+                    h.pipe.close()
+                except Exception:
+                    pass
+                h.pipe = None
+                return True
             h.last_msg_ts = self._time_fn()
             h.fail_count = 0
             if isinstance(msg, SnapshotMsg):
