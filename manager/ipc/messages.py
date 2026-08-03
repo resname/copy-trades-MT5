@@ -54,11 +54,10 @@ def _symbol_info_from_dict(d: dict) -> SymbolInfo:
 
 @dataclass(frozen=True)
 class StartMsg:
-    """First message on every worker pipe: carries config + password so the
-    password never appears in argv. Sent by the supervisor before the worker
-    calls mt5.initialize."""
+    """First message on every worker pipe: carries the worker config. Sent by
+    the supervisor before the worker calls mt5.initialize. No credentials —
+    the worker connects to the terminal's saved account (manual login)."""
     config: dict
-    password: str
     KIND = "start"
 
 
@@ -174,7 +173,7 @@ def encode(msg) -> dict:
         return {"_kind": kind, "source_id": msg.source_id,
                 "records": [_record_to_dict(r) for r in msg.records]}
     if kind == "start":
-        return {"_kind": kind, "config": msg.config, "password": msg.password}
+        return {"_kind": kind, "config": msg.config}
     # default: plain field dump (Status/Command/Ack/Error have only scalars)
     out = {"_kind": kind}
     for f in fields(msg):
@@ -202,7 +201,7 @@ def decode(d: dict):
             source_id=d["source_id"],
             records=tuple(_record_from_dict(r) for r in d["records"]))
     if kind == "start":
-        return StartMsg(config=d["config"], password=d["password"])
+        return StartMsg(config=d["config"])
     # scalar-only messages
     kwargs = {f.name: d[f.name] for f in fields(cls)}
     return cls(**kwargs)

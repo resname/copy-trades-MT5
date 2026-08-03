@@ -248,7 +248,7 @@ class CopyController:
         cfgs = self.build_worker_configs(master, slaves, assigned)
         self._status("info", "starting slave workers…")
         for s in slaves:
-            sup.spawn_slave(s.id, cfgs[s.id], s.password,
+            sup.spawn_slave(s.id, cfgs[s.id],
                             adapter_kind="real" if slave_fake_state is None else "fake",
                             fake_state=slave_fake_state)
         # readiness gate: wait for every slave's SymbolInfo + first Status
@@ -260,7 +260,7 @@ class CopyController:
             raise ControllerError("slaves not ready within timeout")
         self._status("ready", "slaves ready; starting master")
         mcfg = cfgs[master.id]
-        sup.spawn_master(mcfg, master.password,
+        sup.spawn_master(mcfg,
                          adapter_kind="real" if master_fake_state is None else "fake",
                          fake_state=master_fake_state)
         sup.start()

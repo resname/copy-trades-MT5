@@ -76,10 +76,11 @@ def test_status_symbolinfo_recovery_round_trip():
 
 
 def test_start_and_error_round_trip():
-    st = M.StartMsg(config={"terminal_path": "C:/t/terminal64.exe",
-                            "login": 123, "server": "Demo"}, password="pw")
+    st = M.StartMsg(config={"terminal_path": "C:/t/terminal64.exe"})
     rt = M.decode(M.encode(st))
-    assert rt.config["login"] == 123 and rt.password == "pw"
+    assert rt.config["terminal_path"] == "C:/t/terminal64.exe"
+    # password field is gone
+    assert not hasattr(rt, "password")
 
     err = M.ErrorMsg(source_id="s1", message="boom", fatal=True)
     assert M.decode(M.encode(err)).fatal is True

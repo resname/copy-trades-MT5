@@ -286,22 +286,20 @@ def _slave_loop(pipe, adapter, config):
 
 
 def worker_main(pipe, role: str, adapter_kind: str = "real", fake_state=None):
-    """Subprocess entry. Reads its StartMsg (config + password) from the pipe
-    BEFORE initializing, so the password never appears in argv."""
+    """Subprocess entry. Reads its StartMsg (config only — no credentials)
+    from the pipe, then connects to the terminal's saved account."""
     try:
         start = recv_msg(pipe)
     except EOFError:
         return
     config = start.config
-    password = start.password
     if adapter_kind == "fake":
         adapter = FakeMt5(**(fake_state or {}))
     else:
         adapter = RealMt5()
     source_id = config.get("slave_id", role)
-    ok = adapter.initialize(config["terminal_path"], int(config["login"]),
-                           password, config["server"],
-                           portable=bool(config.get("portable", False)))
+    ok = adapter.initialize(config["terminal_path"],
+                            portable=bool(config.get("portable", False)))
     if not ok:
         try:
             send_msg(pipe, ErrorMsg(source_id=source_id,
