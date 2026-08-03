@@ -253,7 +253,8 @@ def test_decode_comment_ticket_only_no_pipe():
 
 
 def test_decode_comment_missing_sv():
-    assert decode_comment("CPY#12345|MV0.50000000") == (12345, 0.5, None)
+    # EA requires BOTH |MV and |SV to parse volumes; missing SV -> no volumes (None)
+    assert decode_comment("CPY#12345|MV0.50000000") == (12345, None, None)
 
 
 def test_decode_comment_no_prefix():
@@ -599,6 +600,7 @@ Ported from `PriceNormalizer.mqh::NormalizeSLTP` (raw price-distance reproductio
 
 Append to `manager/tests/test_transform.py`:
 ```python
+import pytest
 from manager.engine.transform import normalize_sltp, round_to_tick
 from manager.engine.models import BUY, SELL
 
@@ -606,8 +608,10 @@ from manager.engine.models import BUY, SELL
 def test_normalize_buy_sl_tp():
     sl, tp = normalize_sltp(master_open=1.10000, master_sl=1.09500,
                            master_tp=1.10500, slave_open=1.20000, side=BUY)
-    assert sl == 1.19500
-    assert tp == 1.20500
+    # raw-distance reproduction leaves FP noise (1.1949999...); the EA leaves
+    # this raw and tick-rounds later in the caller, so compare with approx.
+    assert sl == pytest.approx(1.19500)
+    assert tp == pytest.approx(1.20500)
 
 
 def test_normalize_buy_no_sl_no_tp():
@@ -619,8 +623,8 @@ def test_normalize_buy_no_sl_no_tp():
 def test_normalize_sell_sl_tp():
     sl, tp = normalize_sltp(master_open=1.10000, master_sl=1.10500,
                            master_tp=1.09500, slave_open=1.20000, side=SELL)
-    assert sl == 1.20500
-    assert tp == 1.19500
+    assert sl == pytest.approx(1.20500)
+    assert tp == pytest.approx(1.19500)
 
 
 def test_round_to_tick_basic():
