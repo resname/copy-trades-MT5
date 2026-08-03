@@ -8,9 +8,13 @@ overwritten by pip.
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 try:
@@ -73,9 +77,46 @@ def _wait_for_parent(parent_pid: int, timeout_s: float = 60.0) -> None:
         time.sleep(0.25)
 
 
+def _valid_wheel_name(wheel: str) -> str:
+    """Build a valid PEP 427 wheel filename from the wheel's own METADATA.
+
+    The cached update wheel is stored under the stable download name
+    ``manager-latest.whl``, which is NOT a valid wheel filename (only 2
+    dash-parts; PEP 427 needs >=5). pip rejects it: ``ERROR: Invalid wheel
+    filename (wrong number of parts): 'manager-latest'`` (rc=1), so the
+    helper bailed without relaunching and no new window opened after an
+    update. A valid name built from the wheel's Name+Version (and its
+    py3-none-any tag) makes pip accept it.
+    """
+    with zipfile.ZipFile(wheel) as z:
+        meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+        text = z.read(meta).decode("utf-8", "replace")
+    name = re.search(r"^Name:\s*(.+)$", text, re.M).group(1).strip()
+    ver = re.search(r"^Version:\s*(.+)$", text, re.M).group(1).strip()
+    dist = re.sub(r"[^A-Za-z0-9.]+", "_", name)
+    return f"{dist}-{ver}-py3-none-any.whl"
+
+
+def _valid_wheel_copy(wheel: str) -> str:
+    """Copy the cached wheel to a temp path with a valid PEP 427 filename so
+    pip accepts it (see _valid_wheel_name). Returns the copy's path."""
+    dst_dir = tempfile.mkdtemp(prefix="ctm5_update_")
+    dst = os.path.join(dst_dir, _valid_wheel_name(wheel))
+    shutil.copyfile(wheel, dst)
+    return dst
+
+
 def _reinstall(wheel: str) -> int:
-    return subprocess.call([sys.executable, "-m", "pip", "install",
-                            "--upgrade", "--force-reinstall", wheel])
+    # pip rejects the stable cache name (manager-latest.whl) as an invalid
+    # wheel filename; install from a valid-named copy instead, and clean up
+    # the temp copy afterward so repeated updates don't accumulate in temp.
+    valid = _valid_wheel_copy(wheel)
+    _log(f"installing wheel as {os.path.basename(valid)}")
+    try:
+        return subprocess.call([sys.executable, "-m", "pip", "install",
+                                "--upgrade", "--force-reinstall", valid])
+    finally:
+        shutil.rmtree(os.path.dirname(valid), ignore_errors=True)
 
 
 def _relaunch() -> None:
