@@ -77,3 +77,47 @@ def test_lots_invalid_step_size_returns_zero():
 
 def test_lots_invalid_lot_step_returns_zero():
     assert calculate_lots(1000, 100, 0.01, 10, 0.0, 0.01, 100) == 0.0
+
+
+import pytest
+from manager.engine.transform import normalize_sltp, round_to_tick
+from manager.engine.models import BUY, SELL
+
+
+def test_normalize_buy_sl_tp():
+    sl, tp = normalize_sltp(master_open=1.10000, master_sl=1.09500,
+                           master_tp=1.10500, slave_open=1.20000, side=BUY)
+    # raw-distance reproduction leaves FP noise (1.1949999...); the EA leaves
+    # this raw and tick-rounds later in the caller, so compare with approx.
+    assert sl == pytest.approx(1.19500)
+    assert tp == pytest.approx(1.20500)
+
+
+def test_normalize_buy_no_sl_no_tp():
+    sl, tp = normalize_sltp(1.10000, 0.0, 0.0, 1.20000, BUY)
+    assert sl == 0.0
+    assert tp == 0.0
+
+
+def test_normalize_sell_sl_tp():
+    sl, tp = normalize_sltp(master_open=1.10000, master_sl=1.10500,
+                           master_tp=1.09500, slave_open=1.20000, side=SELL)
+    assert sl == pytest.approx(1.20500)
+    assert tp == pytest.approx(1.19500)
+
+
+def test_round_to_tick_basic():
+    assert round_to_tick(1.19457, 0.00001, 5) == 1.19457
+
+
+def test_round_to_tick_rounds_to_nearest():
+    # 1.194576 / 0.0001 = 11945.76 -> round to 11946 -> 1.1946
+    assert round_to_tick(1.194576, 0.0001, 4) == 1.1946
+
+
+def test_round_to_tick_zero_price_unchanged():
+    assert round_to_tick(0.0, 0.00001, 5) == 0.0
+
+
+def test_round_to_tick_invalid_tick_size_returns_none():
+    assert round_to_tick(1.19457, 0.0, 5) is None
