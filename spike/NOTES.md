@@ -155,3 +155,44 @@ contain the login fields being assembled. That capture would (a) confirm which
 function encrypts, (b) recover the plaintext login packet, and (c) reveal the
 key + where it comes from (answering the key-material-source viability
 question directly).
+
+Plaintext-dump capture (spike/capture/frida_plaintext.log, 10 events: 2
+cipher_hit + 8 sock_marker, 0 errors). Both functions fired exactly once,
+right after the 0x0c marker (01:03:12.033 marker -> 01:03:12.037
+login_encrypt_frame:in -> 01:03:12.047 login_builder:in), confirming they
+are in the 0x0c login path.
+
+login_encrypt_frame (0x138ce84) entry args:
+  arg0 = packet-descriptor struct (contains 0x3ad=941 = total packet len, a
+         code ptr, a heap ptr, flags). The packet is ALREADY BUILT here.
+  arg1 = code pointer (0x7ffca31d031e, in a DLL -- a return/callback addr).
+  arg2 = 0x301 (769, a length/flag). arg3 = 0.
+  => 0x138ce84 is the low-level "frame + send built packet" step. The
+     encryption happened UPSTREAM, not here.
+
+login_builder (0x39301c3) entry args:
+  arg0 = 0. arg1 = struct of pointers (heap). arg2 = high-entropy 512B
+         (no ASCII -- encrypted data / key table / code). arg3 = 0.
+  => No clean plaintext buffer (login id / password / server / version) in
+     any top-level arg. Full 512B ASCII scan of every arg found ZERO real
+     strings.
+
+Conclusion of this step: the cipher PATH is located (real progress vs the
+Task 4 stop-point), but the plaintext login body is NOT exposed at the entry
+args of these two functions. Extracting it needs deeper work: (a) chase the
+struct pointers in arg0/arg1 one+ levels deep, (b) hook the upstream callers
+(frames [5] 0x1390a84 / [6] 0x139f166) where login fields may be more
+accessible, or (c) Stalker-trace the body of 0x39301c3 to find the exact
+instruction that writes the encrypted 0x0c body and inspect plaintext+key in
+registers at that moment. Each is a further capture iteration; the password
+may be hashed at the UI layer so no contiguous plaintext buffer exists.
+Key-material source still UNANSWERED.
+
+Strategic note: even a FULLY successful RE (cipher + key + key-source) yields
+a standalone login that BREAKS on every MT5 build (build-volatility -- go-mt5
+documents build 5836 changing AccountInfo; MetaQuotes changes the wire format
+between builds). So a shipping standalone client would be on a re-RE treadmill
+per MT5 update. The local-manager (MT5 on PC, driven via the official
+MetaTrader5 Python package) has NONE of that -- MetaQuotes maintains the
+protocol. This is the real reason every working programmatic-MT5 solution
+keeps a terminal in the loop.
