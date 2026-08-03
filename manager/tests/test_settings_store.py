@@ -17,9 +17,16 @@ def test_load_missing_file_returns_empty_dict():
 def test_save_then_load_round_trip(tmp_path):
     store = _store(tmp_path)
     data = {"accounts": {"master": {"login": 5001, "server": "Demo-Server"}},
-            "provisioned_instances": [], "global": {"heartbeat_seconds": 5}}
+            "provisioned_instances": [], "global": {"heartbeat_seconds": 5},
+            "learned_servers": []}
     store.save(data)
     assert store.load() == data
+
+
+def test_load_defaults_learned_servers_list(tmp_path):
+    store = _store(tmp_path)
+    store.save({"accounts": {}, "provisioned_instances": [], "global": {}})
+    assert store.load()["learned_servers"] == []
 
 
 def test_password_blob_survives_round_trip(tmp_path):

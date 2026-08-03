@@ -9,6 +9,11 @@ class FakeController:
         self._instances = instances or []
     def discover_instances(self):
         return self._instances
+    def get_catalog(self):
+        from manager.brokers.catalog import BrokerCatalog
+        return BrokerCatalog()
+    def refresh_brokers(self):
+        return self.get_catalog()
 
 
 def test_slave_editor_constructs(qapp):
@@ -17,7 +22,7 @@ def test_slave_editor_constructs(qapp):
     c = FakeController([TerminalInstance("C:/i0", "C:/i0/terminal64.exe", "appdata")])
     dlg = SlaveEditor(c)
     assert dlg.login is not None
-    assert dlg.server is not None
+    assert dlg._picker is not None
     assert dlg.terminal is not None
     assert dlg.symbol_table is not None
     assert dlg.step_amount is not None
@@ -33,7 +38,7 @@ def test_slave_editor_spec_returns_accountspec(qapp):
     dlg = SlaveEditor(FakeController())
     dlg.id_edit.setText("s1")
     dlg.login.setText("5002")
-    dlg.server.setText("Demo")
+    dlg._picker.set_server("Demo")
     dlg.password.setText("pw")
     dlg.step_amount.setText("100")
     dlg.step_size.setText("0.01")

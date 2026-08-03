@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
 from manager.engine.models import BUY, SELL  # noqa: F401  (re-exported for GUI)
@@ -10,6 +11,11 @@ from manager.supervisor import Supervisor
 from manager.terminal.discovery import TerminalInstance
 from manager.settings import credentials as _credentials_mod
 from manager.settings.store import SettingsStore
+from manager.brokers import catalog as _catalog_mod
+from manager.brokers import default as _default_mod
+from manager.brokers import learned as _learned_mod
+from manager.brokers import live as _live_mod
+from manager.brokers.catalog import BrokerCatalog
 
 
 class ControllerError(Exception):
@@ -69,6 +75,8 @@ class CopyController:
         self._on_status = on_status or (lambda s: None)
         self._on_log = on_log or (lambda m: None)
         self._clock = clock
+        self._catalog: BrokerCatalog | None = None
+        self._recorded_servers: set[str] = set()
         self._supervisor: Supervisor | None = None
         self._engine: CopyEngine | None = None
 
@@ -86,6 +94,51 @@ class CopyController:
     # ---- discovery / provisioning / assignment ----
     def discover_instances(self) -> list[TerminalInstance]:
         return self._terminal_manager.discover_all()
+
+    # ---- broker catalog (broker/server browser) ----
+    def _cache_path(self) -> Path:
+        # same directory the settings store writes to
+        return self._store.path.parent / "brokers_cache.json"
+
+    def get_catalog(self) -> BrokerCatalog:
+        """The merged broker catalog (default + fresh live cache + learned),
+        built lazily and cached. The GUI pickers call this to populate."""
+        if self._catalog is None:
+            self._catalog = self._build_catalog()
+        return self._catalog
+
+    def _build_catalog(self) -> BrokerCatalog:
+        default_brokers = _default_mod.load_default()
+        live_brokers: list = []
+        cache = _live_mod.load_cache(self._cache_path())
+        if cache is not None and _live_mod.is_fresh(cache, self._clock()):
+            live_brokers = _catalog_mod.parse_brokers_json(cache, "live")
+        learned_servers = _learned_mod.load(self._store)
+        return BrokerCatalog(default=default_brokers, live=live_brokers,
+                             learned_servers=learned_servers)
+
+    def refresh_brokers(self) -> BrokerCatalog:
+        """Best-effort refresh of the community broker list (called from the
+        GUI Refresh button, off the GUI thread). Fetches live, writes the cache,
+        rebuilds the catalog. On failure the cache is untouched and a warning
+        is logged; the catalog is still rebuilt from default + cache + learned.
+        Never raises."""
+        payload = _live_mod.refresh_cache(self._cache_path(), timeout=10.0,
+                                          now=self._clock())
+        if payload is None:
+            self._log("community broker list unavailable; using cached/default list")
+        self._catalog = self._build_catalog()
+        return self._catalog
+
+    def _on_worker_status(self, name: str, role: str, msg) -> None:
+        """Record the server a worker logged into, once per distinct server, so
+        it appears under '(Previously used)' on the next launch. Runs on the
+        supervisor's daemon thread; the settings store writes atomically."""
+        server = (getattr(msg, "server", "") or "").strip()
+        if not server or server in self._recorded_servers:
+            return
+        self._recorded_servers.add(server)
+        _learned_mod.record(self._store, server)
 
     def prepare(self, master: AccountSpec, slaves: list[AccountSpec]
                 ) -> dict[str, TerminalInstance]:
@@ -164,6 +217,7 @@ class CopyController:
         # surface restarts + errors to the GUI
         sup.on_restart = lambda name, role: self._status(
             "info", f"restarted {role} {name}")
+        sup.on_status_msg = self._on_worker_status
         return sup
 
     # ---- the Start sequence ----

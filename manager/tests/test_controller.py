@@ -235,3 +235,54 @@ def test_load_password_reraises_decrypt_error_to_prompt_reentry():
     c = CopyController(terminal_manager=FakeTerminalManager([]), store=store)
     with pytest.raises(credentials.CredentialDecryptError):
         c.load_password("s1")
+
+
+def test_worker_status_records_learned_server_once(tmp_path):
+    from manager.settings.store import SettingsStore
+    from manager.brokers import learned
+    from manager.ipc.messages import StatusMsg
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c = CopyController(terminal_manager=FakeTerminalManager([]), store=store)
+    msg = StatusMsg(source_id="master", role="master", connected=True,
+                    login=1, balance=0.0, equity=0.0, currency="USD",
+                    server="ICMarketsSC-Demo")
+    c._on_worker_status("master", "master", msg)
+    assert learned.load(store) == ["ICMarketsSC-Demo"]
+    # a second status for the same server does not duplicate / re-record
+    c._on_worker_status("master", "master", msg)
+    assert learned.load(store) == ["ICMarketsSC-Demo"]
+
+
+def test_worker_status_records_distinct_servers(tmp_path):
+    from manager.settings.store import SettingsStore
+    from manager.brokers import learned
+    from manager.ipc.messages import StatusMsg
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c = CopyController(terminal_manager=FakeTerminalManager([]), store=store)
+    c._on_worker_status("s1", "slave", StatusMsg(
+        source_id="s1", role="slave", connected=True, login=2, balance=0.0,
+        equity=0.0, currency="USD", server="A-Demo"))
+    c._on_worker_status("master", "master", StatusMsg(
+        source_id="master", role="master", connected=True, login=1, balance=0.0,
+        equity=0.0, currency="USD", server="B-Demo"))
+    assert learned.load(store) == ["A-Demo", "B-Demo"]
+
+
+def test_worker_status_ignores_empty_server(tmp_path):
+    from manager.settings.store import SettingsStore
+    from manager.brokers import learned
+    from manager.ipc.messages import StatusMsg
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c = CopyController(terminal_manager=FakeTerminalManager([]), store=store)
+    c._on_worker_status("master", "master", StatusMsg(
+        source_id="master", role="master", connected=True, login=1, balance=0.0,
+        equity=0.0, currency="USD", server=""))
+    assert learned.load(store) == []
+
+
+def test_build_supervisor_wires_status_hook():
+    insts = [TerminalInstance("C:/i0", "C:/i0/terminal64.exe", "appdata")]
+    c, _, _ = _controller(insts)
+    sup = c.build_supervisor(heartbeat_seconds=5)
+    # bound-method equality is identity, like the existing kill_terminal test
+    assert sup.on_status_msg == c._on_worker_status

@@ -1,0 +1,27 @@
+{
+  "brokers": [
+    {"id": "icmarkets", "name": "IC Markets", "website": "https://www.icmarkets.com",
+     "servers": [
+       {"name": "ICMarketsSC-Demo", "type": "demo"},
+       {"name": "ICMarketsSC-Live", "type": "real"}
+     ]},
+    {"id": "pepperstone", "name": "Pepperstone", "website": "https://pepperstone.com",
+     "servers": [
+       {"name": "Pepperstone-Demo", "type": "demo"},
+       {"name": "Pepperstone-Live01", "type": "real"}
+     ]},
+    {"id": "ftmo", "name": "FTMO", "website": "https://ftmo.com",
+     "servers": [
+       {"name": "FTMO-Server", "type": "real"}
+     ]},
+    {"id": "oanda", "name": "OANDA", "website": "https://www.oanda.com",
+     "servers": [
+       {"name": "OANDA-Demo", "type": "demo"},
+       {"name": "OANDA-Live", "type": "real"}
+     ]},
+    {"id": "metaquotes", "name": "MetaQuotes", "website": "https://metaquotes.net",
+     "servers": [
+       {"name": "MetaQuotes-Demo", "type": "demo"}
+     ]}
+  ]
+}

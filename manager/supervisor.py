@@ -58,6 +58,8 @@ class Supervisor:
         self._stop = threading.Event()
         self._thread = None
         self.on_restart = None  # callback(name, role) for GUI status (Plan 4)
+        self.on_status_msg = None  # callback(name, role, StatusMsg) for the
+                                   # learned-server hook (broker browser plan)
 
     def spawn_master(self, config, password, adapter_kind="real", fake_state=None):
         self._handles["master"] = self._spawn("master", "master", config,
@@ -138,6 +140,8 @@ class Supervisor:
                 self._send(slave_id, cmd)
         elif isinstance(msg, StatusMsg):
             self._engine.apply_status(slave_id, msg)
+            if self.on_status_msg is not None:
+                self.on_status_msg(slave_id, "slave", msg)
         elif isinstance(msg, RecoveryMsg):
             self._engine.apply_recovery(slave_id, msg.records)
         elif isinstance(msg, SymbolInfoMsg):
@@ -175,6 +179,9 @@ class Supervisor:
                 for slave_id, clist in cmds.items():
                     for cmd in clist:
                         self._send(slave_id, cmd)
+            elif isinstance(msg, StatusMsg):
+                if self.on_status_msg is not None:
+                    self.on_status_msg("master", "master", msg)
             elif isinstance(msg, ErrorMsg):
                 self.errors.append(f"master: {msg.message}")
             return True

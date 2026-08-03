@@ -47,6 +47,10 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
   quits the app).
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
+- **Browsable broker/server picker** — pick an MT5 server by broker name
+  (the thing you remember) instead of typing the exact server string. Backed
+  by a shipped community broker list, a best-effort live refresh, and your
+  previously-used servers; free-text entry still works for anything not listed.
 
 ---
 
@@ -158,6 +162,13 @@ manager/
   updater.py             Headless update check + detached self-update spawn (no Qt)
   app/
     controller.py        CopyController: terminal mgmt + readiness gate + creds
+  brokers/
+    catalog.py          Broker catalog: merge/dedup/demo-first sort (pure, no Qt)
+    default.py          Loads the shipped brokers_default.json snapshot
+    live.py             TradeVPS community-list fetch + cache (best-effort)
+    learned.py          Record/retrieve previously-used servers from settings
+  data/
+    brokers_default.json   Shipped TradeVPS broker/server snapshot
   engine/                The copy engine (master→slave mirroring logic)
     copy_loop.py         CopyEngine: snapshots → per-slave command queues
     baseline.py          Recent-opens backfill at start
@@ -183,12 +194,14 @@ manager/
     store.py             Atomic JSON settings + provisioned-instance registry
   gui/
     main_window.py       Main window (master form, slave list, status/log, update UI)
+    server_picker.py   Broker→Server picker (Broker combo + Server combo + Refresh)
     slave_editor.py      Add/edit slave account dialog
     tray.py              System tray (close-to-tray + orderly quit)
   tests/                 pytest suite (183 headless / 205 with PySide6)
 scripts/
   install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
   smoke-install.ps1      Local install.ps1 smoke check
+  update_brokers_default.py  Maintainer: refresh the shipped broker snapshot from TradeVPS
 .github/workflows/
   release.yml            Build wheel + publish GitHub Release (auto on push to main)
 docs/
