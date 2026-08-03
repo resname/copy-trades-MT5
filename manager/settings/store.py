@@ -42,6 +42,7 @@ class SettingsStore:
         data.setdefault("accounts", {})
         data.setdefault("provisioned_instances", [])
         data.setdefault("global", {})
+        data.setdefault("learned_servers", [])
         return data
 
     def save(self, data: dict) -> None:
