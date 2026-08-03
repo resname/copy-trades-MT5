@@ -13,10 +13,9 @@ def _default_path() -> Path:
 
 
 class SettingsStore:
-    """Plain-JSON persistence of the manager's config. Knows nothing about
-    crypto (password blobs are opaque base64 strings in the account dicts).
-    Also owns the registry of terminal instances THIS manager provisioned,
-    so discovery can merge them with origin.txt-discovered installs."""
+    """Plain-JSON persistence of the manager's config. Also owns the registry
+    of terminal instances THIS manager provisioned (under prior versions), so
+    discovery can merge them with origin.txt-discovered installs."""
 
     def __init__(self, path: str | os.PathLike | None = None):
         self._path = Path(path) if path is not None else _default_path()
@@ -42,7 +41,6 @@ class SettingsStore:
         data.setdefault("accounts", {})
         data.setdefault("provisioned_instances", [])
         data.setdefault("global", {})
-        data.setdefault("learned_servers", [])
         return data
 
     def save(self, data: dict) -> None:
