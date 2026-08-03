@@ -24,6 +24,10 @@ class WorkerHandle:
     password: str
     adapter_kind: str
     fake_state: dict | None
+    got_symbol_info: bool = False
+    got_status: bool = False
+    restart_count: int = 0
+    next_restart_at: float = 0.0
     last_msg_ts: float = 0.0
     fail_count: int = 0
 
@@ -32,6 +36,9 @@ class Supervisor:
     """Owns worker subprocesses + pipes; routes IPC to/from the CopyEngine;
     watches health and restarts on death. tick() = one slave drain + one timed
     master poll + a health pass. _run() loops it in a daemon thread."""
+
+    BASE_BACKOFF = 1.0   # seconds; first respawn delay after a death
+    MAX_BACKOFF = 30.0   # seconds; cap on exponential backoff
 
     def __init__(self, engine: CopyEngine, heartbeat_seconds: int = 5,
                  stale_seconds: float = 30.0, consecutive_failures: int = 3,
@@ -60,6 +67,30 @@ class Supervisor:
                     fake_state=None):
         self._handles[slave_id] = self._spawn(slave_id, "slave", config,
                                               password, adapter_kind, fake_state)
+
+    def slave_ready(self, slave_id) -> bool:
+        """A slave is ready once it has reported BOTH SymbolInfoMsg and its
+        first StatusMsg (balance). Until then, spawning the master risks the
+        startup-race permanent-skip (Plan 2 deferred MUST #1)."""
+        h = self._handles.get(slave_id)
+        return h is not None and h.got_symbol_info and h.got_status
+
+    def wait_for_slaves_ready(self, timeout: float = 10.0,
+                              slave_ids: list[str] | None = None) -> bool:
+        """Tick until every spawned slave (or the given ids) is ready or the
+        timeout elapses. Call BEFORE spawn_master. Returns whether all are
+        ready. Safe when no master is spawned yet (_read_master is a no-op
+        when the master handle is absent)."""
+        ids = slave_ids if slave_ids is not None \
+            else [n for n, h in self._handles.items() if h.role == "slave"]
+        if not ids:
+            return True
+        deadline = self._time_fn() + timeout
+        while self._time_fn() < deadline:
+            self.tick(timeout=0.02)
+            if all(self.slave_ready(i) for i in ids):
+                return True
+        return all(self.slave_ready(i) for i in ids)
 
     def _spawn(self, name, role, config, password, adapter_kind, fake_state):
         parent_pipe, child_pipe = multiprocessing.Pipe(duplex=True)
@@ -96,6 +127,12 @@ class Supervisor:
                 h.fail_count = 0
 
     def _dispatch_slave(self, slave_id, msg) -> None:
+        h = self._handles.get(slave_id)
+        if h is not None:
+            h.got_symbol_info = h.got_symbol_info or isinstance(msg, SymbolInfoMsg)
+            h.got_status = h.got_status or isinstance(msg, StatusMsg)
+            h.restart_count = 0
+            h.next_restart_at = 0.0
         if isinstance(msg, AckMsg):
             for cmd in self._engine.apply_ack(slave_id, msg):
                 self._send(slave_id, cmd)
@@ -127,6 +164,8 @@ class Supervisor:
                 return True
             h.last_msg_ts = self._time_fn()
             h.fail_count = 0
+            h.restart_count = 0
+            h.next_restart_at = 0.0
             if isinstance(msg, SnapshotMsg):
                 self._last_snapshot_ts = self._time_fn()
                 self.heartbeat_warning = False
@@ -170,7 +209,17 @@ class Supervisor:
         h = self._handles.get(name)
         if h is None:
             return
-        self.errors.append(f"restarting {name}")
+        now = self._time_fn()
+        # Backoff: a *dead* worker is not respawned until next_restart_at.
+        # A *stale-but-alive* worker (consecutive stale failures) is restarted
+        # immediately — the process is hung, not dead, so there is no spawn
+        # storm to dampen.
+        if not h.proc.is_alive():
+            if now < h.next_restart_at:
+                return  # still in the backoff window; retry next tick
+            self.errors.append(f"restarting {name}")
+        else:
+            self.errors.append(f"restarting {name} (stale)")
         if h.proc.is_alive():
             h.proc.terminate()
             h.proc.join(timeout=2.0)
@@ -186,8 +235,19 @@ class Supervisor:
                 pass
         if h.role == "slave":
             self._engine.reset_slave(name)  # recovery re-seeds on reconnect
-        self._handles[name] = self._spawn(name, h.role, h.config, h.password,
-                                          h.adapter_kind, h.fake_state)
+        # Schedule the backoff for the NEXT death from the CURRENT count,
+        # then carry that state onto the freshly-spawned handle (the new
+        # handle defaults to restart_count=0/next_restart_at=0.0, so without
+        # carrying it over a respawn would reset the backoff and a death storm
+        # would never throttle).
+        delay = min(self.BASE_BACKOFF * (2 ** h.restart_count), self.MAX_BACKOFF)
+        new_count = h.restart_count + 1
+        new_next = now + delay
+        new_h = self._spawn(name, h.role, h.config, h.password,
+                            h.adapter_kind, h.fake_state)
+        new_h.restart_count = new_count
+        new_h.next_restart_at = new_next
+        self._handles[name] = new_h
         if self.on_restart:
             self.on_restart(name, h.role)
 
