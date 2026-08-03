@@ -1,0 +1,70 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Test
+        run: pytest -q
+
+      - name: Set version
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="0.1.${GITHUB_RUN_NUMBER}"
+          fi
+          printf '__version__ = "%s"\n' "$VER" > manager/_version.py
+          echo "BUILD_VERSION=$VER" >> "$GITHUB_ENV"
+
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel
+
+      - name: Stage release assets (stable names)
+        shell: pwsh
+        run: |
+          $whl = Get-ChildItem dist\*.whl | Select-Object -First 1
+          Copy-Item $whl.FullName dist\manager-latest.whl
+          (Get-FileHash $whl.FullName -Algorithm SHA256).Hash.ToLower() |
+            Out-File -Encoding ascii -NoNewfile dist\manager-latest.whl.sha256
+          "$env:BUILD_VERSION" | Out-File -Encoding ascii -NoNewfile dist\version.txt
+          Copy-Item scripts/install.ps1 dist\install.ps1
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v$BUILD_VERSION" \
+            dist/install.ps1 dist/manager-latest.whl dist/manager-latest.whl.sha256 dist/version.txt \
+            --target "$GITHUB_SHA" --title "v$BUILD_VERSION" \
+            --notes "Auto-built release v$BUILD_VERSION from $GITHUB_SHA"
+
+      - name: install.ps1 smoke (best-effort)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "ct-smoke"
+          powershell -File scripts/install.ps1 -InstallDir $dir -Yes -SkipLaunch
+          if (-not (Test-Path (Join-Path $dir "bin\copytrades.cmd"))) { throw "launcher missing" }
