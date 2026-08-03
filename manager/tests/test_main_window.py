@@ -124,3 +124,37 @@ def test_status_update_appends_to_status_view(qapp):
     w = MainWindow(c)
     w.append_status(StatusUpdate(kind="info", message="hello"))
     assert "hello" in w.status_view.toPlainText()
+
+
+def test_config_round_trip_restores_master_and_slaves(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    w.master_terminal.setEditText("C:/m/terminal64.exe")
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe")]
+    w._save_config()
+
+    c2 = FakeController()
+    w2 = MainWindow(c2, store=store)
+    assert w2.master_terminal.currentText() == "C:/m/terminal64.exe"
+    assert len(w2._slaves) == 1
+    assert w2._slaves[0].id == "s1"
+    assert w2._slaves[0].terminal_path == "C:/s1/terminal64.exe"
+    assert w2.slave_list.count() == 1
+
+
+def test_load_config_skips_when_store_none(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())  # store=None
+    assert w._slaves == []
+    # construction did not raise
+    assert w.windowTitle()
+
+
+def test_save_config_noop_when_store_none(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    w._save_config()  # must not raise

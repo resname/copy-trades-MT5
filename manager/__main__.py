@@ -30,7 +30,7 @@ def build_app_graph(app: QApplication):
         terminal_manager=terminal_manager, store=store,
         on_status=lambda s: bridge.status.emit(s),
         on_log=lambda m: bridge.log.emit(m))
-    window = MainWindow(controller)
+    window = MainWindow(controller, store=store)
     bridge.status.connect(window.append_status)
     bridge.log.connect(window.append_log)
     tray = TrayIcon(controller)
