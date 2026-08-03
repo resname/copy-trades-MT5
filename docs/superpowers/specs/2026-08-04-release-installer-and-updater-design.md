@@ -72,11 +72,9 @@ Trigger: `push` to `main`, and `push` of a `v*` tag (stable). On push to main:
 On a `v*` tag push: same build/release steps, but the tag/version comes from the
 tag (not the run number), producing a named stable release.
 
-> **Open decision (flagged for user review):** "every push to main = a release"
-> makes the newest commit the `latest` release, so the updater always pulls
-> bleeding-edge — matches "automatically update once changes are made." The
-> alternative is main-push = prerelease and `v*`-tag = stable `latest`. This
-> design defaults to **every push to main = latest release**.
+> **Decision:** every push to `main` makes the newest commit the `latest`
+> release, so the updater always pulls bleeding-edge — matches "automatically
+> update once changes are made."
 
 ### 2. `scripts/install.ps1` (new, committed; CI attaches it to each release)
 
@@ -88,10 +86,13 @@ Parameters: `-InstallDir` (default `$env:LOCALAPPDATA\CopyTradesMT5`),
 
 Steps:
 1. **Ensure Python ≥3.11.** `python --version`; if missing or `<3.11`, install
-   per-user from python.org (no admin): download the official 3.12 installer
-   and run `/quiet InstallAllUsers=0 PrependPath=1 Include_pip=1`, or use
-   `winget install Python.Python.3.12` if winget is available. Refresh the
-   current session PATH.
+   via **winget** (preferred): `winget install --id Python.Python.3.12 -e
+   --accept-source-agreements --accept-package-agreements --silent` (winget is
+   present on Windows 11 / recent Windows 10; installs per-user or machine per
+   winget's default, no manual UAC prompt in the silent path). If winget is
+   unavailable, fall back to the official python.org per-user silent installer
+   (download `python-3.12.x-amd64.exe`, run `/quiet InstallAllUsers=0
+   PrependPath=1 Include_pip=1`, no admin). Refresh the current session PATH.
 2. **Venv:** `python -m venv "$InstallDir\venv"` (create if absent; reuse if
    present).
 3. **Download + verify wheel:** fetch `manager-latest.whl` and
@@ -280,14 +281,14 @@ manager/tests/test_main_window_updates.py  NEW  GUI update UI (skip w/o PySide6)
 pyproject.toml                     MOD  [project.scripts] copytrades; dynamic version
 ```
 
-## Open decisions (for user review)
+## Decisions (resolved with user)
 
-1. **Release trigger:** default = every push to `main` becomes the `latest`
-   release (bleeding-edge auto-update). Alternative = main-push = prerelease,
-   `v*`-tag = stable `latest`. (Design uses the default.)
-2. **Python install method in `install.ps1`:** default = official python.org
-   per-user silent installer (`InstallAllUsers=0`, no admin), with `winget` as a
-   faster path when available. Confirm or prefer winget-first.
+1. **Release trigger:** **every push to `main` becomes the `latest` release**
+   (bleeding-edge auto-update). The `v*`-tag path still works as a secondary
+   stable-release trigger but is not required.
+2. **Python install method in `install.ps1`:** **winget-first**
+   (`winget install --id Python.Python.3.12 -e --silent …`), with the official
+   python.org per-user silent installer as a fallback when winget is missing.
 
 ## Self-review
 
