@@ -94,3 +94,18 @@ def test_decode_unknown_kind_raises():
 def test_decode_missing_kind_raises():
     with pytest.raises(KeyError):
         M.decode({"source_id": "x"})
+
+
+def test_reconfigure_msg_round_trips_through_encode_decode():
+    msg = M.ReconfigureMsg(source_id="s1", symbol_map_csv="EURUSD=GBPUSD",
+                           normalize_sltp=False)
+    d = M.encode(msg)
+    assert d["_kind"] == "reconfigure"
+    assert d["source_id"] == "s1"
+    assert d["symbol_map_csv"] == "EURUSD=GBPUSD"
+    assert d["normalize_sltp"] is False
+    back = M.decode(d)
+    assert isinstance(back, M.ReconfigureMsg)
+    assert back.source_id == "s1"
+    assert back.symbol_map_csv == "EURUSD=GBPUSD"
+    assert back.normalize_sltp is False
