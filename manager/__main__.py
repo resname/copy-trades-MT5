@@ -39,8 +39,23 @@ def build_app_graph(app: QApplication):
 
 
 def main(argv=None) -> int:
-    app = QApplication.instance() or QApplication(argv if argv is not None
-                                                   else sys.argv)
+    if argv is None:
+        args = sys.argv[1:]
+        gui_args = sys.argv
+    else:
+        args = list(argv)
+        gui_args = list(argv)
+
+    if "--version" in args:
+        from manager._version import __version__
+        print(__version__)
+        return 0
+    if args and args[0] == "update":
+        from manager import updater
+        updater.apply_update_and_restart(on_quit=lambda: sys.exit(0))
+        return 0
+
+    app = QApplication.instance() or QApplication(gui_args)
     window, tray, controller, bridge = build_app_graph(app)
     window.show()
     return app.exec()

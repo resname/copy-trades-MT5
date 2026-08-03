@@ -1,12 +1,25 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel, QGroupBox,
 )
 
 from manager.app.controller import AccountSpec, StatusUpdate
+
+
+class _UpdateWorker(QThread):
+    """Runs updater.check_for_update off the GUI thread; emits the UpdateInfo
+    on done (Qt marshals the signal back to the GUI thread)."""
+    done = Signal(object)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self):
+        self.done.emit(self._fn())
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +38,13 @@ class MainWindow(QMainWindow):
         self._slaves: list[AccountSpec] = []
         self._build_ui()
         self._populate_terminals()
+
+        self._update_worker = None
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(3600 * 1000)
+        self._update_timer.timeout.connect(self.check_for_updates_now)
+        self._update_timer.start()
+        QTimer.singleShot(10_000, self.check_for_updates_now)
 
     # ---- UI construction ----
     def _build_ui(self):
@@ -71,6 +91,16 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.start_button)
         controls.addWidget(self.stop_button)
 
+        # Updates
+        self.update_label = QLabel("")
+        self.check_update_button = QPushButton("Check for updates")
+        self.update_restart_button = QPushButton("Update & restart")
+        self.update_restart_button.setVisible(False)
+        updates_row = QHBoxLayout()
+        updates_row.addWidget(self.update_label, 1)
+        updates_row.addWidget(self.check_update_button)
+        updates_row.addWidget(self.update_restart_button)
+
         # Status + log
         self.status_view = QPlainTextEdit()
         self.status_view.setReadOnly(True)
@@ -81,6 +111,7 @@ class MainWindow(QMainWindow):
         root.addWidget(master_box)
         root.addWidget(slave_box)
         root.addLayout(controls)
+        root.addLayout(updates_row)
         root.addWidget(QLabel("Status"))
         root.addWidget(self.status_view)
         root.addWidget(QLabel("Log"))
@@ -91,6 +122,8 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self._on_stop)
         self.add_slave_button.clicked.connect(self._on_add_slave)
         self.remove_slave_button.clicked.connect(self._on_remove_slave)
+        self.check_update_button.clicked.connect(self.check_for_updates_now)
+        self.update_restart_button.clicked.connect(self._on_update_restart)
 
     def _populate_terminals(self):
         self.master_terminal.clear()
@@ -112,6 +145,40 @@ class MainWindow(QMainWindow):
     def set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
+
+    # ---- updates ----
+    def check_for_updates_now(self) -> None:
+        from manager import updater
+        self.update_label.setText("Checking for updates…")
+        self._update_worker = _UpdateWorker(updater.check_for_update, self)
+        self._update_worker.done.connect(self._on_update_checked)
+        self._update_worker.start()
+
+    def _on_update_checked(self, info) -> None:
+        self._update_worker = None
+        if info.latest is None and not info.available:
+            self.update_label.setText("Couldn't check for updates")
+            self.update_restart_button.setVisible(False)
+            return
+        if info.available:
+            self.update_label.setText(f"Update available: v{info.latest}")
+            self.update_restart_button.setVisible(True)
+            self.update_restart_button.setEnabled(not self._controller.is_running())
+        else:
+            self.update_label.setText(f"Up to date (v{info.current})")
+            self.update_restart_button.setVisible(False)
+
+    def _on_update_restart(self) -> None:
+        if self._controller.is_running():
+            self.append_log("stop copying before updating")
+            return
+        from manager import updater
+        updater.apply_update_and_restart(on_quit=self._do_update_quit)
+
+    def _do_update_quit(self) -> None:
+        self._controller.stop()
+        from PySide6.QtWidgets import QApplication
+        QApplication.quit()
 
     # ---- handlers ----
     def _on_start(self):

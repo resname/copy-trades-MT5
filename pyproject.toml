@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "copy-trades-mt5-manager"
-version = "0.1.0"
+dynamic = ["version"]
 requires-python = ">=3.11"
 dependencies = [
     "PySide6>=6.6",
@@ -13,9 +13,15 @@ dependencies = [
     "MetaTrader5>=5.0.45",
 ]
 
+[project.scripts]
+copytrades = "manager.__main__:main"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["manager/tests"]
 
 [tool.setuptools.packages.find]
 include = ["manager*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "manager._version.__version__"}
