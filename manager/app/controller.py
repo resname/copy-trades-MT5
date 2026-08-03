@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
 from manager.engine.models import BUY, SELL  # noqa: F401  (re-exported for GUI)
@@ -31,7 +30,7 @@ class AccountSpec:
 
 @dataclass
 class StatusUpdate:
-    kind: str            # "info" | "error" | "provisioning" | "ready" | "slave_status"
+    kind: str            # "info" | "error" | "ready" | "slave_status"
     message: str
     slave_id: str | None = None
     connected: bool | None = None
@@ -149,7 +148,7 @@ class CopyController:
     def start(self, master: AccountSpec, slaves: list[AccountSpec],
               master_fake_state=None, slave_fake_state=None) -> None:
         """The full Start sequence:
-          1. prepare (validate/provision/assign)
+          1. prepare (validate/assign)
           2. build engine + supervisor (kill_terminal wired)
           3. spawn slaves
           4. wait_for_slaves_ready (readiness gate — before the master)

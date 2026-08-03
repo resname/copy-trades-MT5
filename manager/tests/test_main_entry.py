@@ -6,7 +6,6 @@ pytest.importorskip("PySide6")
 class FakeTerminalManager:
     def __init__(self): self._instances = []
     def discover_all(self): return []
-    def provision_shortfall(self, n, setup_path=None): return []
     def assign(self, accounts): return {}
     def kill_terminal(self, exe): return 0
 
