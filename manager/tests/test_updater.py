@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -89,3 +90,69 @@ def test_background_spawn_actually_runs_command_body(tmp_path):
         time.sleep(0.25)
     assert marker.exists(), "background powershell spawn did not execute its command body"
     assert marker.read_text().strip() == "ran"
+
+
+def test_download_update_verifies_sha_and_returns_path(tmp_path, monkeypatch):
+    import hashlib
+    from manager import updater
+    data = b"wheel-bytes"
+
+    def fake_urlretrieve(url, filename=None, *a, **k):
+        if str(url).endswith(".whl"):
+            Path(filename).write_bytes(data)
+        else:
+            Path(filename).write_text(
+                hashlib.sha256(data).hexdigest() + "  manager-latest.whl",
+                encoding="utf-8")
+        return filename, {}
+
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", fake_urlretrieve)
+    p = updater.download_update(dest_dir=tmp_path)
+    assert p.read_bytes() == data
+
+
+def test_download_update_raises_on_checksum_mismatch(tmp_path, monkeypatch):
+    from manager import updater
+
+    def fake_urlretrieve(url, filename=None, *a, **k):
+        if str(url).endswith(".whl"):
+            Path(filename).write_bytes(b"not-the-real-wheel")
+        else:
+            Path(filename).write_text("0000000000000000000000000000000000000000000000000000000000000000  manager-latest.whl",
+                                      encoding="utf-8")
+        return filename, {}
+
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", fake_urlretrieve)
+    with pytest.raises(updater.UpdateDownloadError):
+        updater.download_update(dest_dir=tmp_path)
+    # mismatched files are removed
+    assert not (tmp_path / "manager-latest.whl").exists()
+
+
+def test_cached_update_returns_none_when_absent(tmp_path, monkeypatch):
+    from manager import updater
+    monkeypatch.setattr(updater, "UPDATE_DIR", tmp_path)
+    assert updater.cached_update() is None
+
+
+def test_cached_update_returns_path_when_verified(tmp_path, monkeypatch):
+    import hashlib
+    from manager import updater
+    data = b"x" * 64
+    (tmp_path / "manager-latest.whl").write_bytes(data)
+    (tmp_path / "manager-latest.whl.sha256").write_text(
+        hashlib.sha256(data).hexdigest() + "  manager-latest.whl", encoding="utf-8")
+    monkeypatch.setattr(updater, "UPDATE_DIR", tmp_path)
+    assert updater.cached_update() == tmp_path / "manager-latest.whl"
+
+
+def test_cached_update_deletes_stale_pair(tmp_path, monkeypatch):
+    from manager import updater
+    (tmp_path / "manager-latest.whl").write_bytes(b"stale")
+    (tmp_path / "manager-latest.whl.sha256").write_text(
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  manager-latest.whl",
+        encoding="utf-8")
+    monkeypatch.setattr(updater, "UPDATE_DIR", tmp_path)
+    assert updater.cached_update() is None
+    assert not (tmp_path / "manager-latest.whl").exists()
+    assert not (tmp_path / "manager-latest.whl.sha256").exists()
