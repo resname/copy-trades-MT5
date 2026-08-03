@@ -81,23 +81,48 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 
 ## Installation
 
+### One-liner (recommended — end users)
+
+```powershell
+irm https://github.com/resname/copy-trades-MT5/releases/latest/download/install.ps1 | iex
+```
+
+This installs everything: Python (via winget, with a python.org fallback if
+winget is unavailable), a private venv, the latest manager wheel (SHA256
+verified), a `copytrades` command on your PATH, and a Start Menu shortcut.
+Re-running the same one-liner **updates** to the newest release and relaunches
+the app. No `git`, no build tools, no manual dependency handling — just Windows.
+
+The installer is committed to the repo (`scripts/install.ps1`), versioned per
+release, and served over HTTPS from GitHub Releases — the same model as the
+Claude Code installer.
+
+### From source (development)
+
 ```powershell
 git clone https://github.com/resname/copy-trades-MT5.git
 cd copy-trades-MT5
 python -m venv .venv
 .venv\Scripts\activate
-pip install -e .
+pip install -e .[test]
 ```
 
-`pip install -e .` installs the `manager` package and its dependencies.
+`pip install -e .[test]` installs the `manager` package, its runtime
+dependencies, and `pytest` (the `[test]` extra).
 
 ---
 
 ## Usage
 
 ```powershell
-python -m manager
+copytrades          # if installed via the one-liner (on PATH)
+python -m manager   # from a dev checkout / venv
 ```
+
+The app also checks for updates automatically (on launch, then hourly) and
+shows an **Update available** indicator with an **Update & restart** button
+(enabled only while the copy engine is idle). `copytrades update` runs the
+same update from the command line.
 
 1. **Master account**: enter the master login, server, and (demo) password, and
    pick a terminal (or let the manager assign one). Click **Start**.
@@ -123,6 +148,8 @@ For a full manual demo run-through (demo accounts only), see
 ```
 manager/
   __main__.py            App entry: QApplication + window + tray + status bridge
+  _version.py            Single source of truth for the installed version (CI overwrites at build)
+  updater.py             Headless update check + detached self-update spawn (no Qt)
   app/
     controller.py        CopyController: terminal mgmt + readiness gate + creds
   engine/                The copy engine (master→slave mirroring logic)
@@ -130,7 +157,7 @@ manager/
     baseline.py          Recent-opens backfill at start
     linkage.py           CPY# ticket-linking comment encoding
     snapshot_diff.py     Master snapshot → position events
-    transform.py         Master event → slave command (normalize, lot size)
+    transform.py          Master event → slave command (normalize, lot size)
     models.py            Snapshot / Position / command dataclasses
     record_table.py      Per-slave copied-position ledger
   ipc/
@@ -149,10 +176,15 @@ manager/
     credentials.py       DPAPI encrypt/decrypt (pywin32 win32crypt)
     store.py             Atomic JSON settings + provisioned-instance registry
   gui/
-    main_window.py       Main window (master form, slave list, status/log)
+    main_window.py       Main window (master form, slave list, status/log, update UI)
     slave_editor.py      Add/edit slave account dialog
     tray.py              System tray (close-to-tray + orderly quit)
-  tests/                 pytest suite (175 tests)
+  tests/                 pytest suite (183 headless / 205 with PySide6)
+scripts/
+  install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
+  smoke-install.ps1      Local install.ps1 smoke check
+.github/workflows/
+  release.yml            Build wheel + publish GitHub Release (auto on push to main)
 docs/
   smoke-test.md          Manual demo smoke runbook
   TESTING.md             How to run the test suite
@@ -168,7 +200,7 @@ installed and run on a PySide6-enabled host.
 
 ```powershell
 pytest -q
-# expected on a headless env: 175 passed, 4 skipped
+# expected on a headless env: 183 passed, 5 skipped (205 passed with PySide6)
 ```
 
 See [`docs/TESTING.md`](docs/TESTING.md) for the suite layout and how to run
