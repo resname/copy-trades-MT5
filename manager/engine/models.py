@@ -21,6 +21,7 @@ class Position:
     open_time: int       # epoch seconds
     point: float
     comment: str = ""
+    magic: int = 0
 
 
 @dataclass(frozen=True)
