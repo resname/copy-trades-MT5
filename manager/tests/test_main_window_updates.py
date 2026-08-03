@@ -60,7 +60,7 @@ def test_update_restart_calls_updater_and_quits(qapp, monkeypatch):
     import manager.updater as updater
     calls = []
     monkeypatch.setattr(updater, "apply_update_and_restart",
-                        lambda on_quit: calls.append(on_quit))
+                        lambda on_quit, cached_wheel=None: calls.append(on_quit))
     w = MainWindow(FakeController(running=False))
     w._on_update_restart()
     assert len(calls) == 1

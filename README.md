@@ -42,14 +42,18 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 - **Manual-login, terminal-path-only setup** — you log in to each MT5 terminal
   via its own UI (demo account), then select only the terminal path in the
   manager; the manager never sees or stores credentials.
-- **Launch terminal / Install MetaTrader buttons** — launch a selected
-  terminal's `terminal64.exe` to log in/verify, or open the MT5 download page
-  to install another terminal (use a custom install path per terminal).
+- **Install MetaTrader / Open terminal for login buttons** — open the MT5
+  download page to install another terminal (custom install path per
+  terminal), or open a selected terminal's `terminal64.exe` login window to
+  log in/verify. Install is on the left; Open-for-login is on the right.
 - **System tray** — close-to-tray keeps the workers running in the background;
   tray Quit does an orderly shutdown (stops the engine, joins workers, then
   quits the app).
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
+- **Persistent config** — the master terminal + slaves (with per-slave symbol
+  map / lot-sizing / normalization) are saved to `settings.json` and restored
+  on the next launch, so a restart (or an update) does not lose your setup.
 
 ---
 
@@ -153,6 +157,10 @@ same update from the command line.
 6. **Tray**: closing the window hides it to the tray — workers keep running.
    Use the tray **Quit** for an orderly shutdown (stop engine → join workers →
    quit).
+7. **Updates**: the app checks for updates hourly and pre-downloads the
+   verified wheel when one is found, so clicking **Update & restart** finishes
+   in seconds (no network in the restart path) and reliably relaunches the
+   manager.
 
 For a full manual demo run-through (demo accounts only), see
 [`docs/smoke-test.md`](docs/smoke-test.md).
@@ -193,7 +201,7 @@ manager/
     main_window.py       Main window (master terminal form + Launch/Install buttons, slave list, status/log, update UI)
     slave_editor.py      Add/edit slave account dialog
     tray.py              System tray (close-to-tray + orderly quit)
-  tests/                 pytest suite (167 headless / 193 with PySide6)
+  tests/                 pytest suite (180 headless / 215 with PySide6)
 scripts/
   install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
   smoke-install.ps1      Local install.ps1 smoke check
@@ -214,7 +222,7 @@ installed and run on a PySide6-enabled host.
 
 ```powershell
 pytest -q
-# expected on a headless env: 167 passed, 5 skipped (193 passed with PySide6)
+# expected on a headless env: 180 passed, 5 skipped (215 passed with PySide6)
 ```
 
 See [`docs/TESTING.md`](docs/TESTING.md) for the suite layout and how to run
@@ -246,6 +254,7 @@ individual test modules.
 | `mt5.initialize` returns `False` / `-10003` | A stale `terminal64.exe` is holding the terminal's IPC | The supervisor kills the stale terminal before respawn; restart the manager if it persists |
 | Slaves never reach `ready` | Worker failed to log in or fetch SymbolInfo | Check the log view for the worker error; confirm the terminal is logged in to a demo account (the manager does not enter credentials — log in via the terminal's own UI / the Launch button) |
 | Not enough terminal instances | Fewer installed terminals than accounts | Install more via the Install MetaTrader button (custom path) and log in, or point accounts at specific terminals via the dropdown |
+| Update & restart closes the app but it doesn't reopen | The detached helper's pip install or relaunch step failed | Open `%LOCALAPPDATA%\CopyTradesMT5\updates\update.log` for the step that failed; re-run `copytrades update` or the one-liner installer |
 
 ---
 

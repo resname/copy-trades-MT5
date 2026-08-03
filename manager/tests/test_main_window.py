@@ -94,6 +94,20 @@ def test_install_metatrader_button_opens_download_page(qapp, monkeypatch):
     assert "custom" in w.install_disclaimer_label.text().lower()
 
 
+def test_launch_button_labeled_for_login(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    assert w.launch_terminal_button.text() == "Open terminal for login"
+    assert w.install_metatrader_button.text() == "Install MetaTrader"
+
+
+def test_install_button_is_left_of_launch_button(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    row = w.term_row
+    assert row.indexOf(w.install_metatrader_button) < row.indexOf(w.launch_terminal_button)
+
+
 def test_stop_button_calls_controller_stop(qapp):
     from manager.gui.main_window import MainWindow
     c = FakeController()
@@ -110,3 +124,108 @@ def test_status_update_appends_to_status_view(qapp):
     w = MainWindow(c)
     w.append_status(StatusUpdate(kind="info", message="hello"))
     assert "hello" in w.status_view.toPlainText()
+
+
+def test_config_round_trip_restores_master_and_slaves(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    w.master_terminal.setEditText("C:/m/terminal64.exe")
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe")]
+    w._save_config()
+
+    c2 = FakeController()
+    w2 = MainWindow(c2, store=store)
+    assert w2.master_terminal.currentText() == "C:/m/terminal64.exe"
+    assert len(w2._slaves) == 1
+    assert w2._slaves[0].id == "s1"
+    assert w2._slaves[0].terminal_path == "C:/s1/terminal64.exe"
+    assert w2.slave_list.count() == 1
+
+
+def test_load_config_skips_when_store_none(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())  # store=None
+    assert w._slaves == []
+    # construction did not raise
+    assert w.windowTitle()
+
+
+def test_save_config_noop_when_store_none(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    w._save_config()  # must not raise
+
+
+def test_predownload_done_sets_cached_wheel_and_ready_label(qapp):
+    from manager.gui.main_window import MainWindow
+    from pathlib import Path
+    w = MainWindow(FakeController())
+    w._latest_version = "0.2.0"
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))
+    assert w._cached_wheel == Path("C:/cached/manager-latest.whl")
+    assert "ready" in w.update_label.text().lower()
+
+
+def test_update_restart_passes_cached_wheel(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from pathlib import Path
+    captured = {}
+    from manager import updater
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit, cached_wheel=None: captured.update(
+                            {"on_quit": on_quit, "cached_wheel": cached_wheel}))
+    w = MainWindow(FakeController())
+    w._cached_wheel = Path("C:/cached/manager-latest.whl")
+    w._on_update_restart()
+    assert captured["cached_wheel"] == Path("C:/cached/manager-latest.whl")
+
+
+def test_update_restart_refuses_while_running(qapp):
+    from manager.gui.main_window import MainWindow
+    c = FakeController()
+    c.started = True
+    w = MainWindow(c)
+    w._cached_wheel = None
+    w._on_update_restart()  # is_running() True -> logs, does not call apply
+    assert "stop" in w.log_view.toPlainText().lower()
+
+
+def test_about_to_quit_persists_config(qapp, tmp_path):
+    """Guards the aboutToQuit→_save_config hook (requirement #6): both tray
+    Quit and update-quit reduce to QApplication.quit() → aboutToQuit, so this
+    one test covers both quit paths. If the connect line is removed, this fails."""
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    from PySide6.QtWidgets import QApplication
+    store = SettingsStore(path=tmp_path / "settings.json")
+    w = MainWindow(FakeController(), store=store)
+    w.master_terminal.setEditText("C:/m/terminal64.exe")
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe")]
+    # emit the signal the way QApplication.quit() would
+    QApplication.instance().aboutToQuit.emit()
+    cfg = store.load_config()
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+    assert len(cfg["slaves"]) == 1
+    assert cfg["slaves"][0]["id"] == "s1"
+
+
+def test_about_to_quit_saves_once_not_twice(qapp, tmp_path):
+    """A single aboutToQuit must produce a single save (no double-connect)."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from PySide6.QtWidgets import QApplication
+    store = SettingsStore(path=tmp_path / "settings.json")
+    w = MainWindow(FakeController(), store=store)
+    calls = []
+    real_save = store.save_config
+    def counting_save(cfg):
+        calls.append(cfg)
+        real_save(cfg)
+    store.save_config = counting_save
+    QApplication.instance().aboutToQuit.emit()
+    assert len(calls) == 1

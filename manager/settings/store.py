@@ -62,6 +62,19 @@ class SettingsStore:
                 pass
             raise
 
+    def load_config(self) -> dict:
+        """Return the GUI-restorable config dict (master + slaves), or {} if
+        none is stored. A missing/corrupt config is recoverable by re-entering
+        config, not by crashing."""
+        return self.load().get("config", {})
+
+    def save_config(self, config: dict) -> None:
+        """Merge `config` into the store (preserving accounts/
+        provisioned_instances/global) and atomically save."""
+        data = self.load()
+        data["config"] = config
+        self.save(data)
+
     def list_provisioned_instances(self) -> list[str]:
         return list(self.load().get("provisioned_instances", []))
 

@@ -63,3 +63,33 @@ def test_save_preserves_existing_provisioned_instances(tmp_path):
     assert loaded["accounts"] == {"master": {"login": 1}}
     assert loaded["global"] == {"x": 1}
     assert loaded["provisioned_instances"] == ["C:/inst_0"]
+
+
+def test_load_config_empty_when_absent(tmp_path):
+    from manager.settings.store import SettingsStore
+    s = SettingsStore(path=tmp_path / "settings.json")
+    assert s.load_config() == {}
+
+
+def test_save_then_load_config_round_trip(tmp_path):
+    from manager.settings.store import SettingsStore
+    s = SettingsStore(path=tmp_path / "settings.json")
+    cfg = {"master": {"terminal_path": "C:/t/terminal64.exe"},
+           "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                       "symbol_map_csv": "", "step_amount": 100.0,
+                       "step_size": 0.01, "max_lot": 10.0,
+                       "max_trade_age_minutes": 10.0, "normalize_sltp": True}]}
+    s.save_config(cfg)
+    assert s.load_config() == cfg
+
+
+def test_save_config_preserves_other_keys(tmp_path):
+    from manager.settings.store import SettingsStore
+    s = SettingsStore(path=tmp_path / "settings.json")
+    s.save({"accounts": {"master": {"id": "master"}}, "provisioned_instances": ["C:/x"],
+            "global": {}})
+    s.save_config({"master": {"terminal_path": "C:/t/terminal64.exe"}, "slaves": []})
+    data = s.load()
+    assert data["accounts"] == {"master": {"id": "master"}}
+    assert data["provisioned_instances"] == ["C:/x"]
+    assert data["config"]["master"]["terminal_path"] == "C:/t/terminal64.exe"

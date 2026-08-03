@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import webbrowser
 
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel, QGroupBox,
 )
 
@@ -36,15 +37,23 @@ class MainWindow(QMainWindow):
 
     close_to_tray = Signal()
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, store=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("CopyTrades MT5 — Local Manager")
         self._controller = controller
+        self._store = store
         self._slaves: list[AccountSpec] = []
         self._build_ui()
         self._populate_terminals()
+        self._load_config()
+        app = QApplication.instance()
+        if app is not None and self._store is not None:
+            app.aboutToQuit.connect(self._save_config)
 
         self._update_worker = None
+        self._predownload_worker = None
+        self._cached_wheel = None
+        self._latest_version = None
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(3600 * 1000)
         self._update_timer.timeout.connect(self.check_for_updates_now)
@@ -64,10 +73,11 @@ class MainWindow(QMainWindow):
         self.master_terminal.setEditable(True)
         mform.addRow("Terminal", self.master_terminal)
         term_row = QHBoxLayout()
-        self.launch_terminal_button = QPushButton("Launch terminal")
         self.install_metatrader_button = QPushButton("Install MetaTrader")
-        term_row.addWidget(self.launch_terminal_button)
+        self.launch_terminal_button = QPushButton("Open terminal for login")
         term_row.addWidget(self.install_metatrader_button)
+        term_row.addWidget(self.launch_terminal_button)
+        self.term_row = term_row
         mform.addRow("", term_row)
         self.install_disclaimer_label = QLabel(
             "Install MetaTrader opens the download page. Download and run "
@@ -143,6 +153,47 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_log(f"discovery failed: {exc}")
 
+    # ---- config persistence ----
+    def _config_dict(self) -> dict:
+        return {
+            "master": {"terminal_path": self.master_terminal.currentText().strip()},
+            "slaves": [dataclasses.asdict(s) for s in self._slaves],
+        }
+
+    def _save_config(self) -> None:
+        if self._store is None:
+            return
+        try:
+            self._store.save_config(self._config_dict())
+        except Exception as exc:
+            self.append_log(f"config save failed: {exc}")
+
+    def _load_config(self) -> None:
+        if self._store is None:
+            return
+        try:
+            cfg = self._store.load_config()
+        except Exception as exc:
+            self.append_log(f"config load failed: {exc}")
+            return
+        master = cfg.get("master") if isinstance(cfg, dict) else None
+        if isinstance(master, dict):
+            mpath = str(master.get("terminal_path", "")).strip()
+            if mpath:
+                self.master_terminal.setEditText(mpath)
+        for s in (cfg.get("slaves") if isinstance(cfg, dict) else None) or []:
+            if not isinstance(s, dict):
+                continue
+            fields = AccountSpec.__dataclass_fields__
+            kwargs = {k: s[k] for k in fields if k in s}
+            try:
+                spec = AccountSpec(**kwargs)
+            except TypeError:
+                continue
+            self._slaves.append(spec)
+            label = (spec.terminal_path or spec.id).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            self.slave_list.addItem(f"{spec.id}: {label}")
+
     # ---- public API (controller / tray) ----
     def append_status(self, update: StatusUpdate) -> None:
         line = update.message if update.slave_id is None \
@@ -171,19 +222,39 @@ class MainWindow(QMainWindow):
             self.update_restart_button.setVisible(False)
             return
         if info.available:
+            self._latest_version = info.latest
             self.update_label.setText(f"Update available: v{info.latest}")
             self.update_restart_button.setVisible(True)
             self.update_restart_button.setEnabled(not self._controller.is_running())
+            self._predownload_worker = _UpdateWorker(self._do_predownload, self)
+            self._predownload_worker.done.connect(self._on_predownload_done)
+            self._predownload_worker.start()
         else:
             self.update_label.setText(f"Up to date (v{info.current})")
             self.update_restart_button.setVisible(False)
+
+    def _do_predownload(self):
+        from manager import updater
+        try:
+            return updater.download_update()
+        except Exception:
+            return None
+
+    def _on_predownload_done(self, wheel) -> None:
+        self._predownload_worker = None
+        if wheel is None or self._latest_version is None:
+            return
+        self._cached_wheel = wheel
+        self.update_label.setText(
+            f"Update available: v{self._latest_version} (ready — restart in seconds)")
 
     def _on_update_restart(self) -> None:
         if self._controller.is_running():
             self.append_log("stop copying before updating")
             return
         from manager import updater
-        updater.apply_update_and_restart(on_quit=self._do_update_quit)
+        updater.apply_update_and_restart(
+            on_quit=self._do_update_quit, cached_wheel=self._cached_wheel)
 
     def _do_update_quit(self) -> None:
         self._controller.stop()
@@ -200,6 +271,7 @@ class MainWindow(QMainWindow):
         try:
             self._controller.start(master, list(self._slaves))
             self.set_running(True)
+            self._save_config()
         except Exception as exc:
             self.append_log(f"start failed: {exc}")
 
@@ -227,6 +299,7 @@ class MainWindow(QMainWindow):
             self._slaves.append(spec)
             label = spec.terminal_path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
             self.slave_list.addItem(f"{spec.id}: {label}")
+            self._save_config()
 
     def _on_remove_slave(self):
         row = self.slave_list.currentRow()
@@ -234,6 +307,7 @@ class MainWindow(QMainWindow):
             return
         self.slave_list.takeItem(row)
         del self._slaves[row]
+        self._save_config()
 
     # ---- close-to-tray ----
     def closeEvent(self, event):
