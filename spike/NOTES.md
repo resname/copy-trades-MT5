@@ -101,3 +101,57 @@
   implementation with no hooked-crypto surface, and even locating it would
   leave the key-material-source question (per-session / per-install /
   broker-issued) unresolved — itself a likely stop condition.
+
+## RE continuation: login-cipher location (WSASend backtrace)
+Date: 2026-08-03. Beyond the Task 4 stop-condition, per user direction to
+explore the RE further. Script: spike/scripts/hook_login_backtrace.js.
+Method: hook WSASend/send, capture Thread.backtrace on the send carrying the
+0x0c encrypted login packet. The encrypted bytes do not appear from nowhere --
+some function writes them into the WSASend buffer; the backtrace locates it.
+
+Precondition (empirical, this machine): ava demo Config/certificates/ is EMPTY
+-> extended (client-certificate) auth is NOT enabled. Standard auth branch
+(account + password + handshake-derived session key), the viable-to-RE one.
+
+Capture (spike/capture/frida_backtrace.log, 40 events: 8 login_send + 32
+sock_out, 0 errors). The login this run went to 3.10.134.148:443 (AvaTrade
+rotated the server from the earlier 185.97.161.227:1950; same protocol --
+identical markers + framing, raw custom-cipher over 443, NOT TLS). Full login
+flow captured: 0x00 hello, 0x01, 0x0c (bodylen 932 -- the encrypted login),
+0x69, 0x6a, 0x66, 0x65 x2.
+
+0x0c login-packet backtrace (innermost [0] = WSASend caller -> outermost):
+  [0]  terminal64.exe!0x139db7d  ┐ generic packet send/framing path
+  [1]  terminal64.exe!0x139d8c6  │ (shared with every packet type)
+  [2]  terminal64.exe!0x139e6ca  ┘
+  [3]  terminal64.exe!0x138ce84  <- LOGIN encrypt+frame step (login-specific)
+  [4]  terminal64.exe!0x39301c3  <- LOGIN packet builder (handler range 0x393xxxx)
+  [5]  terminal64.exe!0x1390a84  ┐ login command dispatch
+  [6]  terminal64.exe!0x139f166  │
+  [7]  terminal64.exe!0x139eb95  │
+  [8]  terminal64.exe!0x13a4ae3  │
+  [9]  terminal64.exe!0x13a4a2d  ┘
+  [10] terminal64.exe!0x1b2f98b  (thread/io loop)
+  [11] KERNEL32.DLL!0xf170c
+
+Frames [0]-[2] are the generic send path (appear in all 8 packets). The
+login-specific frames are [3] 0x138ce84 and [4] 0x39301c3. By call order
+(outer calls inner), 0x39301c3 (login builder) calls 0x138ce84 (encrypt+frame)
+which calls the generic send path [2]->[1]->[0]. So the cipher is most likely
+INSIDE 0x138ce84, with the PLAINTEXT login body as its input arg. 0x39301c3
+assembles the login fields (login id / password / server / client version) and
+hands the plaintext body to 0x138ce84 to encrypt.
+
+Other packet-specific builder frames (for comparison, each command has its own):
+  0x00 hello:  [2] 0x3d77643
+  0x01:        [2] 0x392e59f
+  0x69:        [3] 0xd52aa0, [4] 0xcb3f7b
+  0x65:        [3] 0xd9185e/0xd7cd6e, [4] 0xd918e5, [5] 0xf4a457
+
+Next RE step (proposed): hook 0x138ce84 and 0x39301c3 on entry, dump the four
+fastcall arg registers + 256 bytes at each. 0x138ce84's input should contain
+the PLAINTEXT login body (and possibly the key); 0x39301c3's inputs should
+contain the login fields being assembled. That capture would (a) confirm which
+function encrypts, (b) recover the plaintext login packet, and (c) reveal the
+key + where it comes from (answering the key-material-source viability
+question directly).
