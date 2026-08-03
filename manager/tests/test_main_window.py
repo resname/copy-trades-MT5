@@ -158,3 +158,37 @@ def test_save_config_noop_when_store_none(qapp):
     from manager.gui.main_window import MainWindow
     w = MainWindow(FakeController())
     w._save_config()  # must not raise
+
+
+def test_predownload_done_sets_cached_wheel_and_ready_label(qapp):
+    from manager.gui.main_window import MainWindow
+    from pathlib import Path
+    w = MainWindow(FakeController())
+    w._latest_version = "0.2.0"
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))
+    assert w._cached_wheel == Path("C:/cached/manager-latest.whl")
+    assert "ready" in w.update_label.text().lower()
+
+
+def test_update_restart_passes_cached_wheel(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from pathlib import Path
+    captured = {}
+    from manager import updater
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit, cached_wheel=None: captured.update(
+                            {"on_quit": on_quit, "cached_wheel": cached_wheel}))
+    w = MainWindow(FakeController())
+    w._cached_wheel = Path("C:/cached/manager-latest.whl")
+    w._on_update_restart()
+    assert captured["cached_wheel"] == Path("C:/cached/manager-latest.whl")
+
+
+def test_update_restart_refuses_while_running(qapp):
+    from manager.gui.main_window import MainWindow
+    c = FakeController()
+    c.started = True
+    w = MainWindow(c)
+    w._cached_wheel = None
+    w._on_update_restart()  # is_running() True -> logs, does not call apply
+    assert "stop" in w.log_view.toPlainText().lower()

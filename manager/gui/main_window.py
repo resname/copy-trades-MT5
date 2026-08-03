@@ -51,6 +51,9 @@ class MainWindow(QMainWindow):
             app.aboutToQuit.connect(self._save_config)
 
         self._update_worker = None
+        self._predownload_worker = None
+        self._cached_wheel = None
+        self._latest_version = None
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(3600 * 1000)
         self._update_timer.timeout.connect(self.check_for_updates_now)
@@ -219,19 +222,39 @@ class MainWindow(QMainWindow):
             self.update_restart_button.setVisible(False)
             return
         if info.available:
+            self._latest_version = info.latest
             self.update_label.setText(f"Update available: v{info.latest}")
             self.update_restart_button.setVisible(True)
             self.update_restart_button.setEnabled(not self._controller.is_running())
+            self._predownload_worker = _UpdateWorker(self._do_predownload, self)
+            self._predownload_worker.done.connect(self._on_predownload_done)
+            self._predownload_worker.start()
         else:
             self.update_label.setText(f"Up to date (v{info.current})")
             self.update_restart_button.setVisible(False)
+
+    def _do_predownload(self):
+        from manager import updater
+        try:
+            return updater.download_update()
+        except Exception:
+            return None
+
+    def _on_predownload_done(self, wheel) -> None:
+        self._predownload_worker = None
+        if wheel is None or self._latest_version is None:
+            return
+        self._cached_wheel = wheel
+        self.update_label.setText(
+            f"Update available: v{self._latest_version} (ready — restart in seconds)")
 
     def _on_update_restart(self) -> None:
         if self._controller.is_running():
             self.append_log("stop copying before updating")
             return
         from manager import updater
-        updater.apply_update_and_restart(on_quit=self._do_update_quit)
+        updater.apply_update_and_restart(
+            on_quit=self._do_update_quit, cached_wheel=self._cached_wheel)
 
     def _do_update_quit(self) -> None:
         self._controller.stop()
