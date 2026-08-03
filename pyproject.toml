@@ -26,5 +26,8 @@ testpaths = ["manager/tests"]
 [tool.setuptools.packages.find]
 include = ["manager*"]
 
+[tool.setuptools.package-data]
+manager = ["data/*.json"]
+
 [tool.setuptools.dynamic]
 version = {attr = "manager._version.__version__"}
