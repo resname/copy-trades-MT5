@@ -21,7 +21,7 @@ def test_update_ui_exists(qapp):
     from manager.gui.main_window import MainWindow
     w = MainWindow(FakeController())
     assert w.check_update_button.text().lower().startswith("check")
-    assert w.update_restart_button.isVisible() is False
+    assert w.update_restart_button.isVisibleTo(w) is False
 
 
 def test_update_available_enables_restart_only_when_idle(qapp):
@@ -29,7 +29,7 @@ def test_update_available_enables_restart_only_when_idle(qapp):
     w = MainWindow(FakeController(running=False))
     w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
     assert "0.1.2" in w.update_label.text()
-    assert w.update_restart_button.isVisible() is True
+    assert w.update_restart_button.isVisibleTo(w) is True
     assert w.update_restart_button.isEnabled() is True
 
 
@@ -45,7 +45,7 @@ def test_up_to_date_hides_restart(qapp):
     w = MainWindow(FakeController())
     w._on_update_checked(UpdateInfo(available=False, current="0.1.1", latest="0.1.1"))
     assert "up to date" in w.update_label.text().lower()
-    assert w.update_restart_button.isVisible() is False
+    assert w.update_restart_button.isVisibleTo(w) is False
 
 
 def test_check_failed_label(qapp):
