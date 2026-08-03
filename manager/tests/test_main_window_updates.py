@@ -15,6 +15,11 @@ class FakeController:
         self.stopped.append(True)
     def discover_instances(self):
         return []
+    def get_catalog(self):
+        from manager.brokers.catalog import BrokerCatalog
+        return BrokerCatalog()
+    def refresh_brokers(self):
+        return self.get_catalog()
 
 
 def test_update_ui_exists(qapp):

@@ -9,6 +9,11 @@ class FakeController:
         self.stopped = False
     def stop(self):
         self.stopped = True
+    def get_catalog(self):
+        from manager.brokers.catalog import BrokerCatalog
+        return BrokerCatalog()
+    def refresh_brokers(self):
+        return self.get_catalog()
 
 
 def test_tray_constructs(qapp):

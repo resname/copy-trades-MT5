@@ -121,12 +121,20 @@ class BrokerServerPicker(QWidget):
     # ---- public API ----
     def server(self) -> str:
         """Raw server name: the selected item's user-data if a dropdown item is
-        selected, else the typed free-text with any trailing label stripped."""
+        selected, else the typed free-text with any trailing label stripped.
+
+        An editable QComboBox keeps its last ``currentIndex`` when the user types
+        free text, so we can't trust ``itemData(currentIndex)`` alone — a stale
+        index would leak a previously-selected server's user-data. The item-data
+        applies only when the current text actually matches that item's display
+        text (i.e. a dropdown item is genuinely selected, not free-typed)."""
         idx = self.server_combo.currentIndex()
-        data = self.server_combo.itemData(idx)
-        if isinstance(data, str) and data:
-            return data
-        return _strip_label(self.server_combo.currentText())
+        text = self.server_combo.currentText()
+        if idx >= 0 and text == self.server_combo.itemText(idx):
+            data = self.server_combo.itemData(idx)
+            if isinstance(data, str) and data:
+                return data
+        return _strip_label(text)
 
     def set_server(self, name: str) -> None:
         """Pre-fill the server for an existing account: select the matching
