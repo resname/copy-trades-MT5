@@ -162,3 +162,19 @@ def test_is_running_reflects_start_stop():
     assert c.is_running()
     c.stop()
     assert not c.is_running()
+
+
+def test_supervisor_errors_surface_to_gui():
+    """supervisor.on_error (wired in build_supervisor) routes worker errors
+    (e.g. 'master: initialize failed: ...') to on_status('error', ...) and
+    on_log, so the user sees the reason a worker stopped instead of a silent
+    terminal open/close cycle."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+            TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, statuses, logs = _controller(insts)
+    sup = c.build_supervisor(heartbeat_seconds=5)
+    assert sup.on_error is not None, "build_supervisor must wire sup.on_error"
+    sup.on_error("master", "master: initialize failed: (-1, 'no connection')")
+    assert any(s.kind == "error" and "initialize failed" in s.message
+               for s in statuses), "on_error must route to on_status kind=error"
+    assert any("initialize failed" in m for m in logs), "on_error must route to on_log"

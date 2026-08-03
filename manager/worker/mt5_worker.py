@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+import traceback
 
 from manager.engine.models import Position, Record, BUY, SELL
 from manager.engine.linkage import (
@@ -314,6 +315,16 @@ def worker_main(pipe, role: str, adapter_kind: str = "real", fake_state=None):
             _slave_loop(pipe, adapter, config)
     except EOFError:
         pass  # manager closed the pipe -> graceful shutdown
+    except Exception as exc:
+        # Surface any other loop exception as a FATAL error so the supervisor
+        # stops instead of silently restarting a crashing worker (which would
+        # kill+reopen the terminal in a cycle). EOFError is graceful (no msg).
+        try:
+            send_msg(pipe, ErrorMsg(source_id=source_id,
+                   message=f"worker crashed: {exc}\n{traceback.format_exc()}",
+                   fatal=True))
+        except (EOFError, OSError):
+            pass
     finally:
         try:
             adapter.shutdown()

@@ -29,6 +29,7 @@ class WorkerHandle:
     next_restart_at: float = 0.0
     last_msg_ts: float = 0.0
     fail_count: int = 0
+    fatal: bool = False  # set on a fatal ErrorMsg; _health_check won't restart
 
 
 class Supervisor:
@@ -57,6 +58,7 @@ class Supervisor:
         self._stop = threading.Event()
         self._thread = None
         self.on_restart = None  # callback(name, role) for GUI status (Plan 4)
+        self.on_error = None    # callback(name, message) for GUI status/log
 
     def spawn_master(self, config, adapter_kind="real", fake_state=None):
         self._handles["master"] = self._spawn("master", "master", config,
@@ -112,7 +114,17 @@ class Supervisor:
         for name, h in list(self._handles.items()):
             if h.role != "slave":
                 continue
-            while h.pipe is not None and h.pipe.poll(0):
+            while h.pipe is not None:
+                # On Windows, poll(0) on a peer-closed pipe with no buffered
+                # data raises BrokenPipeError (not EOFError, not False); a
+                # dead worker hits this, so treat it as "pipe closed".
+                try:
+                    if not h.pipe.poll(0):
+                        break
+                except (BrokenPipeError, OSError):
+                    self.errors.append(f"slave {name} pipe closed")
+                    h.pipe = None
+                    break
                 try:
                     msg = recv_msg(h.pipe)
                 except EOFError:
@@ -140,13 +152,26 @@ class Supervisor:
         elif isinstance(msg, SymbolInfoMsg):
             self._engine.apply_symbol_info(slave_id, msg.infos)
         elif isinstance(msg, ErrorMsg):
-            self.errors.append(f"{slave_id}: {msg.message}")
+            if msg.fatal and h is not None:
+                h.fatal = True
+            self._surface_error(slave_id, f"{slave_id}: {msg.message}")
 
     def _read_master(self, timeout) -> bool:
         h = self._handles.get("master")
         if h is None or h.pipe is None:
             return True
-        if h.pipe.poll(timeout):
+        try:
+            readable = h.pipe.poll(timeout)
+        except (BrokenPipeError, OSError):
+            # peer-closed pipe with no buffered data (dead master): same as the
+            # EOF path below — close the pipe and let _health_check decide.
+            try:
+                h.pipe.close()
+            except Exception:
+                pass
+            h.pipe = None
+            return True
+        if readable:
             try:
                 msg = recv_msg(h.pipe)
             except EOFError:
@@ -175,13 +200,23 @@ class Supervisor:
             elif isinstance(msg, StatusMsg):
                 pass
             elif isinstance(msg, ErrorMsg):
-                self.errors.append(f"master: {msg.message}")
+                if msg.fatal:
+                    h.fatal = True
+                self._surface_error("master", f"master: {msg.message}")
             return True
         if self._time_fn() - self._last_snapshot_ts > self._heartbeat_seconds * 2:
             if not self.heartbeat_warning:
                 self.heartbeat_warning = True
-                self.errors.append("no heartbeat from master")
+                self._surface_error("master", "no heartbeat from master")
         return True
+
+    def _surface_error(self, name: str, message: str) -> None:
+        """Record a worker/runtime error and forward it to the GUI (on_error)
+        so the user sees WHY something failed instead of a silent symptom
+        (e.g. a terminal that blinks open/closed because initialize failed)."""
+        self.errors.append(message)
+        if self.on_error is not None:
+            self.on_error(name, message)
 
     def _send(self, slave_id, msg) -> None:
         h = self._handles.get(slave_id)
@@ -194,6 +229,14 @@ class Supervisor:
 
     def _health_check(self) -> None:
         for name, h in list(self._handles.items()):
+            if h.fatal:
+                # A worker that reported a FATAL error (e.g. mt5.initialize
+                # failed because the terminal isn't logged in) must not be
+                # restarted: _restart calls kill_terminal (closes the
+                # terminal) then re-spawns (mt5.initialize re-opens it), which
+                # fails the same way -> the terminal would blink open/closed
+                # forever. Leave it dead; the user sees the surfaced error.
+                continue
             if not h.proc.is_alive():
                 self._restart(name)
                 continue

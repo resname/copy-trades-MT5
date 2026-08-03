@@ -142,7 +142,15 @@ class CopyController:
             kill_terminal=self._terminal_manager.kill_terminal)
         sup.on_restart = lambda name, role: self._status(
             "info", f"restarted {role} {name}")
+        sup.on_error = lambda name, message: self._on_supervisor_error(name, message)
         return sup
+
+    def _on_supervisor_error(self, name: str, message: str) -> None:
+        """Worker/runtime errors (fatal initialize failures, crashes, lost
+        heartbeat) -> status (error) + log, so the user sees the reason a
+        worker stopped instead of a silent terminal open/close cycle."""
+        self._status("error", message)
+        self._log(message)
 
     # ---- the Start sequence ----
     def start(self, master: AccountSpec, slaves: list[AccountSpec],
