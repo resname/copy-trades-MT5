@@ -33,3 +33,31 @@ def test_event_kinds_and_record_fields():
     r = Record(master_ticket=1, magic=1000001, slave_ticket=99,
                master_open_volume=0.5, slave_open_volume=0.05)
     assert r.master_ticket == 1
+
+
+from manager.engine.models import SymbolInfo
+
+
+def test_symbol_info_fields():
+    si = SymbolInfo(point=0.00001, digits=5, tick_size=0.00001,
+                    volume_step=0.01, volume_min=0.01, volume_max=100.0)
+    assert si.point == 0.00001
+    assert si.digits == 5
+    assert si.tick_size == 0.00001
+    assert si.volume_step == 0.01
+    assert si.volume_min == 0.01
+    assert si.volume_max == 100.0
+
+
+def test_symbol_info_is_frozen():
+    si = SymbolInfo(point=0.01, digits=2, tick_size=0.01,
+                    volume_step=0.1, volume_min=0.1, volume_max=10.0)
+    import dataclasses
+    assert dataclasses.is_dataclass(si)
+    # frozen: assignment must raise
+    try:
+        si.point = 0.0  # type: ignore[misc]
+    except dataclasses.FrozenInstanceError:
+        pass
+    else:
+        raise AssertionError("SymbolInfo must be frozen")
