@@ -20,10 +20,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: pip install -e .
+        run: pip install -e .[test]
 
       - name: Test
-        run: pytest -q
+        run: python -m pytest -q
 
       - name: Set version
         shell: bash

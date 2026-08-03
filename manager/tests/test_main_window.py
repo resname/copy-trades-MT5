@@ -61,6 +61,9 @@ def test_stop_button_calls_controller_stop(qapp):
     from manager.gui.main_window import MainWindow
     c = FakeController()
     w = MainWindow(c)
+    # Stop is disabled until a session is running; enable it to mimic that
+    # state so the click fires the handler.
+    w.stop_button.setEnabled(True)
     w.stop_button.click()
     assert c.stopped
 
