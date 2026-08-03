@@ -12,7 +12,8 @@ from manager.worker.mt5_constants import (
 class Mt5Adapter(Protocol):
     """The terminal-touching seam. FakeMt5 implements it for tests;
     RealMt5 wraps the MetaTrader5 package (lazy-imported)."""
-    def initialize(self, path: str, login: int, password: str, server: str,
+    def initialize(self, path: str, login: int | None = None,
+                   password: str | None = None, server: str | None = None,
                    portable: bool = False) -> bool: ...
     def shutdown(self) -> None: ...
     def last_error(self) -> tuple[int, str]: ...
@@ -40,7 +41,8 @@ class FakeMt5:
         self._last_error: tuple[int, str] = (0, "")
         self._connected = False
 
-    def initialize(self, path, login, password, server, portable=False):
+    def initialize(self, path, login=None, password=None, server=None,
+                   portable=False):
         self._connected = True
         return True
 
@@ -142,10 +144,15 @@ class RealMt5:
             self._mt5 = mt5
         return self._mt5
 
-    def initialize(self, path, login, password, server, portable=False):
+    def initialize(self, path, login=None, password=None, server=None,
+                   portable=False):
         mt5 = self._mod()
-        ok = mt5.initialize(path=path, login=int(login), password=password,
-                            server=server, portable=portable)
+        kwargs = {"path": path, "portable": portable}
+        if login is not None:
+            kwargs["login"] = int(login)
+            kwargs["password"] = password
+            kwargs["server"] = server
+        ok = mt5.initialize(**kwargs)
         if not ok:
             self._last_error = mt5.last_error()
         return bool(ok)
