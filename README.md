@@ -68,7 +68,13 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 ## Requirements
 
 - **Windows 10/11** (MetaTrader 5 is Windows-only; DPAPI via `pywin32`).
-- **Python ≥ 3.11**.
+- **Python ≥ 3.11, x86_64 build.** The `MetaTrader5` package ships only
+  `win_amd64` wheels, so the manager needs an x64 Python. The one-liner
+  installer enforces this: it skips the Microsoft Store Python (sandboxed;
+  redirects venv writes) and any native ARM64 Python, installs x64 Python
+  (via winget, with a python.org fallback), and on ARM64 Windows runs that
+  x64 Python under emulation. On a plain x64 machine this is all automatic
+  and invisible.
 - **MetaTrader 5** terminals installed (one per account). The manager can
   auto-discover existing installs and auto-provision the shortfall.
 - Python dependencies (installed via `pip install -e .`):
@@ -228,6 +234,7 @@ individual test modules.
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
+| `Could not find a version that satisfies the requirement MetaTrader5` (`from versions: none`) | An ARM64 or Microsoft Store Python is in the venv — `MetaTrader5` has only `win_amd64` wheels | Re-run the one-liner; the installer skips Store/ARM64 Pythons and installs x64. If installing manually, use an x64 (`win-amd64`) Python |
 | `mt5.initialize` returns `False` / `-10003` | A stale `terminal64.exe` is holding the terminal's IPC | The supervisor kills the stale terminal before respawn; restart the manager if it persists |
 | Slaves never reach `ready` | Worker failed to log in or fetch SymbolInfo | Check the log view for the worker error; confirm the demo login/server are correct |
 | `CredentialDecryptError` on start | Settings blob was encrypted by a different Windows user | Re-enter the password (DPAPI keys are per-user) |
