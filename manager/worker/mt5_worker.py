@@ -13,6 +13,7 @@ from manager.engine.transform import (
 )
 from manager.ipc.messages import (
     AckMsg, ErrorMsg, SnapshotMsg, StatusMsg, SymbolInfoMsg, RecoveryMsg,
+    ReconfigureMsg,
 )
 from manager.ipc.pipe_framing import send_msg, recv_msg
 from manager.worker.mt5_adapter import FakeMt5, RealMt5
@@ -271,6 +272,19 @@ def _slave_loop(pipe, adapter, config):
     while True:
         if pipe.poll(poll_timeout):
             cmd = recv_msg(pipe)  # raises EOFError on manager close
+            if isinstance(cmd, ReconfigureMsg):
+                # Live reconfigure: update this loop's params and re-report the
+                # symbol info for the NEW map's slave symbols. Open positions
+                # are unaffected (MODIFY/CLOSE route by slave_ticket). No ack.
+                normalize = cmd.normalize_sltp
+                symbol_map_csv = cmd.symbol_map_csv
+                try:
+                    send_msg(pipe, build_symbol_info_msg(adapter, slave_id,
+                                                         symbol_map_csv))
+                except (EOFError, OSError):
+                    return  # manager gone
+                last_status = time.time()
+                continue
             ack = execute_command(adapter, cmd, normalize, retry_count, retry_delay)
             try:
                 send_msg(pipe, ack)
