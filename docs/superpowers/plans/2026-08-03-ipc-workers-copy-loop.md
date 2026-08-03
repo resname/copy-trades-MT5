@@ -2435,7 +2435,7 @@ def _slave_thread(child_pipe, adapter, stop_evt):
 
 def _drive(engine, parent_pipe, slave_id, positions, now=NOW):
     snap = Snapshot(timestamp=now, heartbeat=1, positions=tuple(positions))
-    cmds = engine.ingest_snapshot(snap, now=now)
+    cmds = engine.ingest_snapshot(snap, now=now)[slave_id]
     for cmd in cmds:
         send_msg(parent_pipe, cmd)
     # drain acks (and any re-emitted held commands) until idle
@@ -2515,12 +2515,12 @@ def test_pending_held_modify_during_open():
     try:
         # snapshot 1: NEW -> OPEN sent (pending), optimistic record added
         snap1 = Snapshot(timestamp=NOW, heartbeat=1, positions=(_pos(42),))
-        cmds1 = eng.ingest_snapshot(snap1, now=NOW)
+        cmds1 = eng.ingest_snapshot(snap1, now=NOW)["s1"]
         assert len(cmds1) == 1 and cmds1[0].action == "OPEN"
         # snapshot 2 (before ack): MODIFY -> held
         snap2 = Snapshot(timestamp=NOW, heartbeat=2,
                          positions=(_pos(42, sl=1.09000, tp=1.11000),))
-        cmds2 = eng.ingest_snapshot(snap2, now=NOW)
+        cmds2 = eng.ingest_snapshot(snap2, now=NOW)["s1"]
         assert cmds2 == []  # MODIFY held pending OPEN ack
         # send the OPEN and drain its ack -> re-emitted MODIFY must be sent+acked
         send_msg(parent_pipe, cmds1[0])
