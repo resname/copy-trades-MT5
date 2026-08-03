@@ -39,31 +39,30 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
   lot cap; volumes rounded down to the symbol's lot step.
 - **Auto-find MT5 instances** — discovers installed terminals via `origin.txt`
   and the default Program Files locations.
-- **Auto-install shortfall instances** — provisions extra portable terminals
-  via `mt5setup.exe /auto` when there are fewer instances than accounts (one
-  terminal per account).
+- **Manual-login, terminal-path-only setup** — you log in to each MT5 terminal
+  via its own UI (demo account), then select only the terminal path in the
+  manager; the manager never sees or stores credentials.
+- **Launch terminal / Install MetaTrader buttons** — launch a selected
+  terminal's `terminal64.exe` to log in/verify, or open the MT5 download page
+  to install another terminal (use a custom install path per terminal).
 - **System tray** — close-to-tray keeps the workers running in the background;
   tray Quit does an orderly shutdown (stops the engine, joins workers, then
   quits the app).
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
-- **Browsable broker/server picker** — pick an MT5 server by broker name
-  (the thing you remember) instead of typing the exact server string. Backed
-  by a shipped community broker list, a best-effort live refresh, and your
-  previously-used servers; free-text entry still works for anything not listed.
 
 ---
 
 ## Security model
 
-- **Demo accounts first.** The manual smoke runbook (`docs/smoke-test.md`) is
-  demo-only. Production supports real accounts, but never defaults to one and
-  never logs credentials.
-- **Credentials are passed to workers through the pipe**, never on the command
-  line, so they do not appear in the process list (`tasklist` / Process Explorer).
-- **Credentials at rest are DPAPI-encrypted** (`pywin32 win32crypt`
-  `CryptProtectData` / `CryptUnprotectData`, per-user OS-managed key) — the
-  settings file holds opaque blobs, not plaintext passwords.
+- **Demo accounts only — never a real account.** This applies to the manual
+  login you perform in `terminal64.exe`; the manager enforces nothing here (it
+  never sees credentials), so it is user-side discipline, stated in the GUI
+  disclaimer.
+- **No credentials are stored, piped, or logged by the manager.** There is no
+  DPAPI store, no password in the settings file, no password on the worker pipe
+  or command line. The selected terminal path is the account identity; the
+  worker connects to the terminal's saved account.
 - Capture artifacts from protocol research (pcaps, Frida logs) are large and
   may contain credentials; they are gitignored and never committed.
 
@@ -71,7 +70,7 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 
 ## Requirements
 
-- **Windows 10/11** (MetaTrader 5 is Windows-only; DPAPI via `pywin32`).
+- **Windows 10/11** (MetaTrader 5 is Windows-only).
 - **Python ≥ 3.11, x86_64 build.** The `MetaTrader5` package ships only
   `win_amd64` wheels, so the manager needs an x64 Python. The one-liner
   installer enforces this: it skips the Microsoft Store Python (sandboxed;
@@ -79,11 +78,11 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
   (via winget, with a python.org fallback), and on ARM64 Windows runs that
   x64 Python under emulation. On a plain x64 machine this is all automatic
   and invisible.
-- **MetaTrader 5** terminals installed (one per account). The manager can
-  auto-discover existing installs and auto-provision the shortfall.
+- **MetaTrader 5** terminals installed and logged in to (one per account,
+  demo accounts). The manager discovers existing installs; install extras
+  via the **Install MetaTrader** button (custom install path per terminal).
 - Python dependencies (installed via `pip install -e .`):
   - `PySide6>=6.6` — GUI + system tray
-  - `pywin32>=306` — DPAPI credential encryption
   - `psutil>=5.9` — terminal process discovery / kill
   - `MetaTrader5>=5.0.45` — the official MT5 Python integration
 
@@ -134,17 +133,24 @@ shows an **Update available** indicator with an **Update & restart** button
 (enabled only while the copy engine is idle). `copytrades update` runs the
 same update from the command line.
 
-1. **Master account**: enter the master login, server, and (demo) password, and
-   pick a terminal (or let the manager assign one). Click **Start**.
-2. **Slave accounts**: click **Add slave** to open the slave editor — enter each
-   slave's login, server, (demo) password, optional terminal override, and
-   per-slave symbol map / lot-sizing / normalization options. Add as many slaves
-   as you need (one terminal each; the manager provisions the shortfall).
-3. **Start**: the manager prepares terminals (discovering/provisioning as
-   needed), spawns one worker per slave, waits for every slave to report ready
-   (SymbolInfo + first status), then spawns the master worker and starts the
-   copy loop. The status panel shows `slaves ready; starting master`.
-4. **Tray**: closing the window hides it to the tray — workers keep running.
+1. **Install terminals** (if you don't have enough): click **Install MetaTrader**
+   to open the download page, download and run `mt5setup.exe`, and choose a
+   **custom install path** for each terminal (the default path collides with
+   existing terminals). Install one terminal per account.
+2. **Log in to each terminal**: click **Launch terminal** to open a terminal's
+   login window (or open it yourself), and log in to a **DEMO account** (never
+   a real account). The terminal saves the account.
+3. **Master**: in the manager, select the master terminal from the dropdown.
+   Click **Start** (the manager connects to that terminal's saved account —
+   no login/server/password entered in the manager).
+4. **Slaves**: click **Add slave** to open the slave editor — select each
+   slave's terminal, and set the per-slave symbol map / lot-sizing /
+   normalization options. Add as many slaves as you need (one terminal each).
+5. **Start**: the manager assigns terminals, spawns one worker per slave,
+   waits for every slave to report ready (SymbolInfo + first status), then
+   spawns the master worker and starts the copy loop. The status panel shows
+   `slaves ready; starting master`.
+6. **Tray**: closing the window hides it to the tray — workers keep running.
    Use the tray **Quit** for an orderly shutdown (stop engine → join workers →
    quit).
 
@@ -161,14 +167,7 @@ manager/
   _version.py            Single source of truth for the installed version (CI overwrites at build)
   updater.py             Headless update check + detached self-update spawn (no Qt)
   app/
-    controller.py        CopyController: terminal mgmt + readiness gate + creds
-  brokers/
-    catalog.py          Broker catalog: merge/dedup/demo-first sort (pure, no Qt)
-    default.py          Loads the shipped brokers_default.json snapshot
-    live.py             TradeVPS community-list fetch + cache (best-effort)
-    learned.py          Record/retrieve previously-used servers from settings
-  data/
-    brokers_default.json   Shipped TradeVPS broker/server snapshot
+    controller.py        CopyController: terminal mgmt + readiness gate
   engine/                The copy engine (master→slave mirroring logic)
     copy_loop.py         CopyEngine: snapshots → per-slave command queues
     baseline.py          Recent-opens backfill at start
@@ -187,21 +186,17 @@ manager/
   supervisor.py          Worker lifecycle, restart+backoff, readiness gate
   terminal/
     discovery.py          Find installed MT5 terminals (origin.txt + defaults)
-    provisioning.py      Install portable terminals via mt5setup.exe /auto
     manager.py           Assign one terminal per account; kill stale terminal64.exe
   settings/
-    credentials.py       DPAPI encrypt/decrypt (pywin32 win32crypt)
     store.py             Atomic JSON settings + provisioned-instance registry
   gui/
-    main_window.py       Main window (master form, slave list, status/log, update UI)
-    server_picker.py   Broker→Server picker (Broker combo + Server combo + Refresh)
+    main_window.py       Main window (master terminal form + Launch/Install buttons, slave list, status/log, update UI)
     slave_editor.py      Add/edit slave account dialog
     tray.py              System tray (close-to-tray + orderly quit)
-  tests/                 pytest suite (183 headless / 205 with PySide6)
+  tests/                 pytest suite (167 headless / 193 with PySide6)
 scripts/
   install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
   smoke-install.ps1      Local install.ps1 smoke check
-  update_brokers_default.py  Maintainer: refresh the shipped broker snapshot from TradeVPS
 .github/workflows/
   release.yml            Build wheel + publish GitHub Release (auto on push to main)
 docs/
@@ -219,7 +214,7 @@ installed and run on a PySide6-enabled host.
 
 ```powershell
 pytest -q
-# expected on a headless env: 183 passed, 5 skipped (205 passed with PySide6)
+# expected on a headless env: 167 passed, 5 skipped (193 passed with PySide6)
 ```
 
 See [`docs/TESTING.md`](docs/TESTING.md) for the suite layout and how to run
@@ -239,7 +234,7 @@ individual test modules.
   startup race where a master snapshot arrives before slaves are ready to act.
 - **One terminal per account** — the MT5 Python package allows one `initialize`
   per process, so each account gets its own worker subprocess and its own
-  terminal instance (provisioned automatically if there are not enough).
+  terminal instance (installed manually via the Install MetaTrader button if there are not enough).
 
 ---
 
@@ -249,9 +244,8 @@ individual test modules.
 |---------|--------------|-----|
 | `Could not find a version that satisfies the requirement MetaTrader5` (`from versions: none`) | An ARM64 or Microsoft Store Python is in the venv — `MetaTrader5` has only `win_amd64` wheels | Re-run the one-liner; the installer skips Store/ARM64 Pythons and installs x64. If installing manually, use an x64 (`win-amd64`) Python |
 | `mt5.initialize` returns `False` / `-10003` | A stale `terminal64.exe` is holding the terminal's IPC | The supervisor kills the stale terminal before respawn; restart the manager if it persists |
-| Slaves never reach `ready` | Worker failed to log in or fetch SymbolInfo | Check the log view for the worker error; confirm the demo login/server are correct |
-| `CredentialDecryptError` on start | Settings blob was encrypted by a different Windows user | Re-enter the password (DPAPI keys are per-user) |
-| Not enough terminal instances | Fewer installed terminals than accounts | Let the manager provision the shortfall, or point accounts at specific terminals via the terminal override |
+| Slaves never reach `ready` | Worker failed to log in or fetch SymbolInfo | Check the log view for the worker error; confirm the terminal is logged in to a demo account (the manager does not enter credentials — log in via the terminal's own UI / the Launch button) |
+| Not enough terminal instances | Fewer installed terminals than accounts | Install more via the Install MetaTrader button (custom path) and log in, or point accounts at specific terminals via the dropdown |
 
 ---
 

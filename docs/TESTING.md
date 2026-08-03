@@ -1,9 +1,9 @@
 # Testing — Copy Trades MT5 Local Manager
 
 The local manager is a Python package (`manager/`) tested with **pytest**. The
-copy engine, IPC, supervisor, terminal management, and credentials are fully
-unit-tested without a GUI or a live MT5 terminal. The GUI tests import PySide6
-and skip cleanly when PySide6 is not installed.
+copy engine, IPC, supervisor, and terminal management are fully unit-tested
+without a GUI or a live MT5 terminal. The GUI tests import PySide6 and skip
+cleanly when PySide6 is not installed.
 
 ---
 
@@ -16,13 +16,10 @@ pip install -e .[test]
 ```
 
 `pip install -e .[test]` installs the runtime dependencies (`PySide6`,
-`pywin32`, `psutil`, `MetaTrader5`) plus `pytest` (the `[test]` extra), and
+`psutil`, `MetaTrader5`) plus `pytest` (the `[test]` extra), and
 makes the `manager` package importable. The test suite does not require
 `MetaTrader5` to actually connect — workers run against a `FakeMt5` adapter in
 tests, and GUI tests skip when PySide6 is absent.
-
-> `pywin32` is Windows-only. On a non-Windows host, the credential tests skip
-> (they need `win32crypt`).
 
 ---
 
@@ -37,13 +34,13 @@ pytest -q
 Expected on a headless Windows env without PySide6 installed:
 
 ```
-183 passed, 5 skipped
+167 passed, 5 skipped
 ```
 
 The 5 skips are the GUI test modules (`test_main_window`,
 `test_main_window_updates`, `test_slave_editor`, `test_tray`,
 `test_main_entry`) — they call `pytest.importorskip("PySide6")` at module level.
-On a host with PySide6 installed they run too (then `205 passed`).
+On a host with PySide6 installed they run too (then `193 passed`).
 
 ---
 
@@ -63,11 +60,9 @@ Tests live in `manager/tests/` and mirror the package structure:
 | `test_messages.py`, `test_pipe_framing.py` | IPC message types + pipe framing |
 | `test_mt5_worker.py`, `test_mt5_adapter.py` | Worker subprocess + Real/Fake adapter |
 | `test_supervisor.py`, `test_supervisor_readiness.py` | Worker lifecycle, restart+backoff, readiness gate |
-| `test_terminal_discovery.py`, `test_terminal_manager.py`, `test_terminal_provisioning.py` | Terminal discovery / assignment / provisioning |
-| `test_credentials.py`, `test_settings_store.py` | DPAPI encrypt/decrypt + atomic settings store |
-| `test_controller.py` | `CopyController` orchestration (terminal mgmt + gate + creds) |
-| `test_catalog.py`, `test_default.py`, `test_live.py`, `test_learned.py` | Broker catalog merge/dedup/demo-first sort, shipped snapshot loader, live fetch + cache (best-effort, never raises), learned-servers persistence |
-| `test_server_picker.py` | BrokerServerPicker: broker→server population, demo-first, free-text server entry (skip without PySide6) |
+| `test_terminal_discovery.py`, `test_terminal_manager.py` | Terminal discovery / assignment |
+| `test_settings_store.py` | Atomic JSON settings store + provisioned-instance registry |
+| `test_controller.py` | `CopyController` orchestration (terminal mgmt + readiness gate) |
 | `test_version.py` | `_version.__version__` single source of truth |
 | `test_updater.py` | `parse_version` numeric compare, `check_for_update`, `apply_update_and_restart` (headless, mocked HTTP + Popen) |
 | `test_main_window.py`, `test_slave_editor.py`, `test_tray.py`, `test_main_entry.py` | GUI construction + app-graph wiring (skip without PySide6) |
@@ -98,7 +93,6 @@ against real (demo) MT5 terminals, follow the manual runbook:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | GUI tests `SKIPPED` | PySide6 not installed | `pip install PySide6` to run them, or leave them skipped — the non-GUI suite is the gate |
-| `ModuleNotFoundError: win32crypt` | `pywin32` missing or not Windows | `pip install pywin32` on Windows; on other OS the credential tests skip |
 | `MetaTrader5` import error | The package is Windows-only | Not required for the suite (workers use `FakeMt5` in tests); only needed to launch the app |
 
 ---
