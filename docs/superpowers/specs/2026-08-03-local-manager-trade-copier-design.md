@@ -34,7 +34,7 @@ A standalone Windows desktop application that:
 | GUI form factor | Desktop app (PySide6 / Qt6) |
 | Topology | One master → many slaves |
 | Copy scope | Open positions only (new / modify / partial / close) |
-| Start-sync behavior | Recent + forward: ignore master positions older than per-slave `maxTradeAge` on baseline, copy recent opens + everything new going forward (matches the EA's `EstablishBaseline` + `maxTradeAgeMinutes`) |
+| Start-sync behavior | Copy recent opens at start: on Start, copy the master's positions opened within per-slave `maxTradeAge` onto the slave, ignore older ones, then copy everything new going forward. (The EA's `EstablishBaseline` is forward-only and suppresses recent opens; the manager instead lets the first diff emit `NEW` for all current positions and applies the `maxTradeAge` + `RecordTable` filters — so recent opens are copied, older ones skipped.) |
 | Account types | Demo and real; credentials DPAPI-encrypted at rest |
 | Safety controls | EA-level only (`maxLot` + `maxTradeAge`) |
 | Run mode | Tray / background capable — closing the window minimizes to tray and the engine keeps running |
@@ -117,7 +117,7 @@ This is the linkage key for MODIFY/PARTIAL/CLOSE and for restart recovery. Reusi
 |---|---|
 | `NEW` | If master ticket already in this slave's `RecordTable` → skip (already copied; this is the restart/baseline case — see below). Else if `open_time` older than `slave.maxTradeAge` → mark seen, skip (baseline). Else resolve symbol via `SymbolMapper`; if missing on slave → skip + log. Compute lots via `LotSizer` from slave balance. Normalize SL/TP via `PriceNormalizer`. Send `Command(OPEN, …)`. |
 
-**Restart/baseline correctness:** on manager start (or restart), the manager has no previous master snapshot, so the first snapshot's diff treats every current master position as `NEW`. Recovery has already seeded each slave's `RecordTable` with the master tickets that slave already holds. The `RecordTable` membership check in the `NEW` handler therefore skips already-copied positions on the first tick (no duplicate opens) while still letting genuinely-new positions through. After the first snapshot, the manager stores it as the "previous" snapshot and subsequent diffs only emit `NEW` for tickets not seen before.
+**Restart/baseline correctness:** on manager start (or restart), the manager has no previous master snapshot, so the first snapshot's diff treats every current master position as `NEW`. The `NEW` handler then applies two filters: (1) `RecordTable` membership — if the slave already holds that master ticket (seeded from recovery on restart, or from an earlier copy), skip (no duplicate open); (2) `maxTradeAge` — if the position opened longer ago than the slave's `maxTradeAge`, skip. Everything else is copied. So on a **clean start** the slave copies the master's recent opens (within `maxTradeAge`); on a **restart** it skips already-copied positions (recovery) and copies any recent opens it missed while down. After the first snapshot, the manager stores it as the "previous" snapshot and subsequent diffs only emit `NEW` for tickets not seen before.
 | `MODIFY` | If ticket in `RecordTable` → re-normalize SL/TP to the slave's open price, send `Command(MODIFY, slave_ticket, sl, tp)`. |
 | `PARTIAL` | `fraction = new_master_vol / master_open_vol`; `target_slave_vol = slave_open_vol * fraction`; close `current_slave_vol - target_slave_vol` rounded to lot step → `Command(PARTIAL_CLOSE, slave_ticket, vol_to_close)`. |
 | `CLOSE` | If in `RecordTable` → `Command(CLOSE, slave_ticket)`, then drop the record. |
@@ -173,7 +173,7 @@ manager/
     tray.py              # system-tray icon, close-to-tray, quit
   engine/
     snapshot_diff.py     # NEW/MODIFY/PARTIAL/CLOSE detection
-    baseline.py          # EstablishBaseline + maxTradeAge filter
+    baseline.py          # is_too_old (maxTradeAge filter) + seed RecordTable from recovery records
     record_table.py      # per-slave master->slave linkage state
     transform.py         # SymbolMapper, LotSizer, PriceNormalizer (ported from EA)
     linkage.py           # MAGIC_BASE + CPY#..|MV|SV encode/decode
@@ -225,7 +225,7 @@ Three tiers, bottom-up.
 - `test_transform.py` — `SymbolMapper` (explicit map, same-name fallback, missing → skip), `LotSizer` (balance-step formula, lot-step rounding down, min/max + maxLot cap, sub-min → 0), `PriceNormalizer` (raw-distance reproduction BUY/SELL, tick-size rounding, decimals differ between brokers).
 - `test_linkage.py` — `MAGIC_BASE + ticket % 900000` encode/decode round-trip; `CPY#..|MV|SV` comment parse, including malformed comment.
 - `test_record_table.py` — record add/lookup/drop; partial-close bookkeeping (master open volume vs current volume).
-- `test_baseline.py` — `EstablishBaseline` marks old positions seen (skip) and lets recent ones through, per `maxTradeAge`.
+- `test_baseline.py` — `is_too_old` age filter (boundary at `maxTradeAge`); `seed_from_recovery` populates the `RecordTable` from recovery records so the first-diff `NEW` handler skips already-copied positions.
 - `test_terminal_discovery.py` — parse a fake `origin.txt` (UTF-16) fixture and enumerate a temp dir of fake `<hash>` terminal folders; assert the install paths are extracted correctly. (Provisioning itself — running `mt5setup.exe` — is covered by the manual smoke test, not unit tests.)
 
 **2. Integration test (pytest, no real terminal):** a fake master worker that replays a scripted sequence of snapshots and a fake slave worker that records the `Command`s it receives (no `order_send`), driven through the *real* `copy_loop` + IPC framing. Asserts the full event → transform → command flow end-to-end: a scripted master open/modify/partial/close produces the expected OPEN/MODIFY/PARTIAL_CLOSE/CLOSE commands with correct lots, SL/TP, and slave-ticket linkage. Also covers restart recovery (fake slave reports `RecoveryRecords` → manager seeds `RecordTable` → no duplicate OPEN) and the heartbeat warning (no snapshot for `heartbeatSeconds * 2` → warning fires).
