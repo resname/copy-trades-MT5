@@ -10,7 +10,6 @@ from PySide6.QtWidgets import QApplication
 
 from manager.app.controller import CopyController
 from manager.gui.main_window import MainWindow
-from manager.gui.tray import TrayIcon
 from manager.settings.store import SettingsStore
 from manager.terminal.manager import TerminalManager
 
@@ -33,9 +32,7 @@ def build_app_graph(app: QApplication):
     window = MainWindow(controller, store=store)
     bridge.status.connect(window.append_status)
     bridge.log.connect(window.append_log)
-    tray = TrayIcon(controller)
-    tray.install(window)
-    return window, tray, controller, bridge
+    return window, controller, bridge
 
 
 def main(argv=None) -> int:
@@ -48,7 +45,8 @@ def main(argv=None) -> int:
 
     if "--version" in args:
         from manager._version import __version__
-        print(__version__)
+        if sys.stdout is not None:
+            print(__version__)
         return 0
     if args and args[0] == "update":
         from manager import updater
@@ -56,7 +54,7 @@ def main(argv=None) -> int:
         return 0
 
     app = QApplication.instance() or QApplication(gui_args)
-    window, tray, controller, bridge = build_app_graph(app)
+    window, controller, bridge = build_app_graph(app)
     window.show()
     return app.exec()
 

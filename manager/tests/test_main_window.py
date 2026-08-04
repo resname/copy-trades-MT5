@@ -198,9 +198,9 @@ def test_update_restart_refuses_while_running(qapp):
 
 
 def test_about_to_quit_persists_config(qapp, tmp_path):
-    """Guards the aboutToQuit→_save_config hook (requirement #6): both tray
-    Quit and update-quit reduce to QApplication.quit() → aboutToQuit, so this
-    one test covers both quit paths. If the connect line is removed, this fails."""
+    """Guards the aboutToQuit→_save_config hook: both window-close and
+    update-quit reduce to QApplication.quit() → aboutToQuit, so this one test
+    covers both quit paths. If the connect line is removed, this fails."""
     from manager.gui.main_window import MainWindow
     from manager.app.controller import AccountSpec
     from manager.settings.store import SettingsStore
@@ -330,3 +330,31 @@ def test_start_blocked_by_algo_trading_shows_message_box(qapp, monkeypatch):
     assert shown, "Algo Trading block must raise a modal message box"
     assert "Algo Trading" in shown[0][0]
     assert "Algo Trading" in w.log_view.toPlainText()
+
+
+def test_close_event_stops_controller_and_quits(qapp, monkeypatch):
+    """closeEvent is the quit path: controller.stop() then event.accept() +
+    QApplication.quit(). Replaces the old hide-to-tray behavior."""
+    from manager.gui.main_window import MainWindow
+    from PySide6.QtWidgets import QApplication
+    quit_called = []
+    monkeypatch.setattr(QApplication, "quit",
+                        lambda *a, **k: quit_called.append(True))
+    c = FakeController()
+    w = MainWindow(c)
+
+    class _Evt:
+        def __init__(self):
+            self.accepted = False
+
+        def accept(self):
+            self.accepted = True
+
+        def ignore(self):
+            self.accepted = False
+
+    evt = _Evt()
+    w.closeEvent(evt)
+    assert c.stopped is True      # controller.stop() ran
+    assert evt.accepted is True   # event accepted (window closes)
+    assert quit_called            # QApplication.quit() invoked

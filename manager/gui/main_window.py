@@ -51,10 +51,8 @@ class MainWindow(QMainWindow):
     """The main window. A thin Qt view over CopyController: master account
     form, slave list, Start/Stop, status panel, log view. All actions delegate
     to the controller; status/log arrive via callbacks marshaled onto the GUI
-    thread. Close is intercepted to emit close_to_tray (the tray icon hides
-    the window instead of quitting)."""
-
-    close_to_tray = Signal()
+    thread. Closing the window is the orderly quit path (controller.stop() then
+    QApplication.quit()); there is no tray."""
 
     def __init__(self, controller, store=None, parent=None):
         super().__init__(parent)
@@ -395,10 +393,11 @@ class MainWindow(QMainWindow):
         if self._controller.is_running():
             self._controller.apply_slave_edit(new.id, new)
 
-    # ---- close-to-tray ----
+    # ---- close = quit ----
     def closeEvent(self, event):
-        """Intercept the window close: hide to tray instead of quitting. The
-        tray menu's Quit is the real orderly shutdown path."""
-        event.ignore()
-        self.hide()
-        self.close_to_tray.emit()
+        """Closing the window is the orderly quit path: stop the engine (join
+        workers), accept the close, then quit the app — mirrors the update-quit
+        path in _do_update_quit."""
+        self._controller.stop()
+        event.accept()
+        QApplication.quit()

@@ -15,19 +15,22 @@ class _FakeStore:
     def save(self, d): pass
 
 
-def test_main_assembles_window_tray_controller(qapp, monkeypatch):
+def test_main_assembles_window_controller_bridge(qapp, monkeypatch):
     # patch the real TerminalManager + SettingsStore so assembly needs no disk/MT5
     import manager.__main__ as entry
+    import importlib
     monkeypatch.setattr(entry, "TerminalManager", lambda *a, **k: FakeTerminalManager())
     monkeypatch.setattr(entry, "SettingsStore", lambda *a, **k: _FakeStore())
-    # don't run the event loop; just build the graph (returns 4: window, tray, ctrl, bridge)
-    w, tray, controller, bridge = entry.build_app_graph(qapp)
+    # don't run the event loop; just build the graph (returns 3: window, ctrl, bridge)
+    w, controller, bridge = entry.build_app_graph(qapp)
     assert w is not None
-    assert tray is not None
     assert controller is not None
     assert bridge is not None
     # the controller's status callback is wired to the window via the bridge
     assert hasattr(w, "append_status")
+    # the tray module is gone
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("manager.gui.tray")
 
 
 def test_main_returns_zero_before_event_loop(qapp, monkeypatch):
