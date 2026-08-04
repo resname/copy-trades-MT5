@@ -6,6 +6,7 @@ from manager.engine.models import SymbolInfo, BUY, Position
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
 from manager.app.controller import (
     CopyController, AccountSpec, StatusUpdate, ControllerError,
+    AlgoTradingDisabledError,
 )
 from manager.supervisor import Supervisor
 from manager.terminal.discovery import TerminalInstance
@@ -246,5 +247,69 @@ def test_start_readiness_gate_uses_90s_timeout(monkeypatch):
     try:
         assert captured.get("timeout") == 90.0, \
             "readiness gate must wait 90s for slow first-launch slaves"
+    finally:
+        c.stop()
+
+
+def test_start_blocks_when_slave_algo_trading_disabled():
+    """A slave reporting trade_allowed=False blocks Start before the master is
+    spawned: AlgoTradingDisabledError is raised, no 'ready'/'copying started'
+    status, and the supervisor is shut down (is_running False)."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, statuses, logs = _controller(insts)
+    slave_state = dict(_slave_state())
+    slave_state["terminal_info"] = {"trade_allowed": False}
+    with pytest.raises(AlgoTradingDisabledError) as ei:
+        c.start(_master(), [_slave()],
+                master_fake_state={
+                    "positions": [], "symbol_infos": {"EURUSD": SI},
+                    "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                                "currency": "USD", "server": "Demo"}},
+                slave_fake_state=slave_state)
+    assert ei.value.terminals, "error must name the offending terminal(s)"
+    assert not any(s.kind == "ready" for s in statuses), "must not reach master"
+    assert not any(s.kind == "info" and "copying started" in s.message
+                   for s in statuses)
+    assert not c.is_running()
+
+
+def test_start_blocks_when_master_algo_trading_disabled():
+    """Slaves ready (Algo Trading on) but master reports trade_allowed=False:
+    Start blocks AFTER spawn_master but BEFORE the copy loop runs."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, statuses, logs = _controller(insts)
+    master_state = {
+        "positions": [], "symbol_infos": {"EURUSD": SI},
+        "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                    "currency": "USD", "server": "Demo"},
+        "terminal_info": {"trade_allowed": False}}
+    with pytest.raises(AlgoTradingDisabledError):
+        c.start(_master(), [_slave()],
+                master_fake_state=master_state,
+                slave_fake_state=_slave_state())
+    assert not c.is_running()
+
+
+def test_start_proceeds_when_all_algo_trading_enabled():
+    """Sanity: with Algo Trading on everywhere (FakeMt5 default), Start proceeds
+    exactly as before — no false block."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, statuses, logs = _controller(insts)
+    master_state = {
+        "positions": [Position(42, "EURUSD", BUY, 1.10000, 0.5, 1.095, 1.105,
+                               NOW, 0.00001, "")],
+        "symbol_infos": {"EURUSD": SI},
+        "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                    "currency": "USD", "server": "Demo"}}
+    c.start(_master(), [_slave()],
+            master_fake_state=master_state, slave_fake_state=_slave_state())
+    try:
+        assert _tick_until(
+            lambda: c._engine._slaves["s1"].table.get(42) is not None
+            and c._engine._slaves["s1"].table.get(42).slave_ticket != 0)
+        assert any(s.kind == "ready" for s in statuses)
     finally:
         c.stop()

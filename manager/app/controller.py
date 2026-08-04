@@ -16,6 +16,20 @@ class ControllerError(Exception):
     terminal-path assignments, or not enough instances after assignment."""
 
 
+class AlgoTradingDisabledError(ControllerError):
+    """Raised by start() when one or more terminals report Algo Trading
+    disabled (mt5.terminal_info().trade_allowed is False). Start is blocked
+    before any copy is attempted; the GUI shows a modal message box so the
+    user enables the Algo Trading button and retries."""
+    def __init__(self, terminals: list[str]):
+        self.terminals = list(terminals)
+        names = ", ".join(self.terminals)
+        super().__init__(
+            f"Algo Trading is disabled on: {names}. Enable the 'Algo Trading' "
+            f"button in each MetaTrader terminal (toolbar, or Tools -> Options "
+            f"-> Expert Advisors -> Allow algorithmic trading), then click Start.")
+
+
 @dataclass
 class AccountSpec:
     id: str
@@ -190,11 +204,35 @@ class CopyController:
             sup.shutdown()
             self._supervisor = None
             raise ControllerError("slaves not ready within timeout")
+        # Algo-Trading preflight (slaves): block before any copy is attempted.
+        # A slave with Algo Trading off would silently accept commands whose
+        # order_send is blocked (retcode 10030/invalid) — surface it now.
+        disabled = [(s.id, cfgs[s.id]["terminal_path"])
+                    for s in slaves if not sup.slave_trade_allowed(s.id)]
+        if disabled:
+            names = [f"{sid} ({path})" for sid, path in disabled]
+            self._status("error", "Algo Trading is disabled on: " + ", ".join(names))
+            sup.shutdown()
+            self._supervisor = None
+            raise AlgoTradingDisabledError(names)
         self._status("ready", "slaves ready; starting master")
         mcfg = cfgs[master.id]
         sup.spawn_master(mcfg,
                          adapter_kind="real" if master_fake_state is None else "fake",
                          fake_state=master_fake_state)
+        # Algo-Trading preflight (master): wait for the master's first StatusMsg
+        # (it sends status before any snapshot) and require trade_allowed=True.
+        if not sup.wait_for_master_status(timeout=90.0):
+            self._status("error", "master did not report status in time")
+            sup.shutdown()
+            self._supervisor = None
+            raise ControllerError("master did not report status within timeout")
+        if not sup.master_trade_allowed():
+            name = f"master ({cfgs[master.id]['terminal_path']})"
+            self._status("error", "Algo Trading is disabled on: " + name)
+            sup.shutdown()
+            self._supervisor = None
+            raise AlgoTradingDisabledError([name])
         sup.start()
         self._supervisor = sup
         self._status("info", "copying started")
