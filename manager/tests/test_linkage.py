@@ -20,7 +20,24 @@ def test_magic_for_wraps_modulo():
 
 
 def test_encode_comment_format():
-    assert encode_comment(12345, 0.5, 0.05) == "CPY#12345|MV0.50000000|SV0.05000000"
+    # Volumes are stripped of trailing zeros so the comment fits MT5's
+    # 31-char order-comment limit (8dp would be 35 chars even for a 5-digit
+    # ticket; the MT5 Python API rejects >31 chars with
+    # (-2, 'Invalid "comment" argument'), unlike MQL5 which silently truncates).
+    assert encode_comment(12345, 0.5, 0.05) == "CPY#12345|MV0.5|SV0.05"
+
+
+def test_encode_comment_fits_mt5_limit_for_realistic_inputs():
+    # the user's actual trade: 8-digit master ticket + 2dp lot sizes
+    cmt = encode_comment(66473670, 0.01, 0.99)
+    assert len(cmt) <= 31, f"comment {cmt!r} is {len(cmt)} chars, exceeds MT5 limit 31"
+    # 10-digit ticket still fits with 2dp lots
+    assert len(encode_comment(1234567890, 0.01, 0.99)) <= 31
+
+
+def test_encode_comment_round_trips_through_decode():
+    cmt = encode_comment(66473670, 0.01, 0.99)
+    assert decode_comment(cmt) == (66473670, 0.01, 0.99)
 
 
 def test_decode_comment_full():

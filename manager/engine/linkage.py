@@ -17,8 +17,16 @@ def magic_for(master_ticket: int) -> int:
     return MAGIC_BASE + (master_ticket % MAGIC_MOD)
 
 
+def _fmt_volume(v: float) -> str:
+    """Format a volume for the order comment, stripping trailing zeros so the
+    comment fits MT5's 31-char limit while remaining decodable by
+    decode_comment's ``[0-9.]+`` regex. Lot sizes come from calculate_lots
+    (rounded to volume_step) so stripping zeros is lossless."""
+    return f"{v:.8f}".rstrip("0").rstrip(".")
+
+
 def encode_comment(master_ticket: int, master_volume: float, slave_volume: float) -> str:
-    return f"CPY#{master_ticket}|MV{master_volume:.8f}|SV{slave_volume:.8f}"
+    return f"CPY#{master_ticket}|MV{_fmt_volume(master_volume)}|SV{_fmt_volume(slave_volume)}"
 
 
 def decode_comment(comment: str) -> tuple[int, float | None, float | None] | None:

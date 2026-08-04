@@ -68,7 +68,7 @@ def test_clean_start_copies_recent_open():
     params = _handle_new(events[0], table, mapper)
     assert params == {
         "symbol": "EURUSD", "lots": 0.10, "sl": 1.19500, "tp": 1.20500,
-        "magic": 1012345, "comment": "CPY#12345|MV0.50000000|SV0.10000000",
+        "magic": 1012345, "comment": "CPY#12345|MV0.5|SV0.1",
     }
     assert table.has(12345)
 
