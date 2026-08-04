@@ -55,19 +55,30 @@ class SlaveEditor(QDialog):
         self.add_sym_button.clicked.connect(self._add_sym_row)
         self.del_sym_button.clicked.connect(self._del_sym_row)
 
-        sizing = QFormLayout()
+        self._sizing = QFormLayout()
+        self.sizing_mode = QComboBox()
+        self.sizing_mode.addItem("Balance step (lots step)", "balance_step")
+        self.sizing_mode.addItem("Copy master lot", "copy_master")
+        self.sizing_mode.addItem("Fixed lot", "fixed_lot")
         self.step_amount = QLineEdit("100")
         self.step_size = QLineEdit("0.01")
         self.max_lot = QLineEdit("10")
         self.max_trade_age_minutes = QLineEdit("10")
+        self.master_base_lot = QLineEdit("0.1")
+        self.fixed_lot = QLineEdit("0.01")
         self.normalize_sltp = QCheckBox("Normalize SL/TP to slave open price")
         self.normalize_sltp.setChecked(True)
-        sizing.addRow("Step amount", self.step_amount)
-        sizing.addRow("Step size", self.step_size)
-        sizing.addRow("Max lots", self.max_lot)
-        sizing.addRow("Max trade age (min)", self.max_trade_age_minutes)
-        root.addLayout(sizing)
+        self._sizing.addRow("Lot sizing mode", self.sizing_mode)
+        self._sizing.addRow("Master base lot size", self.master_base_lot)
+        self._sizing.addRow("Fixed lot size", self.fixed_lot)
+        self._sizing.addRow("Step amount", self.step_amount)
+        self._sizing.addRow("Step size", self.step_size)
+        self._sizing.addRow("Max lots", self.max_lot)
+        self._sizing.addRow("Max trade age (min)", self.max_trade_age_minutes)
+        root.addLayout(self._sizing)
         root.addWidget(self.normalize_sltp)
+        self.sizing_mode.currentIndexChanged.connect(self._update_sizing_visibility)
+        self._update_sizing_visibility()
 
         buttons = QHBoxLayout()
         self.ok_button = QPushButton("OK")
@@ -78,6 +89,24 @@ class SlaveEditor(QDialog):
         self.ok_button.clicked.connect(self.accept)
         self.cancel_button.clicked.connect(self.reject)
         self.launch_terminal_button.clicked.connect(self._on_launch_terminal)
+
+    def _update_sizing_visibility(self) -> None:
+        """Show only the lot-sizing fields relevant to the chosen mode.
+        Widgets stay constructed in every mode (so tests/old code can read
+        them); only visibility toggles. max_lot + max_trade_age are always
+        relevant (cap + age apply to all modes)."""
+        mode = self.sizing_mode.currentData()
+        def show_row(widget, visible: bool) -> None:
+            widget.setVisible(visible)
+            lbl = self._sizing.labelForField(widget)
+            if lbl is not None:
+                lbl.setVisible(visible)
+        is_balance = mode == "balance_step"
+        is_fixed = mode == "fixed_lot"
+        show_row(self.step_amount, is_balance)
+        show_row(self.step_size, is_balance)
+        show_row(self.master_base_lot, is_balance)
+        show_row(self.fixed_lot, is_fixed)
 
     def _on_launch_terminal(self):
         exe = self.terminal.currentText().strip()
@@ -120,13 +149,16 @@ class SlaveEditor(QDialog):
         return ",".join(pairs)
 
     def _spec_from_fields(self, sid, terminal_path, step_amount, step_size,
-                          max_lot, max_age, normalize) -> AccountSpec:
+                          max_lot, max_age, normalize, sizing_mode,
+                          master_base_lot, fixed_lot) -> AccountSpec:
         return AccountSpec(
             id=sid, terminal_path=terminal_path or None,
             symbol_map_csv=self._symbol_map_csv(),
             step_amount=float(step_amount), step_size=float(step_size),
             max_lot=float(max_lot), max_trade_age_minutes=float(max_age),
-            normalize_sltp=bool(normalize))
+            normalize_sltp=bool(normalize),
+            sizing_mode=sizing_mode, master_base_lot=float(master_base_lot),
+            fixed_lot=float(fixed_lot))
 
     def set_spec(self, spec: AccountSpec, *, lock_identity: bool = True) -> None:
         """Pre-populate the editor from an existing AccountSpec (edit mode).
@@ -148,6 +180,10 @@ class SlaveEditor(QDialog):
             self.symbol_table.insertRow(r)
             self.symbol_table.setItem(r, 0, QTableWidgetItem(master))
             self.symbol_table.setItem(r, 1, QTableWidgetItem(slave))
+        idx = self.sizing_mode.findData(spec.sizing_mode)
+        self.sizing_mode.setCurrentIndex(idx if idx >= 0 else 0)
+        self.master_base_lot.setText(str(spec.master_base_lot))
+        self.fixed_lot.setText(str(spec.fixed_lot))
         self.step_amount.setText(str(spec.step_amount))
         self.step_size.setText(str(spec.step_size))
         self.max_lot.setText(str(spec.max_lot))
@@ -162,7 +198,9 @@ class SlaveEditor(QDialog):
             self.terminal.currentText().strip(),
             self.step_amount.text(), self.step_size.text(),
             self.max_lot.text(), self.max_trade_age_minutes.text(),
-            self.normalize_sltp.isChecked())
+            self.normalize_sltp.isChecked(),
+            self.sizing_mode.currentData(),
+            self.master_base_lot.text(), self.fixed_lot.text())
 
 
 def add_slave(parent_window) -> AccountSpec | None:

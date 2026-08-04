@@ -52,7 +52,7 @@ def test_slave_editor_symbol_table_round_trips_into_csv(qapp):
     dlg.symbol_table.setItem(0, 0, _qitem("EURUSD"))
     dlg.symbol_table.setItem(0, 1, _qitem("EURUSD"))
     spec = dlg._spec_from_fields("s2", "C:/i0/terminal64.exe", "100", "0.01",
-                                 "10", "10", True)
+                                 "10", "10", True, "balance_step", "0.1", "0.01")
     assert "EURUSD=EURUSD" in spec.symbol_map_csv
 
 
@@ -162,3 +162,80 @@ def test_edit_slave_pre_populates_with_locked_identity(qapp, monkeypatch):
     assert out.terminal_path == "C:/s1/terminal64.exe"
     assert out.symbol_map_csv == "EURUSD=EURUSD"
     assert out.step_amount == 100.0 and out.normalize_sltp is True
+
+
+def test_slave_editor_has_sizing_mode_combo(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    assert dlg.sizing_mode is not None
+    assert dlg.sizing_mode.count() == 3
+    datas = [dlg.sizing_mode.itemData(i) for i in range(dlg.sizing_mode.count())]
+    assert set(datas) == {"balance_step", "copy_master", "fixed_lot"}
+
+
+def test_slave_editor_balance_step_shows_step_fields_hides_fixed(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    dlg.sizing_mode.setCurrentIndex(0)  # balance_step
+    assert not dlg.step_amount.isHidden()
+    assert not dlg.step_size.isHidden()
+    assert not dlg.master_base_lot.isHidden()
+    assert dlg.fixed_lot.isHidden()
+
+
+def test_slave_editor_copy_master_hides_step_and_base_fields(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    idx = dlg.sizing_mode.findData("copy_master")
+    dlg.sizing_mode.setCurrentIndex(idx)
+    assert dlg.step_amount.isHidden()
+    assert dlg.step_size.isHidden()
+    assert dlg.master_base_lot.isHidden()
+    assert dlg.fixed_lot.isHidden()
+    assert not dlg.max_lot.isHidden()  # cap always visible
+
+
+def test_slave_editor_fixed_lot_shows_fixed_field_hides_step(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    idx = dlg.sizing_mode.findData("fixed_lot")
+    dlg.sizing_mode.setCurrentIndex(idx)
+    assert not dlg.fixed_lot.isHidden()
+    assert not dlg.max_lot.isHidden()
+    assert dlg.step_amount.isHidden()
+    assert dlg.step_size.isHidden()
+    assert dlg.master_base_lot.isHidden()
+
+
+def test_slave_editor_spec_carries_sizing_mode(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    dlg.id_edit.setText("s1")
+    dlg.terminal.setCurrentIndex(0)
+    idx = dlg.sizing_mode.findData("copy_master")
+    dlg.sizing_mode.setCurrentIndex(idx)
+    dlg.master_base_lot.setText("0.2")
+    dlg.fixed_lot.setText("0.3")
+    dlg.accept()
+    spec = dlg.spec()
+    assert spec.sizing_mode == "copy_master"
+    assert spec.master_base_lot == 0.2
+    assert spec.fixed_lot == 0.3
+
+
+def test_set_spec_pre_populates_sizing_fields(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    dlg = SlaveEditor(FakeController([_inst("C:/s1/terminal64.exe")]))
+    spec = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                       symbol_map_csv="EURUSD=EURUSD", step_amount=100.0,
+                       step_size=0.01, max_lot=10.0, max_trade_age_minutes=10.0,
+                       normalize_sltp=True, sizing_mode="fixed_lot",
+                       master_base_lot=0.1, fixed_lot=0.07)
+    dlg.set_spec(spec, lock_identity=True)
+    assert dlg.sizing_mode.currentData() == "fixed_lot"
+    assert dlg.fixed_lot.text() == "0.07"
+    assert dlg.master_base_lot.text() == "0.1"
+    # fixed_lot mode -> fixed field visible, step fields hidden
+    assert not dlg.fixed_lot.isHidden()
+    assert dlg.step_amount.isHidden()
