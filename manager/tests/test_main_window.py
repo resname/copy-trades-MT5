@@ -9,6 +9,7 @@ class FakeController:
         self.started = False
         self.stopped = False
         self._instances = []
+        self.applied_edits = []
     def discover_instances(self):
         return self._instances
     def start(self, master, slaves, **kw):
@@ -18,6 +19,8 @@ class FakeController:
         self.stopped = True
     def is_running(self):
         return self.started and not self.stopped
+    def apply_slave_edit(self, slave_id, spec):
+        self.applied_edits.append((slave_id, spec))
 
 
 def test_main_window_constructs(qapp):
@@ -229,3 +232,82 @@ def test_about_to_quit_saves_once_not_twice(qapp, tmp_path):
     store.save_config = counting_save
     QApplication.instance().aboutToQuit.emit()
     assert len(calls) == 1
+
+
+def test_edit_button_present_and_disabled_with_no_selection(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    assert w.edit_slave_button.text().startswith("Edit Slave")
+    assert not w.edit_slave_button.isEnabled()
+
+
+def test_edit_button_enabled_when_row_selected(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    w = MainWindow(FakeController())
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe")]
+    w.slave_list.addItem("s1: terminal64.exe")
+    w.slave_list.setCurrentRow(0)
+    assert w.edit_slave_button.isEnabled()
+    w.slave_list.setCurrentRow(-1)
+    assert not w.edit_slave_button.isEnabled()
+
+
+def test_on_edit_slave_updates_row_label_and_saves_config(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    import manager.gui.slave_editor as se
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             symbol_map_csv="EURUSD=EURUSD", step_amount=100.0)]
+    w.slave_list.addItem("s1: terminal64.exe")
+    w.slave_list.setCurrentRow(0)
+    edited = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                         symbol_map_csv="EURUSD=EURUSD", step_amount=200.0)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: edited)
+    w._on_edit_slave()
+    assert w._slaves[0].step_amount == 200.0
+    assert w.slave_list.item(0).text() == "s1: terminal64.exe"
+    cfg = store.load_config()
+    assert cfg["slaves"][0]["step_amount"] == 200.0
+
+
+def test_on_edit_slave_cancel_is_noop(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    import manager.gui.slave_editor as se
+    w = MainWindow(FakeController())
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0)]
+    w.slave_list.addItem("s1: terminal64.exe")
+    w.slave_list.setCurrentRow(0)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: None)  # cancel
+    w._on_edit_slave()
+    assert w._slaves[0].step_amount == 100.0  # unchanged
+
+
+def test_on_edit_slave_applies_live_when_running(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    import manager.gui.slave_editor as se
+    c = FakeController()
+    c.started = True  # is_running() -> True
+    w = MainWindow(c)
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0)]
+    w.slave_list.addItem("s1: terminal64.exe")
+    w.slave_list.setCurrentRow(0)
+    edited = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                          step_amount=200.0)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: edited)
+    w._on_edit_slave()
+    assert c.applied_edits == [("s1", edited)]
+
+
+def test_on_edit_slave_no_selection_is_noop(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    w._on_edit_slave()  # no row -> must not raise
