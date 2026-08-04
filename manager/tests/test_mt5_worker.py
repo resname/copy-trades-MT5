@@ -6,6 +6,8 @@ from manager.ipc.messages import CommandMsg, SnapshotMsg, RecoveryMsg, SymbolInf
 from manager.worker.mt5_adapter import FakeMt5
 from manager.worker.mt5_constants import (
     ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN, select_filling_mode,
+    TRADE_ACTION_DEAL, TRADE_ACTION_SLTP, ORDER_TYPE_BUY, ORDER_TYPE_SELL,
+    ORDER_TIME_GTC, TRADE_RETCODE_DONE, TRADE_RETCODE_PLACED,
 )
 from manager.worker.mt5_worker import (
     build_snapshot, build_recovery_records, build_symbol_info_msg, slave_init,
@@ -26,6 +28,31 @@ def _adapter(positions=(), ticks=None, order_results=None):
         ticks=ticks or {"EURUSD": (1.10000, 1.10010)},  # (bid, ask)
         order_results=order_results,
     )
+
+
+# ---- trade-request constants match the MetaTrader5 package ----
+# The worker builds request dicts with these hardcoded constants and NEVER
+# imports MetaTrader5 for them, so the values must equal the package's. If they
+# drift, the server rejects the request with a confusing retcode: a wrong
+# TRADE_ACTION_SLTP (3, the standard-MQL5 PENDING_SLTP value, instead of the
+# Python package's 6) made MODIFY/SLTP fail with retcode 10030/10014 while
+# OPEN/CLOSE/PARTIAL (TRADE_ACTION_DEAL=1) kept working -- the 'OPEN copies but
+# MODIFY does not' bug. FakeMt5 checks `action == TRADE_ACTION_SLTP` against
+# the SAME constant, so the fake-based tests below are tautological and never
+# caught it; this test pins the values to the real package.
+
+def test_trade_constants_match_metatrader5_package():
+    mt5 = pytest.importorskip("MetaTrader5")
+    assert TRADE_ACTION_DEAL == mt5.TRADE_ACTION_DEAL
+    assert TRADE_ACTION_SLTP == mt5.TRADE_ACTION_SLTP
+    assert ORDER_TYPE_BUY == mt5.ORDER_TYPE_BUY
+    assert ORDER_TYPE_SELL == mt5.ORDER_TYPE_SELL
+    assert ORDER_TIME_GTC == mt5.ORDER_TIME_GTC
+    assert ORDER_FILLING_FOK == mt5.ORDER_FILLING_FOK
+    assert ORDER_FILLING_IOC == mt5.ORDER_FILLING_IOC
+    assert ORDER_FILLING_RETURN == mt5.ORDER_FILLING_RETURN
+    assert TRADE_RETCODE_DONE == mt5.TRADE_RETCODE_DONE
+    assert TRADE_RETCODE_PLACED == mt5.TRADE_RETCODE_PLACED
 
 
 # ---- build_snapshot ----
