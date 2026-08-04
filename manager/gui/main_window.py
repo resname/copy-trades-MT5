@@ -8,10 +8,10 @@ from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel, QGroupBox,
-    QProgressBar,
+    QProgressBar, QMessageBox,
 )
 
-from manager.app.controller import AccountSpec, StatusUpdate
+from manager.app.controller import AccountSpec, StatusUpdate, AlgoTradingDisabledError
 
 MT5_DOWNLOAD_URL = "https://www.metatrader5.com/en/download"
 
@@ -330,6 +330,9 @@ class MainWindow(QMainWindow):
             self._controller.start(master, list(self._slaves))
             self.set_running(True)
             self._save_config()
+        except AlgoTradingDisabledError as exc:
+            self.append_log(f"start blocked: {exc}")
+            QMessageBox.warning(self, "Algo Trading disabled", str(exc))
         except Exception as exc:
             self.append_log(f"start failed: {exc}")
 

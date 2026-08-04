@@ -311,3 +311,22 @@ def test_on_edit_slave_no_selection_is_noop(qapp):
     from manager.gui.main_window import MainWindow
     w = MainWindow(FakeController())
     w._on_edit_slave()  # no row -> must not raise
+
+
+def test_start_blocked_by_algo_trading_shows_message_box(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.gui import main_window as mw
+    from manager.app.controller import AlgoTradingDisabledError
+    c = FakeController()
+    c.start = lambda master, slaves, **kw: (_ for _ in ()).throw(
+        AlgoTradingDisabledError(["s1 (C:/t/terminal64.exe)"]))
+    w = MainWindow(c)
+    w.master_terminal.addItem("C:/i0/terminal64.exe")
+    w.master_terminal.setCurrentIndex(0)
+    shown = []
+    monkeypatch.setattr(mw.QMessageBox, "warning",
+                        lambda parent, title, text: shown.append((title, text)) or 0)
+    w.start_button.click()
+    assert shown, "Algo Trading block must raise a modal message box"
+    assert "Algo Trading" in shown[0][0]
+    assert "Algo Trading" in w.log_view.toPlainText()
