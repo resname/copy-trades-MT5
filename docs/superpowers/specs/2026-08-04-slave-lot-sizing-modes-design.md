@@ -82,31 +82,31 @@ Let `raw_balance = floor(slave_balance / step_amount) * step_size`
 5. Normalize floating-point noise: `lot_digits = max(0, round(-log10(volume_step)))`;
    `lots = round(lots, lot_digits)`.
 
-### Invalid-input → skip
+### Invalid config → skip (early `return 0.0`, before the tail)
 
-- `balance_step`: `step_amount <= 0` or `step_size <= 0` → raw is `0.0` → tail
-  clamps up to `volume_min` (same as today; the existing `calculate_lots`
-  returns `0.0` only when `lot_step <= 0`, otherwise clamps to min). The
-  refactor preserves this: the `step_amount/step_size <= 0` guard yields
-  `raw_balance = 0.0`, which the tail clamps to `volume_min`. (Identical to
-  current behavior — current code: `if step_amount <= 0 or step_size <= 0:
-  return 0.0` is *before* the min clamp, so today it returns `0.0` and the
-  engine skips. **See resolution below.**)
-- `fixed_lot`: `fixed_lot <= 0` → return `0.0` (engine skips; a non-positive
-  fixed lot is invalid config).
-- `copy_master`: `master_lot <= 0` should not occur (a real position has
-  positive volume); if it does, `0.0` → tail clamps to min. Acceptable.
+These cases return `0.0` *before* `_snap_clamp`, so the engine skips the trade
+(matches today's `calculate_lots` early `return 0.0`):
 
-**Resolution of the `step_amount/step_size <= 0` guard:** the current
-`calculate_lots` returns `0.0` immediately (engine skips) when
-`step_amount/step_size <= 0`, *before* the min clamp. To preserve
-byte-for-byte behavior for existing balance-step configs, the refactored
-`calculate_lots` wrapper keeps this early `return 0.0` for invalid
-step params (so the engine still skips rather than opening `volume_min`).
-The new `calculate_slave_lot` dispatcher applies the same early-return for
-`balance_step` when `step_amount/step_size <= 0`, and for `fixed_lot` when
-`fixed_lot <= 0`. (`copy_master` has no such guard — it uses `master_lot`
-directly.)
+- `balance_step` with `step_amount <= 0` or `step_size <= 0` (invalid config).
+- `fixed_lot` with `fixed_lot <= 0` (invalid config).
+- Any unknown `sizing_mode` (defensive).
+
+### Valid config, small raw lot → opens the minimum (tail clamps up)
+
+When the config is valid but the computed raw lot is below `volume_min`, the
+tail's `max(lots, volume_min)` step opens the symbol's minimum instead of
+skipping. This covers:
+
+- `balance_step` with valid steps but low balance (`raw_balance = 0.0`) —
+  **today's behavior**: `floor(balance/step_amount) = 0` → `0.0` →
+  `max(0.0, min_lot)` = `min_lot`. Preserved exactly.
+- `balance_step` + base scaling where `raw_balance * (master_lot / base)`
+  undershoots `volume_min`.
+- `copy_master` where `master_lot` is below the slave symbol's `volume_min`.
+- `fixed_lot` where `fixed_lot` is below `volume_min`.
+
+`copy_master` has no invalid-config guard (a real position has positive
+volume); `lot_step <= 0` is handled inside `_snap_clamp` (`return 0.0`).
 
 ### Backward compatibility
 
