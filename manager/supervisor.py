@@ -31,6 +31,7 @@ class WorkerHandle:
     last_msg_ts: float = 0.0
     fail_count: int = 0
     fatal: bool = False  # set on a fatal ErrorMsg; _health_check won't restart
+    first_msg_seen: bool = False  # False until first message -> grace window
 
 
 class Supervisor:
@@ -40,11 +41,13 @@ class Supervisor:
 
     BASE_BACKOFF = 1.0   # seconds; first respawn delay after a death
     MAX_BACKOFF = 30.0   # seconds; cap on exponential backoff
+    STARTUP_GRACE_SECONDS = 90.0  # first-message grace after (re)spawn
 
     def __init__(self, engine: CopyEngine, heartbeat_seconds: int = 5,
                  stale_seconds: float = 30.0, consecutive_failures: int = 3,
                  poll_timeout: float = 0.2, time_fn=time.time,
-                 kill_terminal=None):
+                 kill_terminal=None,
+                 startup_grace_seconds: float = STARTUP_GRACE_SECONDS):
         self._engine = engine
         self._heartbeat_seconds = heartbeat_seconds
         self._stale_seconds = stale_seconds
@@ -52,6 +55,7 @@ class Supervisor:
         self._poll_timeout = poll_timeout
         self._time_fn = time_fn
         self._kill_terminal = kill_terminal  # callable(path) or None (Plan 3)
+        self._startup_grace_seconds = startup_grace_seconds
         self._handles: dict[str, WorkerHandle] = {}
         self._last_snapshot_ts = time_fn()
         self.heartbeat_warning = False
@@ -135,6 +139,7 @@ class Supervisor:
                 self._dispatch_slave(name, msg)
                 h.last_msg_ts = self._time_fn()
                 h.fail_count = 0
+                h.first_msg_seen = True
 
     def _dispatch_slave(self, slave_id, msg) -> None:
         h = self._handles.get(slave_id)
@@ -189,6 +194,7 @@ class Supervisor:
             h.fail_count = 0
             h.restart_count = 0
             h.next_restart_at = 0.0
+            h.first_msg_seen = True
             if isinstance(msg, SnapshotMsg):
                 self._last_snapshot_ts = self._time_fn()
                 self.heartbeat_warning = False
@@ -259,7 +265,9 @@ class Supervisor:
             if not h.proc.is_alive():
                 self._restart(name)
                 continue
-            if self._time_fn() - h.last_msg_ts > self._stale_seconds:
+            stale = (self._startup_grace_seconds if not h.first_msg_seen
+                     else self._stale_seconds)
+            if self._time_fn() - h.last_msg_ts > stale:
                 h.fail_count += 1
                 if h.fail_count >= self._consecutive_failures:
                     self._restart(name)

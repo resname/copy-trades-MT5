@@ -205,3 +205,77 @@ def test_restart_backoff_resets_on_message():
     second = spawned[-1]
     assert second.restart_count == 1
     assert second.next_restart_at == 1.5  # 0.5 + base 1.0, not 0.5 + 2.0
+
+
+def test_stale_grace_holds_restart_then_fires_after_grace_window():
+    """A freshly-(re)spawned worker that has sent NO message must NOT be
+    restarted when stale_seconds (30s) elapses, but only once
+    startup_grace_seconds (90s here, set to 30 for a fast test) elapses.
+    first_msg_seen=False widens the threshold from stale_seconds to the
+    grace window."""
+    clock = _FakeNow(0.0)
+    eng = _engine()
+    sup = Supervisor(eng, stale_seconds=10.0, consecutive_failures=2,
+                     startup_grace_seconds=30.0,
+                     poll_timeout=0.0, time_fn=clock)
+    spawned = []
+
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
+        h = WorkerHandle(name=name, role=role, proc=_StubProc(), pipe=None,
+                         config=config, adapter_kind=adapter_kind,
+                         fake_state=fake_state, last_msg_ts=clock.t)
+        spawned.append(h)
+        return h
+    sup._spawn = fake_spawn
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0)  # first_msg_seen=False
+
+    # 15s: past stale_seconds (10) but inside the grace window (30) -> not stale
+    clock.t = 15.0
+    sup._health_check()
+    assert sup._handles["s1"].fail_count == 0, \
+        "within grace window, a silent worker must not be counted stale"
+    assert spawned == [], "within grace window, worker must not be restarted"
+
+    # 35s: past the grace window (30) -> stale; 2 consecutive -> restart
+    clock.t = 35.0
+    sup._health_check()
+    assert sup._handles["s1"].fail_count == 1
+    sup._health_check()  # 2nd consecutive -> restart
+    assert spawned, "past grace window, stale worker must be restarted"
+    assert sup._handles["s1"] is spawned[-1]
+    assert sup._handles["s1"].fail_count == 0  # reset on restart
+    assert sup._handles["s1"].first_msg_seen is False  # fresh window on respawn
+
+
+def test_stale_grace_falls_back_to_stale_seconds_after_first_message():
+    """Once a worker has sent a message (first_msg_seen=True), the stale
+    threshold reverts to stale_seconds (10s), NOT the grace window (30s).
+    A worker that talked then went silent is restarted fast, as before."""
+    clock = _FakeNow(0.0)
+    eng = _engine()
+    sup = Supervisor(eng, stale_seconds=10.0, consecutive_failures=2,
+                     startup_grace_seconds=30.0,
+                     poll_timeout=0.0, time_fn=clock)
+    spawned = []
+
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
+        h = WorkerHandle(name=name, role=role, proc=_StubProc(), pipe=None,
+                         config=config, adapter_kind=adapter_kind,
+                         fake_state=fake_state, last_msg_ts=clock.t)
+        spawned.append(h)
+        return h
+    sup._spawn = fake_spawn
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=None, config={},
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0,
+        first_msg_seen=True)  # already talked once
+
+    # 15s: past stale_seconds (10) -> stale (grace no longer applies)
+    clock.t = 15.0
+    sup._health_check()
+    assert sup._handles["s1"].fail_count == 1, \
+        "after first message, stale_seconds applies, not the grace window"
+    sup._health_check()  # 2nd consecutive -> restart
+    assert spawned, "silent-while-talking worker must be restarted fast"
