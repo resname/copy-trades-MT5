@@ -257,3 +257,49 @@ def test_nonfatal_error_does_not_stop_restart():
     child.close()
     assert sup._handles["s1"].fatal is False, "non-fatal error must not mark fatal"
     assert errors and "transient retcode 10004" in errors[-1][1]
+
+
+def test_reconfigure_slave_sends_message_and_updates_config():
+    from manager.ipc.messages import ReconfigureMsg
+    from manager.ipc.pipe_framing import recv_msg
+    eng = _engine()
+    sup = Supervisor(eng, poll_timeout=0.0)
+    parent, child = multiprocessing.Pipe(duplex=True)
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=parent,
+        config={"symbol_map_csv": "EURUSD=EURUSD", "normalize_sltp": True,
+                "terminal_path": "C:/t/s.exe"},
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
+    sup.reconfigure_slave("s1", "EURUSD=GBPUSD", False)
+    msg = recv_msg(child)
+    assert isinstance(msg, ReconfigureMsg)
+    assert msg.source_id == "s1"
+    assert msg.symbol_map_csv == "EURUSD=GBPUSD"
+    assert msg.normalize_sltp is False
+    # h.config updated so a later restart spawns with the new params
+    assert sup._handles["s1"].config["symbol_map_csv"] == "EURUSD=GBPUSD"
+    assert sup._handles["s1"].config["normalize_sltp"] is False
+    parent.close()
+    child.close()
+
+
+def test_reconfigure_slave_updates_config_even_when_pipe_gone():
+    """A dead (non-fatal) worker has pipe=None and will be restarted by
+    _health_check; reconfigure must still update h.config so that restart
+    spawns with the new params. The send is skipped (no pipe)."""
+    eng = _engine()
+    sup = Supervisor(eng, poll_timeout=0.0)
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=None,
+        config={"symbol_map_csv": "EURUSD=EURUSD", "normalize_sltp": True,
+                "terminal_path": "C:/t/s.exe"},
+        adapter_kind="fake", fake_state=None, last_msg_ts=0.0)
+    sup.reconfigure_slave("s1", "EURUSD=GBPUSD", False)  # must not raise
+    assert sup._handles["s1"].config["symbol_map_csv"] == "EURUSD=GBPUSD"
+    assert sup._handles["s1"].config["normalize_sltp"] is False
+
+
+def test_reconfigure_slave_noop_when_handle_missing():
+    eng = _engine()
+    sup = Supervisor(eng, poll_timeout=0.0)
+    sup.reconfigure_slave("nonexistent", "x", False)  # must not raise

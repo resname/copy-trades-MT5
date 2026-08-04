@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from manager.app.controller import AccountSpec
+from manager.engine.transform import parse_symbol_map
 
 
 class SlaveEditor(QDialog):
@@ -127,6 +128,32 @@ class SlaveEditor(QDialog):
             max_lot=float(max_lot), max_trade_age_minutes=float(max_age),
             normalize_sltp=bool(normalize))
 
+    def set_spec(self, spec: AccountSpec, *, lock_identity: bool = True) -> None:
+        """Pre-populate the editor from an existing AccountSpec (edit mode).
+        When lock_identity is True, the slave id and terminal path are shown
+        read-only/disabled so the slave's identity cannot change mid-edit."""
+        self.setWindowTitle("Edit Slave")
+        self.id_edit.setText(spec.id)
+        if lock_identity:
+            self.id_edit.setReadOnly(True)
+        if spec.terminal_path:
+            if self.terminal.findText(spec.terminal_path) < 0:
+                self.terminal.addItem(spec.terminal_path)
+            self.terminal.setCurrentText(spec.terminal_path)
+        if lock_identity:
+            self.terminal.setEnabled(False)
+        self.symbol_table.setRowCount(0)
+        for master, slave in parse_symbol_map(spec.symbol_map_csv).items():
+            r = self.symbol_table.rowCount()
+            self.symbol_table.insertRow(r)
+            self.symbol_table.setItem(r, 0, QTableWidgetItem(master))
+            self.symbol_table.setItem(r, 1, QTableWidgetItem(slave))
+        self.step_amount.setText(str(spec.step_amount))
+        self.step_size.setText(str(spec.step_size))
+        self.max_lot.setText(str(spec.max_lot))
+        self.max_trade_age_minutes.setText(str(spec.max_trade_age_minutes))
+        self.normalize_sltp.setChecked(spec.normalize_sltp)
+
     def spec(self) -> AccountSpec | None:
         if self.result() != QDialog.DialogCode.Accepted:
             return None
@@ -142,6 +169,16 @@ def add_slave(parent_window) -> AccountSpec | None:
     """Open the SlaveEditor modally against the main window's controller.
     Returns the configured AccountSpec, or None if the user cancelled."""
     dlg = SlaveEditor(parent_window._controller, parent=parent_window)
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        return dlg.spec()
+    return None
+
+
+def edit_slave(parent_window, spec: AccountSpec) -> AccountSpec | None:
+    """Open the SlaveEditor modally, pre-populated with `spec` (identity
+    locked). Returns the edited AccountSpec, or None if the user cancelled."""
+    dlg = SlaveEditor(parent_window._controller, parent=parent_window)
+    dlg.set_spec(spec, lock_identity=True)
     if dlg.exec() == QDialog.DialogCode.Accepted:
         return dlg.spec()
     return None

@@ -94,9 +94,12 @@ class MainWindow(QMainWindow):
         self.slave_list = QListWidget()
         self.add_slave_button = QPushButton("Add Slave…")
         self.remove_slave_button = QPushButton("Remove Slave")
+        self.edit_slave_button = QPushButton("Edit Slave…")
+        self.edit_slave_button.setEnabled(False)
         row = QHBoxLayout()
         row.addWidget(self.add_slave_button)
         row.addWidget(self.remove_slave_button)
+        row.addWidget(self.edit_slave_button)
         sl.addWidget(self.slave_list)
         sl.addLayout(row)
         slave_box.setLayout(sl)
@@ -140,6 +143,10 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self._on_stop)
         self.add_slave_button.clicked.connect(self._on_add_slave)
         self.remove_slave_button.clicked.connect(self._on_remove_slave)
+        self.edit_slave_button.clicked.connect(self._on_edit_slave)
+        self.slave_list.itemDoubleClicked.connect(
+            lambda _item: self._on_edit_slave())
+        self.slave_list.itemSelectionChanged.connect(self._update_edit_enabled)
         self.launch_terminal_button.clicked.connect(self._on_launch_terminal)
         self.install_metatrader_button.clicked.connect(self._on_install_metatrader)
         self.check_update_button.clicked.connect(self.check_for_updates_now)
@@ -308,6 +315,31 @@ class MainWindow(QMainWindow):
         self.slave_list.takeItem(row)
         del self._slaves[row]
         self._save_config()
+
+    def _update_edit_enabled(self) -> None:
+        self.edit_slave_button.setEnabled(self.slave_list.currentRow() >= 0)
+
+    def _on_edit_slave(self, *_args) -> None:
+        row = self.slave_list.currentRow()
+        if row < 0:
+            return
+        from manager.gui.slave_editor import edit_slave
+        try:
+            new = edit_slave(self, self._slaves[row])
+        except Exception as exc:
+            self.append_log(f"edit failed: {exc}")
+            return
+        if new is None:
+            return
+        self._slaves[row] = new
+        label = (new.terminal_path or new.id).replace("\\", "/").rstrip("/") \
+            .rsplit("/", 1)[-1]
+        item = self.slave_list.item(row)
+        if item is not None:
+            item.setText(f"{new.id}: {label}")
+        self._save_config()
+        if self._controller.is_running():
+            self._controller.apply_slave_edit(new.id, new)
 
     # ---- close-to-tray ----
     def closeEvent(self, event):

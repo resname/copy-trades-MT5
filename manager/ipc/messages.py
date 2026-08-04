@@ -147,6 +147,18 @@ class ErrorMsg:
     KIND = "error"
 
 
+@dataclass(frozen=True)
+class ReconfigureMsg:
+    """Manager -> slave: live-update the worker's symbol map and normalize-SL/TP
+    flag without restarting it. The worker re-reports SymbolInfoMsg for the new
+    map's slave symbols. Open positions are unaffected (MODIFY/CLOSE route by
+    slave_ticket, not the map)."""
+    source_id: str
+    symbol_map_csv: str
+    normalize_sltp: bool
+    KIND = "reconfigure"
+
+
 _REGISTRY = {
     "start": StartMsg,
     "snapshot": SnapshotMsg,
@@ -156,6 +168,7 @@ _REGISTRY = {
     "command": CommandMsg,
     "ack": AckMsg,
     "error": ErrorMsg,
+    "reconfigure": ReconfigureMsg,
 }
 
 

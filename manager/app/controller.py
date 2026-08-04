@@ -213,6 +213,23 @@ class CopyController:
         self._engine = None
         self._status("info", "stopped")
 
+    def apply_slave_edit(self, slave_id: str, spec: AccountSpec) -> None:
+        """Apply an edited slave's trading params live. No-op when not running
+        (the GUI has already updated _slaves + saved config; it applies on the
+        next Start via build_worker_configs). When running, update the engine
+        config in-process (future opens use the new step/size/max_lot/max_age +
+        new symbol map) and push normalize + symbol-info-refresh to the worker.
+        Open trades are never modified: derive_command routes MODIFY/PARTIAL/
+        CLOSE via the RecordTable."""
+        if self._supervisor is None or self._engine is None:
+            return
+        self._engine.update_slave_config(
+            slave_id, step_amount=spec.step_amount, step_size=spec.step_size,
+            max_lot=spec.max_lot, max_trade_age_minutes=spec.max_trade_age_minutes,
+            symbol_map_csv=spec.symbol_map_csv, normalize_sltp=spec.normalize_sltp)
+        self._supervisor.reconfigure_slave(
+            slave_id, spec.symbol_map_csv, spec.normalize_sltp)
+
     def is_running(self) -> bool:
         return self._supervisor is not None and self._supervisor._thread is not None \
             and self._supervisor._thread.is_alive()

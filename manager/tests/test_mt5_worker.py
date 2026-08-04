@@ -225,3 +225,61 @@ def test_worker_loop_exception_surfaces_as_fatal_error(monkeypatch):
     assert "boom in loop" in fatal[0].message
     # the initial StatusMsg is still sent before the crash
     assert any(isinstance(m, StatusMsg) for m in msgs)
+
+
+def test_slave_loop_reconfigure_re_emits_symbol_info_and_updates_normalize():
+    """On ReconfigureMsg the slave loop must (1) re-emit a SymbolInfoMsg for the
+    NEW map's slave symbols and (2) apply the new normalize_sltp to subsequent
+    commands. Open positions are untouched (MODIFY routes by slave_ticket)."""
+    import multiprocessing
+    import threading
+    from manager.ipc.messages import (
+        ReconfigureMsg, CommandMsg, RecoveryMsg, SymbolInfoMsg, StatusMsg, AckMsg,
+    )
+    from manager.ipc.pipe_framing import send_msg, recv_msg
+    from manager.worker.mt5_worker import _slave_loop
+
+    cmt = encode_comment(1, 0.50, 0.10)
+    mt = FakeMt5(
+        positions=[Position(777, "EURUSD", BUY, 1.10010, 0.10, 1.095, 1.105, 0,
+                             0.00001, comment=cmt)],
+        symbol_infos={"EURUSD": SI, "GBPUSD": SI},
+        account={"login": 2, "balance": 1000.0, "equity": 1000.0,
+                 "currency": "USD", "server": "Demo"},
+        ticks={"EURUSD": (1.10000, 1.10010), "GBPUSD": (1.30000, 1.30010)},
+    )
+    cfg = {"slave_id": "s1", "symbol_map_csv": "EURUSD=EURUSD",
+           "normalize_sltp": True, "retry_count": 1, "retry_delay_ms": 0,
+           "slave_status_interval_ms": 60000}
+
+    parent, child = multiprocessing.Pipe(duplex=True)
+    t = threading.Thread(target=_slave_loop, args=(child, mt, cfg), daemon=True)
+    t.start()
+    try:
+        # drain init: RecoveryMsg, SymbolInfoMsg, StatusMsg
+        init = [recv_msg(parent) for _ in range(3)]
+        assert isinstance(init[0], RecoveryMsg)
+        assert isinstance(init[1], SymbolInfoMsg) and "EURUSD" in init[1].infos
+        assert isinstance(init[2], StatusMsg)
+
+        # reconfigure: new map EURUSD->GBPUSD, normalize OFF
+        send_msg(parent, ReconfigureMsg(source_id="s1", symbol_map_csv="EURUSD=GBPUSD",
+                                        normalize_sltp=False))
+        si = recv_msg(parent)
+        assert isinstance(si, SymbolInfoMsg)
+        assert set(si.infos.keys()) == {"GBPUSD"}  # new map's slave symbol
+
+        # a MODIFY on the open position with raw master SL/TP: because normalize
+        # is now False, the slave applies the RAW sl/tp (no re-centering).
+        send_msg(parent, CommandMsg(
+            slave_id="s1", action="MODIFY", master_ticket=1, slave_ticket=777,
+            sl=1.09400, tp=1.10600, master_open_price=1.10000, side=BUY))
+        ack = recv_msg(parent)
+        assert isinstance(ack, AckMsg) and ack.ok and ack.action == "MODIFY"
+        _status_after = recv_msg(parent)  # loop sends a StatusMsg after each ack
+        pos = mt.position_by_ticket(777)
+        assert pos.sl == 1.09400 and pos.tp == 1.10600  # raw, not normalized
+    finally:
+        parent.close()  # -> worker reads EOFError -> graceful return
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "slave loop must exit when the pipe closes"
