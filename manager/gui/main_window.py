@@ -404,12 +404,49 @@ class MainWindow(QMainWindow):
         self._save_config()
 
     def _maybe_begin_autostart_copy(self) -> None:
-        # Countdown implemented in Task 3; no-op here so launch is safe.
-        return
+        """On launch, if the auto-copy toggle is on and a master + slaves are
+        configured, start a 15 s countdown to auto-Start. Cancel via the
+        dedicated Cancel button. No-op otherwise (toggle off or config
+        incomplete)."""
+        if not self.autostart_copy_checkbox.isChecked():
+            return
+        terminal_path = self.master_terminal.currentText().strip()
+        if not terminal_path or not self._slaves:
+            self.append_log("auto-start skipped: no master/slaves configured")
+            return
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self._countdown_remaining = 15
+        self.autostart_cancel_button.setText("Cancel (15 s)")
+        self.autostart_cancel_button.setVisible(True)
+        self.append_status(StatusUpdate(kind="info",
+            message="Auto-start in 15 s — click Cancel to abort"))
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._autostart_tick)
+        self._countdown_timer.start()
+
+    def _autostart_tick(self) -> None:
+        self._countdown_remaining -= 1
+        if self._countdown_remaining > 0:
+            self.autostart_cancel_button.setText(
+                f"Cancel ({self._countdown_remaining} s)")
+            return
+        # countdown reached zero -> fire Start (silent: no modal on failure)
+        if self._countdown_timer is not None:
+            self._countdown_timer.stop()
+            self._countdown_timer = None
+        self.autostart_cancel_button.setVisible(False)
+        self._start_silent()
+        self.set_running(self._controller.is_running())
 
     def _cancel_autostart_copy(self) -> None:
-        # Wired in Task 3.
-        return
+        if self._countdown_timer is not None:
+            self._countdown_timer.stop()
+            self._countdown_timer = None
+        self.autostart_cancel_button.setVisible(False)
+        self.set_running(False)
+        self.append_log("auto-start cancelled")
 
     def _on_stop(self):
         self._controller.stop()

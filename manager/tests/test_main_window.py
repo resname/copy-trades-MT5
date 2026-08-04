@@ -439,3 +439,81 @@ def test_do_start_manual_shows_modal_on_algo_trading_disabled(qapp, monkeypatch)
     w.start_button.click()  # manual path -> _on_start -> _do_start(show_modal=True)
     assert shown, "manual Start must still show the Algo Trading modal"
     assert "Algo Trading" in shown[0][0]
+
+
+def test_autostart_copy_countdown_skipped_when_toggle_off(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path",
+                        lambda: tmp_path / "nope.lnk")
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": False}})
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    assert w._countdown_timer is None
+    assert c.started is False
+
+
+def test_autostart_copy_countdown_skipped_when_config_incomplete(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path",
+                        lambda: tmp_path / "nope.lnk")
+    store = SettingsStore(path=tmp_path / "settings.json")
+    # auto_copy on, master set, but NO slaves -> skip
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [], "autostart": {"on_boot": False, "auto_copy": True}})
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    assert w._countdown_timer is None
+    assert c.started is False
+    assert "auto-start skipped" in w.log_view.toPlainText().lower()
+
+
+def test_autostart_copy_countdown_fires_start_at_zero(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path",
+                        lambda: tmp_path / "nope.lnk")
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": True}})
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    # countdown began on construction
+    assert w._countdown_timer is not None
+    # drive it deterministically: stop the real timer, set 1 s left, tick once
+    w._countdown_timer.stop()
+    w._countdown_remaining = 1
+    w._autostart_tick()
+    assert c.started is True
+    assert w._countdown_timer is None
+    assert not w.autostart_cancel_button.isVisible()
+
+
+def test_autostart_cancel_button_aborts(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path",
+                        lambda: tmp_path / "nope.lnk")
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": True}})
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    assert w._countdown_timer is not None
+    w._cancel_autostart_copy()
+    assert w._countdown_timer is None
+    assert c.started is False
+    assert "auto-start cancelled" in w.log_view.toPlainText().lower()
+    # buttons re-enabled to the not-running state
+    assert w.start_button.isEnabled()
+    assert not w.stop_button.isEnabled()
