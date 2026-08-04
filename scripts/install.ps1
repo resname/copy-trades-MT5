@@ -231,10 +231,15 @@ Move-Item $wheelPath $validWheel -Force
 # 6. Launcher + PATH
 $Bin = Join-Path $InstallDir "bin"
 New-Item -ItemType Directory -Force -Path $Bin | Out-Null
+$PyWenv = Join-Path $Venv "Scripts\pythonw.exe"
 $Cmd = Join-Path $Bin "copytrades.cmd"
 @"
 @echo off
-"$PyVenv" -m manager %*
+if "%~1"=="" (
+  "$PyWenv" -m manager
+) else (
+  "$PyVenv" -m manager %*
+)
 "@ | Set-Content -Path $Cmd -Encoding ASCII
 $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$Bin*") {
@@ -247,7 +252,7 @@ $Lnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\CopyTradesM
 try {
   $ws = New-Object -ComObject WScript.Shell
   $sc = $ws.CreateShortcut($Lnk)
-  $sc.TargetPath = $PyVenv
+  $sc.TargetPath = $PyWenv
   $sc.Arguments = "-m manager"
   $sc.WorkingDirectory = $InstallDir
   $sc.Description = "CopyTrades MT5 Local Manager"
@@ -257,6 +262,6 @@ try {
 Write-Host "Installed. Run with: copytrades  (or Start Menu: CopyTradesMT5)"
 
 if (-not $SkipLaunch) {
-  Start-Process -FilePath $PyVenv -ArgumentList "-m", "manager" -WorkingDirectory $InstallDir
+  Start-Process -FilePath $PyWenv -ArgumentList "-m", "manager" -WorkingDirectory $InstallDir
   Write-Host "Launched."
 }
