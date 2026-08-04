@@ -77,6 +77,16 @@ def test_valid_wheel_name_from_metadata(tmp_path):
         "copy_trades_mt5_manager-0.1.11-py3-none-any.whl"
 
 
+def _run_ok(cmd, **k):
+    """Fake subprocess.run that records the wheel arg bytes for byte-equality
+    checks (the temp copy is removed in _reinstall's finally) and succeeds."""
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    return R()
+
+
 def test_reinstall_passes_valid_wheel_filename_to_pip(monkeypatch, tmp_path):
     """Regression: pip rejects 'manager-latest.whl' as an invalid wheel filename
     ('wrong number of parts', rc=1), so the helper bailed without relaunching
@@ -85,14 +95,14 @@ def test_reinstall_passes_valid_wheel_filename_to_pip(monkeypatch, tmp_path):
     w = _make_wheel(tmp_path / "manager-latest.whl")
     captured = {}
 
-    def fake_call(cmd, **k):
+    def fake_run(cmd, **k):
         captured["cmd"] = cmd
         # capture the copy's bytes now -- _reinstall removes the temp dir in
         # its `finally` right after this returns
         captured["wheel_bytes"] = Path(cmd[-1]).read_bytes()
-        return 0
+        return _run_ok(cmd, **k)
 
-    monkeypatch.setattr(update_helper.subprocess, "call", fake_call)
+    monkeypatch.setattr(update_helper.subprocess, "run", fake_run)
     rc = update_helper._reinstall(str(w))
     assert rc == 0
     wheel_arg = captured["cmd"][-1]
@@ -103,13 +113,57 @@ def test_reinstall_passes_valid_wheel_filename_to_pip(monkeypatch, tmp_path):
     assert captured["wheel_bytes"] == w.read_bytes()
 
 
+def test_reinstall_uses_no_deps_so_pip_skips_locked_dependency_dlls(monkeypatch, tmp_path):
+    """Regression: ``pip install --force-reinstall`` (without --no-deps) reinstalls
+    ALL dependencies, and uninstalling shiboken6 hits its locked msvcp140.dll ->
+    ``WinError 5 Zugriff verweigert`` -> pip rc=1 -> helper bails without
+    relaunching -> the new manager window never opens after an update. The
+    manager wheel is pure Python (py3-none-any); only it needs reinstalling, so
+    _reinstall must pass --no-deps to pip."""
+    w = _make_wheel(tmp_path / "manager-latest.whl")
+    captured = {}
+
+    def fake_run(cmd, **k):
+        captured["cmd"] = cmd
+        return _run_ok(cmd, **k)
+
+    monkeypatch.setattr(update_helper.subprocess, "run", fake_run)
+    update_helper._reinstall(str(w))
+    assert "--no-deps" in captured["cmd"], \
+        "_reinstall must pass --no-deps so pip skips reinstalling locked deps"
+
+
+def test_reinstall_logs_pip_output_on_failure(monkeypatch, tmp_path):
+    """Defense-in-depth: a discarded pip stdout/stderr left only
+    'pip install failed rc=1' in update.log with no clue why, so a real-world
+    WinError 5 needed a manual reproduction to diagnose. _reinstall must
+    capture pip's output and log it on failure so the next breakage is
+    diagnosable from update.log alone."""
+    w = _make_wheel(tmp_path / "manager-latest.whl")
+    logged = []
+    monkeypatch.setattr(update_helper, "_log", lambda m: logged.append(m))
+
+    class FakeFail:
+        returncode = 1
+        stdout = "Collecting copy-trades-mt5-manager"
+        stderr = "ERROR: WinError 5 Zugriff verweigert: 'msvcp140.dll'"
+    monkeypatch.setattr(update_helper.subprocess, "run",
+                        lambda *a, **k: FakeFail())
+    rc = update_helper._reinstall(str(w))
+    assert rc == 1
+    log = "\n".join(logged)
+    assert "pip install failed rc=1" in log
+    assert "WinError 5" in log, "pip stderr must be captured into the log"
+    assert "Collecting" in log, "pip stdout must be captured into the log"
+
+
 def test_reinstall_cleans_up_temp_copy(monkeypatch, tmp_path):
     """The valid-named copy lives in a temp dir; remove it after pip runs so
     repeated updates don't accumulate copies in temp."""
     w = _make_wheel(tmp_path / "manager-latest.whl")
     seen = {}
-    monkeypatch.setattr(update_helper.subprocess, "call",
+    monkeypatch.setattr(update_helper.subprocess, "run",
                         lambda cmd, **k: seen.__setitem__(
-                            "d", os.path.dirname(cmd[-1])) or 0)
+                            "d", os.path.dirname(cmd[-1])) or _run_ok(cmd, **k))
     update_helper._reinstall(str(w))
     assert not os.path.exists(seen["d"]), "temp copy dir should be removed after install"

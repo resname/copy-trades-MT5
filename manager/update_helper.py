@@ -110,11 +110,24 @@ def _reinstall(wheel: str) -> int:
     # pip rejects the stable cache name (manager-latest.whl) as an invalid
     # wheel filename; install from a valid-named copy instead, and clean up
     # the temp copy afterward so repeated updates don't accumulate in temp.
+    # --no-deps: the manager wheel is pure Python (py3-none-any); only it needs
+    # reinstalling. Without --no-deps, --force-reinstall reinstalls every dep
+    # (PySide6, shiboken6, psutil, ...) and uninstalling shiboken6 hits its
+    # locked msvcp140.dll -> WinError 5 -> pip rc=1 -> helper bails without
+    # relaunching, so the new manager window never opens. The deps are already
+    # present in the venv and unchanged between releases, so skip them.
     valid = _valid_wheel_copy(wheel)
     _log(f"installing wheel as {os.path.basename(valid)}")
     try:
-        return subprocess.call([sys.executable, "-m", "pip", "install",
-                                "--upgrade", "--force-reinstall", valid])
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-deps",
+             "--upgrade", "--force-reinstall", valid],
+            capture_output=True, text=True)
+        if proc.returncode != 0:
+            _log(f"pip install failed rc={proc.returncode}")
+            _log(f"pip stdout:\n{proc.stdout}")
+            _log(f"pip stderr:\n{proc.stderr}")
+        return proc.returncode
     finally:
         shutil.rmtree(os.path.dirname(valid), ignore_errors=True)
 
