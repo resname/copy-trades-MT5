@@ -46,8 +46,8 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 5. **Click Start** — the manager connects to every terminal, gates on readiness
    and Algo Trading, then copies opens/modifies/partial-closes/closes from master
    to slaves.
-6. Close the window to tray (workers keep running); tray **Quit** for an orderly
-   stop. The app auto-checks for updates hourly.
+6. Close the window for an orderly stop — the engine stops and the app exits.
+   The app auto-checks for updates hourly.
 
 For the full run-through, see [Usage](#usage). For demo setup, see
 [`docs/smoke-test.md`](docs/smoke-test.md).
@@ -86,9 +86,8 @@ For the full run-through, see [Usage](#usage). For demo setup, see
   download page to install another terminal (custom install path per
   terminal), or open a selected terminal's `terminal64.exe` login window to
   log in/verify. Install is on the left; Open-for-login is on the right.
-- **System tray** — close-to-tray keeps the workers running in the background;
-  tray Quit does an orderly shutdown (stops the engine, joins workers, then
-  quits the app).
+- **Single-window close = stop** — closing the window stops the engine (joins
+  workers) and exits the app; no system tray, no background-running mode.
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
 - **Persistent config** — the master terminal + slaves (with per-slave symbol
@@ -126,7 +125,7 @@ For the full run-through, see [Usage](#usage). For demo setup, see
   demo accounts). The manager discovers existing installs; install extras
   via the **Install MetaTrader** button (custom install path per terminal).
 - Python dependencies (installed via `pip install -e .`):
-  - `PySide6>=6.6` — GUI + system tray
+  - `PySide6>=6.6` — GUI
   - `psutil>=5.9` — terminal process discovery / kill
   - `MetaTrader5>=5.0.45` — the official MT5 Python integration
 
@@ -196,9 +195,9 @@ same update from the command line.
    waits for every slave to report ready (SymbolInfo + first status), then
    spawns the master worker and starts the copy loop. The status panel shows
    `slaves ready; starting master`.
-6. **Tray**: closing the window hides it to the tray — workers keep running.
-   Use the tray **Quit** for an orderly shutdown (stop engine → join workers →
-   quit).
+6. **Close**: closing the window stops the engine (joins workers) and exits
+   the app — there is no tray. Minimize the window to keep it running in the
+   background.
 7. **Updates**: the app checks for updates hourly and pre-downloads the
    verified wheel when one is found, so clicking **Update & restart** finishes
    in seconds (no network in the restart path) and reliably relaunches the
@@ -213,7 +212,7 @@ For a full manual demo run-through (demo accounts only), see
 
 ```
 manager/
-  __main__.py            App entry: QApplication + window + tray + status bridge
+  __main__.py            App entry: QApplication + window + status bridge
   _version.py            Single source of truth for the installed version (CI overwrites at build)
   updater.py             Headless update check + detached self-update spawn (no Qt)
   app/
@@ -242,7 +241,6 @@ manager/
   gui/
     main_window.py       Main window (master terminal form + Launch/Install buttons, slave list, status/log, update UI)
     slave_editor.py      Add/edit slave account dialog
-    tray.py              System tray (close-to-tray + orderly quit)
   tests/                 pytest suite (180 headless / 215 with PySide6)
 scripts/
   install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
