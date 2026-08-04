@@ -160,3 +160,30 @@ def test_cached_update_deletes_stale_pair(tmp_path, monkeypatch):
     assert updater.cached_update() is None
     assert not (tmp_path / "manager-latest.whl").exists()
     assert not (tmp_path / "manager-latest.whl.sha256").exists()
+
+
+def test_download_update_reports_progress_via_callback(tmp_path, monkeypatch):
+    import hashlib
+    from manager import updater
+    data = b"wheel-bytes"
+
+    def fake_urlretrieve(url, filename=None, reporthook=None, *a, **k):
+        if str(url).endswith(".whl"):
+            Path(filename).write_bytes(data)
+        else:
+            Path(filename).write_text(
+                hashlib.sha256(data).hexdigest() + "  manager-latest.whl",
+                encoding="utf-8")
+        if reporthook is not None:
+            # urlretrieve calls reporthook(block_num, block_size, total_size)
+            reporthook(0, 100, 300)
+            reporthook(1, 100, 300)
+            reporthook(2, 100, 300)
+        return filename, {}
+
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", fake_urlretrieve)
+    calls = []
+    updater.download_update(dest_dir=tmp_path,
+                            progress=lambda done, total: calls.append((done, total)))
+    # _hook computes downloaded = block_num * block_size; total stays 300
+    assert calls == [(0, 300), (100, 300), (200, 300)]

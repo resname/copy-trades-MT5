@@ -93,17 +93,27 @@ def latest_version(timeout: float = 5.0) -> str | None:
     return _fetch_text(VERSION_URL, timeout)
 
 
-def download_update(dest_dir: Path | None = None) -> Path:
+def download_update(dest_dir: Path | None = None,
+                    progress=None) -> Path:
     """Download WHEEL_URL + WHEEL_SHA_URL into dest_dir (default UPDATE_DIR),
     verify SHA256, and return the verified wheel path. Raises
     UpdateDownloadError on a network failure or checksum mismatch (the
-    mismatched files are removed)."""
+    mismatched files are removed). If ``progress`` is given, it is called as
+    progress(bytes_done, bytes_total) during the wheel download (total -1
+    when the server does not provide Content-Length)."""
     dest = dest_dir if dest_dir is not None else UPDATE_DIR
     dest.mkdir(parents=True, exist_ok=True)
     wheel_path = dest / "manager-latest.whl"
     sha_path = dest / "manager-latest.whl.sha256"
+
+    def _hook(block_num, block_size, total_size):
+        if progress is None:
+            return
+        progress(block_num * block_size,
+                 total_size if total_size > 0 else -1)
+
     try:
-        urllib.request.urlretrieve(WHEEL_URL, str(wheel_path))
+        urllib.request.urlretrieve(WHEEL_URL, str(wheel_path), reporthook=_hook)
         urllib.request.urlretrieve(WHEEL_SHA_URL, str(sha_path))
     except Exception as exc:
         raise UpdateDownloadError(f"download failed: {exc}") from exc
