@@ -12,12 +12,11 @@ class FakeController:
         self.stopped = []
     def is_running(self):
         return self._running
-    def set_running(self, running):
-        # Mirror the UI running state so _apply_update_button_state (which
-        # reads is_running()) sees the post-stop state when the test calls
-        # w.set_running(False) directly (without a prior controller.stop()).
-        self._running = running
     def stop(self):
+        # Mirror production CopyController.stop(), which sets supervisor=None
+        # so is_running() returns False. Lets tests model _on_stop's real
+        # controller.stop() -> set_running(False) flow.
+        self._running = False
         self.stopped.append(True)
     def discover_instances(self):
         return []
@@ -129,7 +128,8 @@ def test_ready_update_stays_disabled_while_running_and_enables_on_stop(qapp, mon
     w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
     w._on_predownload_done(Path("C:/cached/manager-latest.whl"))  # wheel ready
     assert w.update_restart_button.isEnabled() is False  # still copying
-    w.set_running(False)  # stop copying
+    w._controller.stop()   # mirrors _on_stop's controller.stop()
+    w.set_running(False)   # mirrors _on_stop's set_running(False)
     assert w.update_restart_button.isEnabled() is True
 
 

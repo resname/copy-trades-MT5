@@ -236,13 +236,6 @@ class MainWindow(QMainWindow):
     def set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
-        # Sync controllers that expose a set_running hook (test doubles) so
-        # _apply_update_button_state reads the post-stop state when set_running
-        # is called directly. Production CopyController has no set_running
-        # (state tracked via start/stop), so this is a no-op there.
-        _ctrl_set_running = getattr(self._controller, "set_running", None)
-        if _ctrl_set_running is not None:
-            _ctrl_set_running(running)
         self._apply_update_button_state()
 
     # ---- updates ----
