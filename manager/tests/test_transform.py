@@ -79,6 +79,89 @@ def test_lots_invalid_lot_step_returns_zero():
     assert calculate_lots(1000, 100, 0.01, 10, 0.0, 0.01, 100) == 0.0
 
 
+from manager.engine.transform import (
+    _snap_clamp, calculate_slave_lot,
+    SIZING_BALANCE_STEP, SIZING_COPY_MASTER, SIZING_FIXED_LOT,
+)
+
+
+def test_snap_clamp_snaps_down_to_lot_step():
+    # 0.07 with lot_step 0.02 -> floor(3.5)*0.02 = 0.06
+    assert _snap_clamp(0.07, 0.02, 0.01, 10, 100) == 0.06
+
+
+def test_snap_clamp_clamps_up_to_min():
+    assert _snap_clamp(0.0, 0.01, 0.01, 10, 100) == 0.01
+
+
+def test_snap_clamp_caps_at_max_lot_and_symbol_max():
+    assert _snap_clamp(5.0, 0.01, 0.01, 2.0, 100) == 2.0   # max_lot cap
+    assert _snap_clamp(5.0, 0.01, 0.01, 99.0, 0.2) == 0.2  # symbol max cap
+
+
+def test_snap_clamp_invalid_lot_step_returns_zero():
+    assert _snap_clamp(0.5, 0.0, 0.01, 10, 100) == 0.0
+
+
+def test_calculate_slave_lot_balance_step_no_base_equals_calculate_lots():
+    # master_base_lot=0 -> disabled -> identical to legacy calculate_lots
+    assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.5, 1000, 100, 0.01,
+                               0.0, 0.01, 10, 0.01, 0.01, 100) == 0.10
+
+
+def test_calculate_slave_lot_balance_step_scales_down_below_base():
+    # balance 1000 -> raw_balance 0.10; base 0.1, master 0.05 -> *0.5 -> 0.05
+    assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.05, 1000, 100, 0.01,
+                               0.1, 0.01, 10, 0.01, 0.01, 100) == 0.05
+
+
+def test_calculate_slave_lot_balance_step_no_scaling_above_base():
+    # master 0.2 >= base 0.1 -> down-only -> raw_balance 0.10 (no scale up)
+    assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.2, 1000, 100, 0.01,
+                               0.1, 0.01, 10, 0.01, 0.01, 100) == 0.10
+
+
+def test_calculate_slave_lot_balance_step_below_min_opens_min():
+    # raw_balance 0.10 * (0.002/0.1)=0.002 -> snapped to 0.0 -> clamped to min 0.01
+    assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.002, 1000, 100, 0.01,
+                               0.1, 0.01, 10, 0.01, 0.01, 100) == 0.01
+
+
+def test_calculate_slave_lot_copy_master_mirrors_master_lot():
+    assert calculate_slave_lot(SIZING_COPY_MASTER, 0.37, 1000, 100, 0.01,
+                               0.0, 0.01, 10, 0.01, 0.01, 100) == 0.37
+
+
+def test_calculate_slave_lot_copy_master_below_min_opens_min():
+    assert calculate_slave_lot(SIZING_COPY_MASTER, 0.005, 1000, 100, 0.01,
+                               0.0, 0.01, 10, 0.01, 0.01, 100) == 0.01
+
+
+def test_calculate_slave_lot_copy_master_capped_at_max_lot():
+    assert calculate_slave_lot(SIZING_COPY_MASTER, 5.0, 1000, 100, 0.01,
+                               0.0, 0.01, 2.0, 0.01, 0.01, 100) == 2.0
+
+
+def test_calculate_slave_lot_fixed_lot_uses_fixed_lot():
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 0.5, 1000, 100, 0.01,
+                               0.0, 0.07, 10, 0.01, 0.01, 100) == 0.07
+
+
+def test_calculate_slave_lot_fixed_lot_invalid_returns_zero():
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 0.5, 1000, 100, 0.01,
+                               0.0, 0.0, 10, 0.01, 0.01, 100) == 0.0
+
+
+def test_calculate_slave_lot_balance_step_invalid_step_returns_zero():
+    assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.5, 1000, 0, 0.01,
+                               0.0, 0.01, 10, 0.01, 0.01, 100) == 0.0
+
+
+def test_calculate_slave_lot_unknown_mode_returns_zero():
+    assert calculate_slave_lot("nope", 0.5, 1000, 100, 0.01,
+                               0.0, 0.01, 10, 0.01, 0.01, 100) == 0.0
+
+
 import pytest
 from manager.engine.transform import normalize_sltp, round_to_tick
 from manager.engine.models import BUY, SELL
