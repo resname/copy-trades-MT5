@@ -108,6 +108,35 @@ class Supervisor:
                 return True
         return all(self.slave_ready(i) for i in ids)
 
+    def slave_trade_allowed(self, slave_id) -> bool:
+        """True iff this slave's terminal reports Algo Trading enabled
+        (mt5.terminal_info().trade_allowed). False if the handle is missing.
+        Read AFTER wait_for_slaves_ready so got_status implies trade_allowed
+        has been set from the worker's initial StatusMsg."""
+        h = self._handles.get(slave_id)
+        return bool(h.trade_allowed) if h is not None else False
+
+    def master_trade_allowed(self) -> bool:
+        """True iff the master terminal reports Algo Trading enabled. False if
+        no master has been spawned (or it hasn't reported status yet)."""
+        h = self._handles.get("master")
+        return bool(h.trade_allowed) if h is not None else False
+
+    def wait_for_master_status(self, timeout: float = 90.0) -> bool:
+        """Tick until the master handle has reported its first StatusMsg
+        (which carries trade_allowed) or the timeout elapses. Call AFTER
+        spawn_master and BEFORE sup.start() so the controller can preflight
+        Algo Trading before the copy loop runs. Returns got_status."""
+        h = self._handles.get("master")
+        if h is None:
+            return False
+        deadline = self._time_fn() + timeout
+        while self._time_fn() < deadline:
+            self.tick(timeout=0.02)
+            if h.got_status:
+                return True
+        return h.got_status
+
     def _spawn(self, name, role, config, adapter_kind, fake_state):
         parent_pipe, child_pipe = multiprocessing.Pipe(duplex=True)
         proc = multiprocessing.Process(target=worker_main,
