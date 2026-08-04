@@ -381,6 +381,8 @@ def test_autostart_config_round_trip(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(autostart, "startup_lnk_path", lambda: lnk)
     c = FakeController()
     w = MainWindow(c, store=store)
+    if w._countdown_timer is not None:
+        w._countdown_timer.stop()
     # auto_copy restored from stored value; on_boot synced to .lnk existence
     assert w.autostart_copy_checkbox.isChecked() is True
     assert w.autostart_boot_checkbox.isChecked() is True

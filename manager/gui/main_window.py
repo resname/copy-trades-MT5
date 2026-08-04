@@ -254,6 +254,8 @@ class MainWindow(QMainWindow):
         # syncing does not re-trigger the toggle handler (which would touch the
         # OS or save).
         as_cfg = (cfg.get("autostart") if isinstance(cfg, dict) else None) or {}
+        if not isinstance(as_cfg, dict):
+            as_cfg = {}
         self.autostart_copy_checkbox.blockSignals(True)
         self.autostart_copy_checkbox.setChecked(bool(as_cfg.get("auto_copy", False)))
         self.autostart_copy_checkbox.blockSignals(False)
@@ -393,10 +395,13 @@ class MainWindow(QMainWindow):
             else:
                 autostart.disable_autostart()
         except Exception as exc:
-            self.append_log(f"autostart enable failed: {exc}")
-            self.autostart_boot_checkbox.blockSignals(True)
-            self.autostart_boot_checkbox.setChecked(False)
-            self.autostart_boot_checkbox.blockSignals(False)
+            if checked:
+                self.append_log(f"autostart enable failed: {exc}")
+                self.autostart_boot_checkbox.blockSignals(True)
+                self.autostart_boot_checkbox.setChecked(False)
+                self.autostart_boot_checkbox.blockSignals(False)
+            else:
+                self.append_log(f"autostart disable failed: {exc}")
         self._save_config()
 
     def _on_autostart_copy_toggled(self, _checked: bool) -> None:
