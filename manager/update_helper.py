@@ -180,6 +180,7 @@ def _run_update_with_window(wheel: str, parent_pid: int) -> int:
             version = ""
         root.title("CopyTrades MT5 — Updating")
         root.resizable(False, False)
+        root.protocol("WM_DELETE_WINDOW", lambda: None)
         label = tk.Label(root, text=f"Installing update v{version}…",
                          padx=24, pady=18)
         label.pack()
