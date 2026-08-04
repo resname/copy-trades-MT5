@@ -80,6 +80,7 @@ class StatusMsg:
     equity: float
     currency: str
     server: str
+    trade_allowed: bool = True
     KIND = "status"
 
 

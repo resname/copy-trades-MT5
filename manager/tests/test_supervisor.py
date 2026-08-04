@@ -322,6 +322,36 @@ def test_reconfigure_slave_updates_config_even_when_pipe_gone():
     assert sup._handles["s1"].config["normalize_sltp"] is False
 
 
+def test_slave_status_records_trade_allowed_on_handle():
+    eng = _engine()
+    sup = Supervisor(eng, poll_timeout=0.02)
+    state = dict(_slave_state())
+    state["terminal_info"] = {"trade_allowed": False}
+    sup.spawn_slave("s1", _slave_cfg(), adapter_kind="fake", fake_state=state)
+    try:
+        _tick_until(sup, lambda: sup._handles["s1"].got_status)
+        assert sup._handles["s1"].trade_allowed is False
+    finally:
+        sup.shutdown()
+
+
+def test_master_status_records_trade_allowed_on_handle():
+    eng = _engine()
+    sup = Supervisor(eng, poll_timeout=0.02)
+    master_state = {
+        "positions": [], "symbol_infos": {"EURUSD": SI},
+        "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                    "currency": "USD", "server": "Demo"},
+        "terminal_info": {"trade_allowed": False}}
+    sup.spawn_master({"terminal_path": "C:/t/m.exe", "master_interval_ms": 60000},
+                     adapter_kind="fake", fake_state=master_state)
+    try:
+        _tick_until(sup, lambda: sup._handles["master"].got_status)
+        assert sup._handles["master"].trade_allowed is False
+    finally:
+        sup.shutdown()
+
+
 def test_reconfigure_slave_noop_when_handle_missing():
     eng = _engine()
     sup = Supervisor(eng, poll_timeout=0.0)

@@ -73,11 +73,13 @@ def build_symbol_info_msg(adapter, slave_id: str, symbol_map_csv: str) -> Symbol
 
 def _status(adapter, source_id: str, role: str, connected: bool) -> StatusMsg:
     acc = adapter.account_info()
+    ti = adapter.terminal_info()
     return StatusMsg(source_id=source_id, role=role, connected=connected,
                     login=int(acc.get("login", 0)), balance=float(acc.get("balance", 0.0)),
                     equity=float(acc.get("equity", 0.0)),
                     currency=str(acc.get("currency", "")),
-                    server=str(acc.get("server", "")))
+                    server=str(acc.get("server", "")),
+                    trade_allowed=bool(ti.get("trade_allowed", True)))
 
 
 def slave_init(adapter, config: dict):

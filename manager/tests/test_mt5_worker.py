@@ -30,6 +30,15 @@ def _adapter(positions=(), ticks=None, order_results=None):
     )
 
 
+def test_status_carries_trade_allowed_from_adapter():
+    from manager.worker.mt5_worker import _status
+    from manager.worker.mt5_adapter import FakeMt5
+    acc = {"login": 1, "balance": 0.0, "equity": 0.0, "currency": "USD", "server": "Demo"}
+    assert _status(FakeMt5(account=acc), "s1", "slave", True).trade_allowed is True
+    assert _status(FakeMt5(account=acc, terminal_info={"trade_allowed": False}),
+                   "s1", "slave", True).trade_allowed is False
+
+
 # ---- trade-request constants match the MetaTrader5 package ----
 # The worker builds request dicts with these hardcoded constants and NEVER
 # imports MetaTrader5 for them, so the values must equal the package's. If they

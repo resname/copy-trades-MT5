@@ -31,6 +31,7 @@ class WorkerHandle:
     last_msg_ts: float = 0.0
     fail_count: int = 0
     fatal: bool = False  # set on a fatal ErrorMsg; _health_check won't restart
+    trade_allowed: bool = True  # from the worker's initial StatusMsg (Algo Trading)
     first_msg_seen: bool = False  # False until first message -> grace window
 
 
@@ -171,6 +172,8 @@ class Supervisor:
             for cmd in self._engine.apply_ack(slave_id, msg):
                 self._send(slave_id, cmd)
         elif isinstance(msg, StatusMsg):
+            if h is not None:
+                h.trade_allowed = msg.trade_allowed
             self._engine.apply_status(slave_id, msg)
         elif isinstance(msg, RecoveryMsg):
             self._engine.apply_recovery(slave_id, msg.records)
@@ -225,7 +228,8 @@ class Supervisor:
                     for cmd in clist:
                         self._send(slave_id, cmd)
             elif isinstance(msg, StatusMsg):
-                pass
+                h.got_status = True
+                h.trade_allowed = msg.trade_allowed
             elif isinstance(msg, ErrorMsg):
                 if msg.fatal:
                     h.fatal = True

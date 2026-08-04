@@ -75,6 +75,18 @@ def test_status_symbolinfo_recovery_round_trip():
     assert rt.records[0].slave_ticket == 777
 
 
+def test_status_round_trip_carries_trade_allowed():
+    st = M.StatusMsg(source_id="s1", role="slave", connected=True, login=123,
+                    balance=1000.0, equity=1000.0, currency="USD", server="Demo",
+                    trade_allowed=False)
+    rt = M.decode(M.encode(st))
+    assert rt.trade_allowed is False
+    # default True when unset
+    st2 = M.StatusMsg(source_id="s2", role="slave", connected=True, login=1,
+                     balance=0.0, equity=0.0, currency="USD", server="Demo")
+    assert M.decode(M.encode(st2)).trade_allowed is True
+
+
 def test_start_and_error_round_trip():
     st = M.StartMsg(config={"terminal_path": "C:/t/terminal64.exe"})
     rt = M.decode(M.encode(st))
