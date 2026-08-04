@@ -224,6 +224,75 @@ def test_apply_slave_edit_noop_when_not_running():
     assert c._supervisor is None
 
 
+def test_account_spec_defaults_sizing_fields():
+    s = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe")
+    assert s.sizing_mode == "balance_step"
+    assert s.master_base_lot == 0.0
+    assert s.fixed_lot == 0.01
+
+
+def test_old_slave_dict_reconstructs_with_sizing_defaults():
+    """main_window._load_config rebuilds each slave via
+    AccountSpec(**{k: d[k] for k in __dataclass_fields__ if k in d}). An old
+    settings.json slave dict (no new keys) must reconstruct with the defaults."""
+    old = {"id": "s1", "terminal_path": "C:/s/terminal64.exe",
+           "symbol_map_csv": "", "step_amount": 100.0, "step_size": 0.01,
+           "max_lot": 10.0, "max_trade_age_minutes": 10.0, "normalize_sltp": True}
+    fields = AccountSpec.__dataclass_fields__
+    spec = AccountSpec(**{k: old[k] for k in fields if k in old})
+    assert spec.sizing_mode == "balance_step"
+    assert spec.master_base_lot == 0.0
+    assert spec.fixed_lot == 0.01
+
+
+def test_start_passes_sizing_mode_to_engine():
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, _, _ = _controller(insts)
+    slave = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe",
+                        symbol_map_csv="EURUSD=EURUSD", sizing_mode="fixed_lot",
+                        fixed_lot=0.07)
+    c.start(_master(), [slave],
+            master_fake_state={
+                "positions": [], "symbol_infos": {"EURUSD": SI},
+                "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                            "currency": "USD", "server": "Demo"}},
+            slave_fake_state=_slave_state())
+    try:
+        cfg = c._engine._slaves["s1"].config
+        assert cfg.sizing_mode == "fixed_lot"
+        assert cfg.fixed_lot == 0.07
+    finally:
+        c.stop()
+
+
+def test_apply_slave_edit_forwards_sizing_fields():
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, _, _ = _controller(insts)
+    c.start(_master(), [_slave()],
+            master_fake_state={
+                "positions": [], "symbol_infos": {"EURUSD": SI},
+                "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                            "currency": "USD", "server": "Demo"}},
+            slave_fake_state=_slave_state())
+    try:
+        c._supervisor.reconfigure_slave = lambda sid, csv, norm: None
+        new = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe",
+                          symbol_map_csv="EURUSD=EURUSD", step_amount=100.0,
+                          step_size=0.01, max_lot=10.0,
+                          max_trade_age_minutes=10.0, normalize_sltp=True,
+                          sizing_mode="copy_master", master_base_lot=0.2,
+                          fixed_lot=0.3)
+        c.apply_slave_edit("s1", new)
+        cfg = c._engine._slaves["s1"].config
+        assert cfg.sizing_mode == "copy_master"
+        assert cfg.master_base_lot == 0.2
+        assert cfg.fixed_lot == 0.3
+    finally:
+        c.stop()
+
+
 def test_start_readiness_gate_uses_90s_timeout(monkeypatch):
     """On first launch a slave terminal can take 30-90s+ to log in and report
     SymbolInfo + Status; the readiness gate must allow 90s, not 15s. The gate

@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 
 from manager.engine.models import Position, Snapshot, Event, Record, SymbolInfo
 from manager.engine.linkage import magic_for, encode_comment
-from manager.engine.transform import SymbolMapper, calculate_lots
+from manager.engine.transform import (
+    SymbolMapper, calculate_slave_lot, SIZING_BALANCE_STEP,
+)
 from manager.engine.snapshot_diff import diff
 from manager.engine.record_table import RecordTable
 from manager.engine.baseline import is_too_old, seed_from_recovery
@@ -20,6 +22,9 @@ class SlaveConfig:
     max_lot: float
     max_trade_age_minutes: int
     normalize_sltp: bool
+    sizing_mode: str = "balance_step"
+    master_base_lot: float = 0.0
+    fixed_lot: float = 0.01
 
 
 @dataclass
@@ -52,9 +57,11 @@ def derive_command(state: SlaveState, event: Event, now: int) -> CommandMsg | No
         info = state.symbol_infos.get(slave_symbol)
         if info is None:
             return None
-        lots = calculate_lots(state.balance, cfg.step_amount, cfg.step_size,
-                              cfg.max_lot, info.volume_step, info.volume_min,
-                              info.volume_max)
+        lots = calculate_slave_lot(cfg.sizing_mode, pos.volume, state.balance,
+                                   cfg.step_amount, cfg.step_size,
+                                   cfg.master_base_lot, cfg.fixed_lot,
+                                   cfg.max_lot, info.volume_step,
+                                   info.volume_min, info.volume_max)
         if lots <= 0.0:
             return None
         return CommandMsg(slave_id=cfg.slave_id, action="OPEN", master_ticket=ticket,
@@ -131,7 +138,10 @@ class CopyEngine:
                             step_size: float, max_lot: float,
                             max_trade_age_minutes: int,
                             symbol_map_csv: str,
-                            normalize_sltp: bool) -> bool:
+                            normalize_sltp: bool,
+                            sizing_mode: str = "balance_step",
+                            master_base_lot: float = 0.0,
+                            fixed_lot: float = 0.01) -> bool:
         """Live-update a running slave's config in place. Returns whether
         symbol_map_csv changed (caller may then ask the worker to re-report
         SymbolInfo). Safe for open trades: derive_command routes
@@ -146,6 +156,9 @@ class CopyEngine:
         cfg.max_trade_age_minutes = max_trade_age_minutes
         cfg.normalize_sltp = normalize_sltp
         cfg.symbol_map_csv = symbol_map_csv
+        cfg.sizing_mode = sizing_mode
+        cfg.master_base_lot = master_base_lot
+        cfg.fixed_lot = fixed_lot
         if map_changed:
             state.mapper = SymbolMapper(
                 symbol_map_csv, lambda s: s in state.symbol_infos)

@@ -40,6 +40,9 @@ class AccountSpec:
     max_lot: float = 10.0
     max_trade_age_minutes: float = 10.0
     normalize_sltp: bool = True
+    sizing_mode: str = "balance_step"
+    master_base_lot: float = 0.0
+    fixed_lot: float = 0.01
 
 
 @dataclass
@@ -190,7 +193,9 @@ class CopyController:
                 step_amount=s.step_amount, step_size=s.step_size,
                 max_lot=s.max_lot,
                 max_trade_age_minutes=s.max_trade_age_minutes,
-                normalize_sltp=s.normalize_sltp))
+                normalize_sltp=s.normalize_sltp,
+                sizing_mode=s.sizing_mode, master_base_lot=s.master_base_lot,
+                fixed_lot=s.fixed_lot))
         cfgs = self.build_worker_configs(master, slaves, assigned)
         self._status("info", "starting slave workers…")
         for s in slaves:
@@ -264,7 +269,9 @@ class CopyController:
         self._engine.update_slave_config(
             slave_id, step_amount=spec.step_amount, step_size=spec.step_size,
             max_lot=spec.max_lot, max_trade_age_minutes=spec.max_trade_age_minutes,
-            symbol_map_csv=spec.symbol_map_csv, normalize_sltp=spec.normalize_sltp)
+            symbol_map_csv=spec.symbol_map_csv, normalize_sltp=spec.normalize_sltp,
+            sizing_mode=spec.sizing_mode, master_base_lot=spec.master_base_lot,
+            fixed_lot=spec.fixed_lot)
         self._supervisor.reconfigure_slave(
             slave_id, spec.symbol_map_csv, spec.normalize_sltp)
 

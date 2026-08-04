@@ -263,3 +263,63 @@ def test_update_slave_config_does_not_affect_open_trades():
     cmds2 = eng.ingest_snapshot(_snap([_pos(42, volume=0.30)]), now=NOW)["s1"]
     assert cmds2[0].action == "PARTIAL_CLOSE"
     assert cmds2[0].master_open_volume == 0.5 and cmds2[0].slave_open_volume == 0.10
+
+
+def test_new_copy_master_mode_mirrors_master_lot():
+    cfg = SlaveConfig(slave_id="s1", symbol_map_csv="EURUSD=EURUSD",
+                      step_amount=100.0, step_size=0.01, max_lot=10.0,
+                      max_trade_age_minutes=10, normalize_sltp=True,
+                      sizing_mode="copy_master")
+    eng = _engine(slaves=(cfg,), infos={"s1": {"EURUSD": SI}})
+    cmds = eng.ingest_snapshot(_snap([_pos(42, volume=0.37)]), now=NOW)["s1"]
+    assert cmds[0].action == "OPEN"
+    assert cmds[0].volume == pytest.approx(0.37, abs=1e-8)
+
+
+def test_new_fixed_lot_mode_uses_fixed_lot():
+    cfg = SlaveConfig(slave_id="s1", symbol_map_csv="EURUSD=EURUSD",
+                      step_amount=100.0, step_size=0.01, max_lot=10.0,
+                      max_trade_age_minutes=10, normalize_sltp=True,
+                      sizing_mode="fixed_lot", fixed_lot=0.07)
+    eng = _engine(slaves=(cfg,), infos={"s1": {"EURUSD": SI}})
+    cmds = eng.ingest_snapshot(_snap([_pos(42, volume=0.5)]), now=NOW)["s1"]
+    assert cmds[0].action == "OPEN"
+    assert cmds[0].volume == pytest.approx(0.07, abs=1e-8)
+
+
+def test_new_balance_step_with_base_scales_down():
+    cfg = SlaveConfig(slave_id="s1", symbol_map_csv="EURUSD=EURUSD",
+                      step_amount=100.0, step_size=0.01, max_lot=10.0,
+                      max_trade_age_minutes=10, normalize_sltp=True,
+                      sizing_mode="balance_step", master_base_lot=0.1)
+    eng = _engine(slaves=(cfg,), infos={"s1": {"EURUSD": SI}})  # balance 1000
+    cmds = eng.ingest_snapshot(_snap([_pos(42, volume=0.05)]), now=NOW)["s1"]
+    # raw_balance 0.10 * (0.05/0.1)=0.05
+    assert cmds[0].action == "OPEN"
+    assert cmds[0].volume == pytest.approx(0.05, abs=1e-8)
+
+
+def test_new_balance_step_with_base_no_scale_above_base():
+    cfg = SlaveConfig(slave_id="s1", symbol_map_csv="EURUSD=EURUSD",
+                      step_amount=100.0, step_size=0.01, max_lot=10.0,
+                      max_trade_age_minutes=10, normalize_sltp=True,
+                      sizing_mode="balance_step", master_base_lot=0.1)
+    eng = _engine(slaves=(cfg,), infos={"s1": {"EURUSD": SI}})
+    cmds = eng.ingest_snapshot(_snap([_pos(42, volume=0.2)]), now=NOW)["s1"]
+    # down-only: master 0.2 >= base 0.1 -> raw_balance 0.10
+    assert cmds[0].action == "OPEN"
+    assert cmds[0].volume == pytest.approx(0.10, abs=1e-8)
+
+
+def test_update_slave_config_patches_sizing_mode():
+    eng = _engine(infos={"s1": {"EURUSD": SI}})  # balance 1000, balance_step
+    eng.update_slave_config(
+        "s1", step_amount=100.0, step_size=0.01, max_lot=10.0,
+        max_trade_age_minutes=10, symbol_map_csv="EURUSD=EURUSD",
+        normalize_sltp=True, sizing_mode="copy_master", master_base_lot=0.0,
+        fixed_lot=0.01)
+    cfg = eng._slaves["s1"].config
+    assert cfg.sizing_mode == "copy_master"
+    # next NEW mirrors the master lot, ignoring balance
+    cmds = eng.ingest_snapshot(_snap([_pos(7, volume=0.42)]), now=NOW)["s1"]
+    assert cmds[0].volume == pytest.approx(0.42, abs=1e-8)
