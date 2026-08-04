@@ -178,3 +178,45 @@ def test_supervisor_errors_surface_to_gui():
     assert any(s.kind == "error" and "initialize failed" in s.message
                for s in statuses), "on_error must route to on_status kind=error"
     assert any("initialize failed" in m for m in logs), "on_error must route to on_log"
+
+
+def test_apply_slave_edit_updates_engine_and_reconfigures_when_running():
+    """While running, apply_slave_edit updates the engine's SlaveConfig
+    (future opens use new params) and calls supervisor.reconfigure_slave
+    (pushes normalize + symbol-info refresh to the worker)."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, statuses, logs = _controller(insts)
+    c.start(_master(), [_slave()],
+            master_fake_state={
+                "positions": [], "symbol_infos": {"EURUSD": SI},
+                "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                            "currency": "USD", "server": "Demo"}},
+            slave_fake_state=_slave_state())
+    try:
+        reconfigured = []
+        c._supervisor.reconfigure_slave = \
+            lambda sid, csv, norm: reconfigured.append((sid, csv, norm))
+        new = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe",
+                          symbol_map_csv="EURUSD=GBPUSD", step_amount=500.0,
+                          step_size=0.02, max_lot=20.0,
+                          max_trade_age_minutes=5.0, normalize_sltp=False)
+        c.apply_slave_edit("s1", new)
+        cfg = c._engine._slaves["s1"].config
+        assert cfg.step_amount == 500.0
+        assert cfg.step_size == 0.02 and cfg.max_lot == 20.0
+        assert cfg.max_trade_age_minutes == 5
+        assert cfg.symbol_map_csv == "EURUSD=GBPUSD"
+        assert cfg.normalize_sltp is False
+        assert reconfigured == [("s1", "EURUSD=GBPUSD", False)]
+    finally:
+        c.stop()
+
+
+def test_apply_slave_edit_noop_when_not_running():
+    c, _, _ = _controller([TerminalInstance("C:/m", "C:/m/terminal64.exe",
+                                            "appdata")])
+    # must not raise (engine/supervisor are None)
+    c.apply_slave_edit("s1", AccountSpec(id="s1",
+                       terminal_path="C:/s/terminal64.exe", step_amount=500.0))
+    assert c._supervisor is None
