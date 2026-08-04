@@ -222,7 +222,7 @@ class MainWindow(QMainWindow):
             label = (spec.terminal_path or spec.id).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
             self.slave_list.addItem(f"{spec.id}: {label}")
 
-    # ---- public API (controller / tray) ----
+    # ---- public API (controller) ----
     def append_status(self, update: StatusUpdate) -> None:
         line = update.message if update.slave_id is None \
             else f"[{update.slave_id}] {update.message}"
