@@ -7,6 +7,7 @@ from manager.engine.copy_loop import CopyEngine, SlaveConfig
 from manager.app.controller import (
     CopyController, AccountSpec, StatusUpdate, ControllerError,
 )
+from manager.supervisor import Supervisor
 from manager.terminal.discovery import TerminalInstance
 
 SI = SymbolInfo(point=0.00001, digits=5, tick_size=0.00001,
@@ -220,3 +221,30 @@ def test_apply_slave_edit_noop_when_not_running():
     c.apply_slave_edit("s1", AccountSpec(id="s1",
                        terminal_path="C:/s/terminal64.exe", step_amount=500.0))
     assert c._supervisor is None
+
+
+def test_start_readiness_gate_uses_90s_timeout(monkeypatch):
+    """On first launch a slave terminal can take 30-90s+ to log in and report
+    SymbolInfo + Status; the readiness gate must allow 90s, not 15s. The gate
+    still returns early once ready, so fast starts are unaffected."""
+    captured = {}
+
+    def fake_wait(self, timeout=10.0, slave_ids=None):
+        captured["timeout"] = timeout
+        return True  # short-circuit to ready; we only assert the timeout arg
+    monkeypatch.setattr(Supervisor, "wait_for_slaves_ready", fake_wait)
+
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, _, _ = _controller(insts)
+    c.start(_master(), [_slave()],
+            master_fake_state={
+                "positions": [], "symbol_infos": {"EURUSD": SI},
+                "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                             "currency": "USD", "server": "Demo"}},
+            slave_fake_state=_slave_state())
+    try:
+        assert captured.get("timeout") == 90.0, \
+            "readiness gate must wait 90s for slow first-launch slaves"
+    finally:
+        c.stop()

@@ -184,7 +184,7 @@ class CopyController:
                             adapter_kind="real" if slave_fake_state is None else "fake",
                             fake_state=slave_fake_state)
         # readiness gate: wait for every slave's SymbolInfo + first Status
-        ready = sup.wait_for_slaves_ready(timeout=15.0)
+        ready = sup.wait_for_slaves_ready(timeout=90.0)
         if not ready:
             self._status("error", "one or more slaves did not become ready")
             sup.shutdown()
