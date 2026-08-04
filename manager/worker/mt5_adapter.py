@@ -23,6 +23,7 @@ class Mt5Adapter(Protocol):
     def symbol_info_tick(self, symbol: str) -> tuple[float, float] | None: ...
     def account_info(self) -> dict: ...
     def order_send(self, request: dict) -> dict: ...
+    def terminal_info(self) -> dict: ...
 
 
 class FakeMt5:
@@ -31,7 +32,7 @@ class FakeMt5:
     of canned result dicts popped in order; when it runs out, success is
     assumed and the position list is mutated per the request."""
     def __init__(self, positions=None, symbol_infos=None, account=None,
-                 ticks=None, order_results=None):
+                 ticks=None, order_results=None, terminal_info=None):
         self.positions: list[Position] = list(positions or [])
         self.symbol_infos: dict[str, SymbolInfo] = dict(symbol_infos or {})
         self.account: dict = dict(account or {})
@@ -41,6 +42,7 @@ class FakeMt5:
         self._last_error: tuple[int, str] = (0, "")
         self._connected = False
         self.last_request: dict = {}
+        self._terminal_info: dict = dict(terminal_info or {"trade_allowed": True})
 
     def initialize(self, path, login=None, password=None, server=None,
                    portable=False):
@@ -70,6 +72,9 @@ class FakeMt5:
 
     def account_info(self):
         return dict(self.account)
+
+    def terminal_info(self):
+        return dict(self._terminal_info)
 
     def order_send(self, request: dict) -> dict:
         action = request["action"]
@@ -211,6 +216,13 @@ class RealMt5:
             return {}
         return {"login": a.login, "balance": a.balance, "equity": a.equity,
                 "currency": a.currency, "server": a.server}
+
+    def terminal_info(self):
+        mt5 = self._mod()
+        t = mt5.terminal_info()
+        if t is None:
+            return {"trade_allowed": False}
+        return {"trade_allowed": bool(t.trade_allowed)}
 
     def order_send(self, request: dict):
         mt5 = self._mod()

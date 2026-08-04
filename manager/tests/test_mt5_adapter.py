@@ -143,3 +143,13 @@ def test_failed_order_send_records_retcode():
                          "type_time": ORDER_TIME_GTC, "type_filling": ORDER_FILLING_RETURN})
     assert res["retcode"] == 10004
     assert mt.last_error()[0] == 10004
+
+
+def test_terminal_info_defaults_trade_allowed_true():
+    mt = FakeMt5()
+    assert mt.terminal_info() == {"trade_allowed": True}
+
+
+def test_terminal_info_scripts_trade_allowed_false():
+    mt = FakeMt5(terminal_info={"trade_allowed": False})
+    assert mt.terminal_info() == {"trade_allowed": False}
