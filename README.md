@@ -88,6 +88,9 @@ For the full run-through, see [Usage](#usage). For demo setup, see
   log in/verify. Install is on the left; Open-for-login is on the right.
 - **Single-window close = stop** — closing the window stops the engine (joins
   workers) and exits the app; no system tray, no background-running mode.
+- **Auto-start on boot + auto-copy** — optionally launch the app at Windows
+  login and auto-start copying 15 s after launch (one click to cancel). If the
+  terminals aren't ready, it fails silently (logged, no modal).
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
 - **Persistent config** — the master terminal + slaves (with per-slave symbol
@@ -198,7 +201,13 @@ same update from the command line.
 6. **Close**: closing the window stops the engine (joins workers) and exits
    the app — there is no tray. Minimize the window to keep it running in the
    background.
-7. **Updates**: the app checks for updates hourly and pre-downloads the
+7. **Auto-start (optional)**: in the **Auto-start** group, tick **Launch on
+   Windows startup** to start the app at login (a shortcut in `shell:startup`),
+   and/or **Auto-start copying on launch** to begin copying 15 s after the app
+   opens — a **Cancel** button appears during the countdown. Auto-start fails
+   silently (a log line) if no master/slaves are configured or Algo Trading is
+   off; it never shows a modal, so an unattended reboot is not blocked.
+8. **Updates**: the app checks for updates hourly and pre-downloads the
    verified wheel when one is found, so clicking **Update & restart** finishes
    in seconds (no network in the restart path) and reliably relaunches the
    manager.
