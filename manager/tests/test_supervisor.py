@@ -3,7 +3,7 @@ import time
 
 from manager.engine.models import Position, SymbolInfo, BUY
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
-from manager.ipc.messages import ErrorMsg
+from manager.ipc.messages import ErrorMsg, AckMsg
 from manager.ipc.pipe_framing import send_msg
 from manager.supervisor import Supervisor, WorkerHandle
 
@@ -257,6 +257,29 @@ def test_nonfatal_error_does_not_stop_restart():
     child.close()
     assert sup._handles["s1"].fatal is False, "non-fatal error must not mark fatal"
     assert errors and "transient retcode 10004" in errors[-1][1]
+
+
+def test_failed_open_ack_surfaces_error():
+    """A failed OPEN AckMsg (ok=False — e.g. MT5 rejected the comment or
+    filling mode) must surface via on_error so the user sees WHY a trade
+    didn't copy instead of a silent symptom. Regression for the 'copying
+    started, nothing copied, no error' bug, where apply_ack silently left the
+    slave_ticket=0 marker and the supervisor never told the user."""
+    eng = _engine()
+    sup = Supervisor(eng, time_fn=lambda: 0.0, poll_timeout=0.0)
+    errors = []
+    sup.on_error = lambda name, msg: errors.append((name, msg))
+    parent, child = multiprocessing.Pipe(duplex=True)
+    send_msg(child, AckMsg(slave_id="s1", action="OPEN", master_ticket=42,
+            ok=False, retcode=-1, error='(-2, "Invalid comment argument")'))
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=parent,
+        config={"terminal_path": "C:/t/s.exe"}, adapter_kind="fake",
+        fake_state=None, last_msg_ts=0.0)
+    sup.tick(timeout=0.0)
+    child.close()
+    assert errors, "failed OPEN ack must surface via on_error"
+    assert "comment" in errors[-1][1], errors[-1][1]
 
 
 def test_reconfigure_slave_sends_message_and_updates_config():

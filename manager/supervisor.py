@@ -159,6 +159,15 @@ class Supervisor:
             h.restart_count = 0
             h.next_restart_at = 0.0
         if isinstance(msg, AckMsg):
+            if not msg.ok:
+                # Surface a failed order so the user sees WHY a trade didn't
+                # copy (e.g. MT5 rejected the comment/filling mode) instead of
+                # apply_ack silently leaving the slave_ticket=0 marker. The
+                # marker stays, so this fires once per failed trade (no re-NEW).
+                self._surface_error(
+                    slave_id,
+                    f"{slave_id}: {msg.action} #{msg.master_ticket} failed "
+                    f"(retcode {msg.retcode}): {msg.error}")
             for cmd in self._engine.apply_ack(slave_id, msg):
                 self._send(slave_id, cmd)
         elif isinstance(msg, StatusMsg):
