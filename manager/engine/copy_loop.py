@@ -4,9 +4,7 @@ from dataclasses import dataclass, field
 
 from manager.engine.models import Position, Snapshot, Event, Record, SymbolInfo
 from manager.engine.linkage import magic_for, encode_comment
-from manager.engine.transform import (
-    SymbolMapper, calculate_slave_lot, SIZING_BALANCE_STEP,
-)
+from manager.engine.transform import SymbolMapper, calculate_slave_lot
 from manager.engine.snapshot_diff import diff
 from manager.engine.record_table import RecordTable
 from manager.engine.baseline import is_too_old, seed_from_recovery

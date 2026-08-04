@@ -64,7 +64,7 @@ class SlaveEditor(QDialog):
         self.step_size = QLineEdit("0.01")
         self.max_lot = QLineEdit("10")
         self.max_trade_age_minutes = QLineEdit("10")
-        self.master_base_lot = QLineEdit("0.1")
+        self.master_base_lot = QLineEdit("0.0")
         self.fixed_lot = QLineEdit("0.01")
         self.normalize_sltp = QCheckBox("Normalize SL/TP to slave open price")
         self.normalize_sltp.setChecked(True)
