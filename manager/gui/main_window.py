@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
+import sys
 import webbrowser
 
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel, QGroupBox,
-    QProgressBar, QMessageBox,
+    QCheckBox, QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel,
+    QGroupBox, QProgressBar, QMessageBox,
 )
 
 from manager.app.controller import AccountSpec, StatusUpdate, AlgoTradingDisabledError
+from manager.platform import autostart
 
 MT5_DOWNLOAD_URL = "https://www.metatrader5.com/en/download"
 
@@ -60,6 +62,8 @@ class MainWindow(QMainWindow):
         self._controller = controller
         self._store = store
         self._slaves: list[AccountSpec] = []
+        self._countdown_timer: QTimer | None = None
+        self._countdown_remaining = 0
         self._build_ui()
         self._populate_terminals()
         self._load_config()
@@ -76,6 +80,7 @@ class MainWindow(QMainWindow):
         self._update_timer.timeout.connect(self.check_for_updates_now)
         self._update_timer.start()
         QTimer.singleShot(10_000, self.check_for_updates_now)
+        self._maybe_begin_autostart_copy()
 
     # ---- UI construction ----
     def _build_ui(self):
@@ -121,13 +126,26 @@ class MainWindow(QMainWindow):
         sl.addLayout(row)
         slave_box.setLayout(sl)
 
-        # Start/Stop
+        # Auto-start (boot + auto-copy)
+        self.autostart_box = QGroupBox("Auto-start")
+        as_layout = QVBoxLayout()
+        self.autostart_boot_checkbox = QCheckBox("Launch on Windows startup")
+        self.autostart_copy_checkbox = QCheckBox(
+            "Auto-start copying on launch (15 s countdown)")
+        as_layout.addWidget(self.autostart_boot_checkbox)
+        as_layout.addWidget(self.autostart_copy_checkbox)
+        self.autostart_box.setLayout(as_layout)
+
+        # Start/Stop + countdown Cancel
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
+        self.autostart_cancel_button = QPushButton("Cancel")
+        self.autostart_cancel_button.setVisible(False)
         controls = QHBoxLayout()
         controls.addWidget(self.start_button)
         controls.addWidget(self.stop_button)
+        controls.addWidget(self.autostart_cancel_button)
 
         # Updates
         self.update_label = QLabel("")
@@ -151,6 +169,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(master_box)
         root.addWidget(slave_box)
+        root.addWidget(self.autostart_box)
         root.addLayout(controls)
         root.addLayout(updates_row)
         root.addWidget(self.update_progress)
@@ -172,6 +191,11 @@ class MainWindow(QMainWindow):
         self.install_metatrader_button.clicked.connect(self._on_install_metatrader)
         self.check_update_button.clicked.connect(self.check_for_updates_now)
         self.update_restart_button.clicked.connect(self._on_update_restart)
+        self.autostart_boot_checkbox.toggled.connect(
+            self._on_autostart_boot_toggled)
+        self.autostart_copy_checkbox.toggled.connect(
+            self._on_autostart_copy_toggled)
+        self.autostart_cancel_button.clicked.connect(self._cancel_autostart_copy)
 
     def _populate_terminals(self):
         self.master_terminal.clear()
@@ -186,6 +210,10 @@ class MainWindow(QMainWindow):
         return {
             "master": {"terminal_path": self.master_terminal.currentText().strip()},
             "slaves": [dataclasses.asdict(s) for s in self._slaves],
+            "autostart": {
+                "on_boot": self.autostart_boot_checkbox.isChecked(),
+                "auto_copy": self.autostart_copy_checkbox.isChecked(),
+            },
         }
 
     def _save_config(self) -> None:
@@ -221,6 +249,17 @@ class MainWindow(QMainWindow):
             self._slaves.append(spec)
             label = (spec.terminal_path or spec.id).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
             self.slave_list.addItem(f"{spec.id}: {label}")
+        # autostart toggles: auto_copy from stored value, on_boot synced to the
+        # .lnk's existence (reality is the source of truth). blockSignals so
+        # syncing does not re-trigger the toggle handler (which would touch the
+        # OS or save).
+        as_cfg = (cfg.get("autostart") if isinstance(cfg, dict) else None) or {}
+        self.autostart_copy_checkbox.blockSignals(True)
+        self.autostart_copy_checkbox.setChecked(bool(as_cfg.get("auto_copy", False)))
+        self.autostart_copy_checkbox.blockSignals(False)
+        self.autostart_boot_checkbox.blockSignals(True)
+        self.autostart_boot_checkbox.setChecked(autostart.is_autostart_enabled())
+        self.autostart_boot_checkbox.blockSignals(False)
 
     # ---- public API (controller) ----
     def append_status(self, update: StatusUpdate) -> None:
@@ -319,6 +358,13 @@ class MainWindow(QMainWindow):
 
     # ---- handlers ----
     def _on_start(self):
+        self._do_start(show_modal=True)
+
+    def _do_start(self, show_modal: bool, label: str = "start") -> None:
+        """Shared Start body. show_modal=True (manual click) shows the Algo
+        Trading modal on failure; show_modal=False (auto-start) logs only.
+        `label` prefixes the failure log line so auto-start attempts are
+        distinguishable in the log ("auto-start failed: …" vs "start failed: …")."""
         terminal_path = self.master_terminal.currentText().strip()
         if not terminal_path:
             self.append_log("select a master terminal first")
@@ -329,10 +375,41 @@ class MainWindow(QMainWindow):
             self.set_running(True)
             self._save_config()
         except AlgoTradingDisabledError as exc:
-            self.append_log(f"start blocked: {exc}")
-            QMessageBox.warning(self, "Algo Trading disabled", str(exc))
+            self.append_log(f"{label} failed: {exc}")
+            if show_modal:
+                QMessageBox.warning(self, "Algo Trading disabled", str(exc))
         except Exception as exc:
-            self.append_log(f"start failed: {exc}")
+            self.append_log(f"{label} failed: {exc}")
+
+    def _start_silent(self) -> None:
+        """Auto-start path: same Start body, never shows a modal; logs as
+        'auto-start failed' so the attempt is distinguishable in the log."""
+        self._do_start(show_modal=False, label="auto-start")
+
+    def _on_autostart_boot_toggled(self, checked: bool) -> None:
+        try:
+            if checked:
+                autostart.enable_autostart(sys.executable, "-m manager")
+            else:
+                autostart.disable_autostart()
+        except Exception as exc:
+            self.append_log(f"autostart enable failed: {exc}")
+            self.autostart_boot_checkbox.blockSignals(True)
+            self.autostart_boot_checkbox.setChecked(False)
+            self.autostart_boot_checkbox.blockSignals(False)
+        self._save_config()
+
+    def _on_autostart_copy_toggled(self, _checked: bool) -> None:
+        # No OS side effect; the countdown only fires on launch, not mid-session.
+        self._save_config()
+
+    def _maybe_begin_autostart_copy(self) -> None:
+        # Countdown implemented in Task 3; no-op here so launch is safe.
+        return
+
+    def _cancel_autostart_copy(self) -> None:
+        # Wired in Task 3.
+        return
 
     def _on_stop(self):
         self._controller.stop()

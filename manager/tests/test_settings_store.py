@@ -107,3 +107,13 @@ def test_save_config_preserves_other_keys(tmp_path):
     assert data["accounts"] == {"master": {"id": "master"}}
     assert data["provisioned_instances"] == ["C:/x"]
     assert data["config"]["master"]["terminal_path"] == "C:/t/terminal64.exe"
+
+
+def test_save_then_load_config_round_trip_with_autostart(tmp_path):
+    from manager.settings.store import SettingsStore
+    s = SettingsStore(path=tmp_path / "settings.json")
+    cfg = {"master": {"terminal_path": "C:/t/terminal64.exe"},
+           "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+           "autostart": {"on_boot": True, "auto_copy": False}}
+    s.save_config(cfg)
+    assert s.load_config() == cfg

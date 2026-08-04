@@ -358,3 +358,84 @@ def test_close_event_stops_controller_and_quits(qapp, monkeypatch):
     assert c.stopped is True      # controller.stop() ran
     assert evt.accepted is True   # event accepted (window closes)
     assert quit_called            # QApplication.quit() invoked
+
+
+def test_autostart_checkboxes_default_off(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    assert not w.autostart_boot_checkbox.isChecked()
+    assert not w.autostart_copy_checkbox.isChecked()
+    assert not w.autostart_cancel_button.isVisible()
+
+
+def test_autostart_config_round_trip(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": True, "auto_copy": True}})
+    lnk = tmp_path / "CopyTradesMT5.lnk"
+    lnk.touch()
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: lnk)
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    # auto_copy restored from stored value; on_boot synced to .lnk existence
+    assert w.autostart_copy_checkbox.isChecked() is True
+    assert w.autostart_boot_checkbox.isChecked() is True
+
+
+def test_boot_checkbox_syncs_to_lnk_existence_on_load(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    lnk = tmp_path / "CopyTradesMT5.lnk"
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: lnk)
+    store = SettingsStore(path=tmp_path / "settings.json")
+    # stored on_boot True but no .lnk on disk -> checkbox unchecked (reality wins)
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [], "autostart": {"on_boot": True, "auto_copy": False}})
+    w = MainWindow(FakeController(), store=store)
+    assert w.autostart_boot_checkbox.isChecked() is False
+    # now create the .lnk and reload via a fresh window -> checked
+    lnk.touch()
+    w2 = MainWindow(FakeController(), store=store)
+    assert w2.autostart_boot_checkbox.isChecked() is True
+
+
+def test_start_silent_logs_on_algo_trading_disabled_no_modal(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.gui import main_window as mw
+    from manager.app.controller import AlgoTradingDisabledError, AccountSpec
+    c = FakeController()
+    c.start = lambda master, slaves, **kw: (_ for _ in ()).throw(
+        AlgoTradingDisabledError(["s1 (C:/t/terminal64.exe)"]))
+    shown = []
+    monkeypatch.setattr(mw.QMessageBox, "warning",
+                        lambda parent, title, text: shown.append((title, text)) or 0)
+    w = MainWindow(c)
+    w.master_terminal.addItem("C:/i0/terminal64.exe")
+    w.master_terminal.setCurrentIndex(0)
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe")]
+    w._start_silent()
+    assert not shown, "auto-start path must not show a modal"
+    assert "auto-start failed" in w.log_view.toPlainText().lower()
+
+
+def test_do_start_manual_shows_modal_on_algo_trading_disabled(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.gui import main_window as mw
+    from manager.app.controller import AlgoTradingDisabledError
+    c = FakeController()
+    c.start = lambda master, slaves, **kw: (_ for _ in ()).throw(
+        AlgoTradingDisabledError(["s1 (C:/t/terminal64.exe)"]))
+    shown = []
+    monkeypatch.setattr(mw.QMessageBox, "warning",
+                        lambda parent, title, text: shown.append((title, text)) or 0)
+    w = MainWindow(c)
+    w.master_terminal.addItem("C:/i0/terminal64.exe")
+    w.master_terminal.setCurrentIndex(0)
+    w.start_button.click()  # manual path -> _on_start -> _do_start(show_modal=True)
+    assert shown, "manual Start must still show the Algo Trading modal"
+    assert "Algo Trading" in shown[0][0]
