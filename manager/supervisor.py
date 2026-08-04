@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from manager.engine.copy_loop import CopyEngine
 from manager.engine.models import Snapshot
 from manager.ipc.messages import (
-    AckMsg, StatusMsg, SnapshotMsg, RecoveryMsg, SymbolInfoMsg, ErrorMsg, StartMsg,
+    AckMsg, StatusMsg, SnapshotMsg, RecoveryMsg, SymbolInfoMsg, ErrorMsg,
+    ReconfigureMsg, StartMsg,
 )
 from manager.ipc.pipe_framing import send_msg, recv_msg
 from manager.worker.mt5_worker import worker_main
@@ -226,6 +227,24 @@ class Supervisor:
             send_msg(h.pipe, msg)
         except (EOFError, OSError):
             self.errors.append(f"lost slave {slave_id}")
+
+    def reconfigure_slave(self, slave_id: str, symbol_map_csv: str,
+                          normalize_sltp: bool) -> None:
+        """Live-update a running slave's symbol map + normalize flag. Always
+        updates h.config so a subsequent _restart spawns with the new params
+        (a dead non-fatal worker is restarted by _health_check and picks up the
+        edit). Sends the ReconfigureMsg only when the pipe is open and the
+        worker is not fatal. No-op when the handle is missing."""
+        h = self._handles.get(slave_id)
+        if h is None:
+            return
+        h.config["symbol_map_csv"] = symbol_map_csv
+        h.config["normalize_sltp"] = normalize_sltp
+        if h.pipe is None or h.fatal:
+            return  # worker gone/fatal: can't send, but h.config is updated
+        self._send(slave_id, ReconfigureMsg(
+            source_id=slave_id, symbol_map_csv=symbol_map_csv,
+            normalize_sltp=normalize_sltp))
 
     def _health_check(self) -> None:
         for name, h in list(self._handles.items()):
