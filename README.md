@@ -22,6 +22,38 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 
 ---
 
+## Quick Start
+
+1. **Install & launch** (end users):
+   ```powershell
+   irm https://github.com/resname/copy-trades-MT5/releases/latest/download/install.ps1 | iex
+   ```
+   Then launch **CopyTrades MT5** from the Start Menu (or run `copytrades`). From
+   source: `pip install -e .[test]` then `python -m manager` — see
+   [Installation](#installation).
+2. **Install/log in to terminals**: one MetaTrader 5 terminal per account, each
+   logged in to a **DEMO account** (never a real account). Use the manager's
+   **Install MetaTrader** button if you need more (choose a custom install path
+   per terminal).
+3. **Enable Algo Trading on every terminal** ⚠️ — in each MetaTrader terminal,
+   click the **Algo Trading** toolbar button so it is ON (or Tools → Options →
+   Expert Advisors → *Allow algorithmic trading*). The copier places slave trades
+   through the MT5 Python API; if Algo Trading is off, `order_send` is blocked and
+   **nothing copies**. The manager refuses to Start until every terminal reports
+   Algo Trading enabled.
+4. **Select the master terminal** in the manager and **Add Slave…** for each
+   slave (per-slave terminal, symbol map, lot sizing, normalization).
+5. **Click Start** — the manager connects to every terminal, gates on readiness
+   and Algo Trading, then copies opens/modifies/partial-closes/closes from master
+   to slaves.
+6. Close the window to tray (workers keep running); tray **Quit** for an orderly
+   stop. The app auto-checks for updates hourly.
+
+For the full run-through, see [Usage](#usage). For demo setup, see
+[`docs/smoke-test.md`](docs/smoke-test.md).
+
+---
+
 ## Features
 
 - **1 master → many slaves**, each mirrored independently.
@@ -146,7 +178,8 @@ same update from the command line.
    a real account). The terminal saves the account.
 3. **Master**: in the manager, select the master terminal from the dropdown.
    Click **Start** (the manager connects to that terminal's saved account —
-   no login/server/password entered in the manager).
+   no login/server/password entered in the manager). **Algo Trading must be
+   enabled on every terminal** (see Quick Start step 3) or Start is blocked.
 4. **Slaves**: click **Add slave** to open the slave editor — select each
    slave's terminal, and set the per-slave symbol map / lot-sizing /
    normalization options. Add as many slaves as you need (one terminal each).
@@ -255,6 +288,7 @@ individual test modules.
 | Slaves never reach `ready` | Worker failed to log in or fetch SymbolInfo | Check the log view for the worker error; confirm the terminal is logged in to a demo account (the manager does not enter credentials — log in via the terminal's own UI / the Launch button) |
 | Not enough terminal instances | Fewer installed terminals than accounts | Install more via the Install MetaTrader button (custom path) and log in, or point accounts at specific terminals via the dropdown |
 | Update & restart closes the app but it doesn't reopen | The detached helper's pip install or relaunch step failed | Open `%LOCALAPPDATA%\CopyTradesMT5\updates\update.log` for the step that failed; re-run `copytrades update` or the one-liner installer |
+| Start blocked: "Algo Trading is disabled on: …" / trades don't copy | The Algo Trading toolbar button is off on one or more terminals (the MT5 Python API's `order_send` is blocked) | Enable the **Algo Trading** button in each named terminal (or Tools → Options → Expert Advisors → Allow algorithmic trading), then click Start again |
 
 ---
 
