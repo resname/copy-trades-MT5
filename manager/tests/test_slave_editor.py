@@ -83,3 +83,82 @@ def _inst(exe):
 def _qitem(text):
     from PySide6.QtWidgets import QTableWidgetItem
     return QTableWidgetItem(text)
+
+
+def test_set_spec_pre_populates_and_locks_identity(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    dlg = SlaveEditor(FakeController([_inst("C:/s1/terminal64.exe")]))
+    spec = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                       symbol_map_csv="EURUSD=EURUSD,GBPUSD=GBPUSD",
+                       step_amount=500.0, step_size=0.02, max_lot=20.0,
+                       max_trade_age_minutes=5.0, normalize_sltp=False)
+    dlg.set_spec(spec, lock_identity=True)
+    assert dlg.windowTitle() == "Edit Slave"
+    assert dlg.id_edit.text() == "s1"
+    assert dlg.id_edit.isReadOnly()
+    assert dlg.terminal.currentText() == "C:/s1/terminal64.exe"
+    assert not dlg.terminal.isEnabled()
+    # symbol table has one row per mapped pair
+    assert dlg.symbol_table.rowCount() == 2
+    assert dlg.symbol_table.item(0, 0).text() == "EURUSD"
+    assert dlg.symbol_table.item(0, 1).text() == "EURUSD"
+    assert dlg.symbol_table.item(1, 0).text() == "GBPUSD"
+    assert dlg.symbol_table.item(1, 1).text() == "GBPUSD"
+    assert dlg.step_amount.text() == "500.0"
+    assert dlg.step_size.text() == "0.02"
+    assert dlg.max_lot.text() == "20.0"
+    assert dlg.max_trade_age_minutes.text() == "5.0"
+    assert dlg.normalize_sltp.isChecked() is False
+
+
+def test_set_spec_round_trips_through_spec(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    spec = AccountSpec(id="s2", terminal_path="C:/s2/terminal64.exe",
+                       symbol_map_csv="EURUSD=EURUSD,GBPUSD=GBPUSD",
+                       step_amount=100.0, step_size=0.01, max_lot=10.0,
+                       max_trade_age_minutes=10.0, normalize_sltp=True)
+    dlg = SlaveEditor(FakeController([_inst("C:/s2/terminal64.exe")]))
+    dlg.set_spec(spec, lock_identity=True)
+    dlg.accept()
+    out = dlg.spec()
+    assert out.id == "s2"
+    assert out.terminal_path == "C:/s2/terminal64.exe"
+    assert out.symbol_map_csv == "EURUSD=EURUSD,GBPUSD=GBPUSD"
+    assert out.step_amount == 100.0 and out.step_size == 0.01
+    assert out.max_lot == 10.0 and out.max_trade_age_minutes == 10.0
+    assert out.normalize_sltp is True
+
+
+def test_edit_slave_pre_populates_with_locked_identity(qapp, monkeypatch):
+    """edit_slave opens a SlaveEditor pre-populated with `spec` and returns the
+    edited spec. We avoid the real modal loop by patching exec to accept
+    immediately, so spec() reflects the pre-populated (unchanged) values and
+    identity stays locked."""
+    from manager.gui.slave_editor import edit_slave, SlaveEditor
+    from manager.app.controller import AccountSpec
+    from PySide6.QtWidgets import QDialog, QWidget
+
+    def stub_exec(self):
+        self.setResult(QDialog.DialogCode.Accepted)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(SlaveEditor, "exec", stub_exec)
+
+    class _Win(QWidget):
+        def __init__(self):
+            super().__init__()
+            self._controller = FakeController([_inst("C:/s1/terminal64.exe")])
+
+    win = _Win()
+    orig = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                       symbol_map_csv="EURUSD=EURUSD", step_amount=100.0,
+                       step_size=0.01, max_lot=10.0, max_trade_age_minutes=10.0,
+                       normalize_sltp=True)
+    out = edit_slave(win, orig)
+    assert out is not None
+    # identity locked (unchanged), trading params round-trip from set_spec
+    assert out.id == "s1"
+    assert out.terminal_path == "C:/s1/terminal64.exe"
+    assert out.symbol_map_csv == "EURUSD=EURUSD"
+    assert out.step_amount == 100.0 and out.normalize_sltp is True
