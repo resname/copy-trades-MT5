@@ -19,7 +19,7 @@ from manager.ipc.pipe_framing import send_msg, recv_msg
 from manager.worker.mt5_adapter import FakeMt5, RealMt5
 from manager.worker.mt5_constants import (
     TRADE_ACTION_DEAL, TRADE_ACTION_SLTP, ORDER_TYPE_BUY, ORDER_TYPE_SELL,
-    ORDER_TIME_GTC, ORDER_FILLING_RETURN, TRADE_RETCODE_DONE,
+    ORDER_TIME_GTC, TRADE_RETCODE_DONE, select_filling_mode,
 )
 
 
@@ -143,7 +143,8 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                "type": ORDER_TYPE_BUY if cmd.side == BUY else ORDER_TYPE_SELL,
                "volume": cmd.volume, "price": slave_open, "sl": sl, "tp": tp,
                "deviation": 10, "magic": cmd.magic, "comment": cmd.comment,
-               "type_time": ORDER_TIME_GTC, "type_filling": ORDER_FILLING_RETURN}
+               "type_time": ORDER_TIME_GTC,
+               "type_filling": select_filling_mode(info.filling_mode)}
         res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
         if res.get("retcode") != TRADE_RETCODE_DONE:
             return _fail(res.get("retcode", -1), str(adapter.last_error()))
@@ -205,7 +206,8 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
         req = {"action": TRADE_ACTION_DEAL, "symbol": pos.symbol, "type": opposite,
                "volume": vol_to_close, "position": cmd.slave_ticket, "price": price,
                "deviation": 10, "magic": pos.magic, "comment": "partial",
-               "type_time": ORDER_TIME_GTC, "type_filling": ORDER_FILLING_RETURN}
+               "type_time": ORDER_TIME_GTC,
+               "type_filling": select_filling_mode(info.filling_mode)}
         res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
         if res.get("retcode") != TRADE_RETCODE_DONE:
             return _fail(res.get("retcode", -1), str(adapter.last_error()))
@@ -228,10 +230,13 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
         bid, ask = tick
         opposite = ORDER_TYPE_SELL if pos.side == BUY else ORDER_TYPE_BUY
         price = bid if pos.side == BUY else ask
+        info = adapter.symbol_info(pos.symbol)
+        filling = select_filling_mode(info.filling_mode) if info is not None \
+            else select_filling_mode(0)
         req = {"action": TRADE_ACTION_DEAL, "symbol": pos.symbol, "type": opposite,
                "volume": pos.volume, "position": cmd.slave_ticket, "price": price,
                "deviation": 10, "magic": pos.magic, "comment": "close",
-               "type_time": ORDER_TIME_GTC, "type_filling": ORDER_FILLING_RETURN}
+               "type_time": ORDER_TIME_GTC, "type_filling": filling}
         res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
         if res.get("retcode") != TRADE_RETCODE_DONE:
             return _fail(res.get("retcode", -1), str(adapter.last_error()))

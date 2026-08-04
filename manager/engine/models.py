@@ -64,3 +64,4 @@ class SymbolInfo:
     volume_step: float
     volume_min: float
     volume_max: float
+    filling_mode: int = 0  # MT5 bitmap: bit0=FOK, bit1=IOC; 0 -> RETURN fallback

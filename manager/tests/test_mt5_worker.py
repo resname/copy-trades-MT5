@@ -4,6 +4,9 @@ from manager.engine.models import Position, Record, SymbolInfo, BUY, SELL
 from manager.engine.linkage import magic_for, encode_comment, MAGIC_BASE
 from manager.ipc.messages import CommandMsg, SnapshotMsg, RecoveryMsg, SymbolInfoMsg, StatusMsg
 from manager.worker.mt5_adapter import FakeMt5
+from manager.worker.mt5_constants import (
+    ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN, select_filling_mode,
+)
 from manager.worker.mt5_worker import (
     build_snapshot, build_recovery_records, build_symbol_info_msg, slave_init,
     execute_command,
@@ -283,3 +286,52 @@ def test_slave_loop_reconfigure_re_emits_symbol_info_and_updates_normalize():
         parent.close()  # -> worker reads EOFError -> graceful return
         t.join(timeout=2.0)
         assert not t.is_alive(), "slave loop must exit when the pipe closes"
+
+
+# ---- filling-mode selection (was hardcoded ORDER_FILLING_RETURN -> 10030 on
+# symbols like WS30 that only allow FOK/IOC) ----
+
+def test_select_filling_mode_picks_supported_mode():
+    assert select_filling_mode(0b001) == ORDER_FILLING_FOK      # FOK only
+    assert select_filling_mode(0b010) == ORDER_FILLING_IOC      # IOC only
+    assert select_filling_mode(0b011) == ORDER_FILLING_FOK      # FOK+IOC -> FOK
+    assert select_filling_mode(0) == ORDER_FILLING_RETURN       # none -> RETURN
+
+
+def _adapter_filling(filling_mode):
+    si = SymbolInfo(point=0.00001, digits=5, tick_size=0.00001,
+                    volume_step=0.01, volume_min=0.01, volume_max=100.0,
+                    filling_mode=filling_mode)
+    return FakeMt5(
+        positions=[],
+        symbol_infos={"EURUSD": si},
+        account={"login": 123, "balance": 1000.0, "equity": 1000.0,
+                 "currency": "USD", "server": "Demo"},
+        ticks={"EURUSD": (1.10000, 1.10010)},
+    )
+
+
+def test_execute_open_uses_symbol_supported_filling_mode():
+    for fm, expected in [(0b011, ORDER_FILLING_FOK), (0b010, ORDER_FILLING_IOC),
+                         (0, ORDER_FILLING_RETURN)]:
+        mt = _adapter_filling(fm)
+        cmd = CommandMsg(slave_id="s1", action="OPEN", master_ticket=42,
+                         symbol="EURUSD", volume=0.10, sl=0.0, tp=0.0,
+                         master_open_price=1.10, side=BUY, magic=magic_for(42),
+                         comment=encode_comment(42, 0.50, 0.10))
+        ack = execute_command(mt, cmd, normalize_sltp=False, retry_count=1,
+                              retry_delay_ms=0)
+        assert ack.ok, f"filling_mode={fm}: ack not ok: {ack.error}"
+        assert mt.last_request["type_filling"] == expected, \
+            f"filling_mode={fm}: expected {expected}, got {mt.last_request['type_filling']}"
+
+
+def test_execute_close_uses_symbol_supported_filling_mode():
+    cmt = encode_comment(1, 0.50, 0.10)
+    mt = _adapter_filling(0b001)  # FOK only
+    mt.positions = [Position(777, "EURUSD", BUY, 1.10010, 0.10, 0, 0, 0,
+                              0.00001, comment=cmt)]
+    cmd = CommandMsg(slave_id="s1", action="CLOSE", master_ticket=1, slave_ticket=777)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.last_request["type_filling"] == ORDER_FILLING_FOK

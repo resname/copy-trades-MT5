@@ -40,6 +40,7 @@ class FakeMt5:
         self._order_seq = 500000
         self._last_error: tuple[int, str] = (0, "")
         self._connected = False
+        self.last_request: dict = {}
 
     def initialize(self, path, login=None, password=None, server=None,
                    portable=False):
@@ -72,6 +73,7 @@ class FakeMt5:
 
     def order_send(self, request: dict) -> dict:
         action = request["action"]
+        self.last_request = dict(request)  # test inspection (e.g. type_filling)
         # canned result overrides simulation
         if self._canned:
             res = self._canned.pop(0)
@@ -192,7 +194,8 @@ class RealMt5:
         return SymbolInfo(point=si.point, digits=si.digits,
                           tick_size=si.trade_tick_size,
                           volume_step=si.volume_step, volume_min=si.volume_min,
-                          volume_max=si.volume_max)
+                          volume_max=si.volume_max,
+                          filling_mode=getattr(si, "filling_mode", 0))
 
     def symbol_info_tick(self, symbol):
         mt5 = self._mod()
