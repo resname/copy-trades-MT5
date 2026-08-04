@@ -59,6 +59,7 @@ class Supervisor:
         self._handles: dict[str, WorkerHandle] = {}
         self._last_snapshot_ts = time_fn()
         self.heartbeat_warning = False
+        self._master_first_snapshot_seen = False
         self.errors: list[str] = []
         self._stop = threading.Event()
         self._thread = None
@@ -68,10 +69,19 @@ class Supervisor:
     def spawn_master(self, config, adapter_kind="real", fake_state=None):
         self._handles["master"] = self._spawn("master", "master", config,
                                                adapter_kind, fake_state)
+        self._reset_master_heartbeat()
 
     def spawn_slave(self, slave_id, config, adapter_kind="real", fake_state=None):
         self._handles[slave_id] = self._spawn(slave_id, "slave", config,
                                               adapter_kind, fake_state)
+
+    def _reset_master_heartbeat(self) -> None:
+        """Start a fresh heartbeat grace window: the master gets up to
+        STARTUP_GRACE_SECONDS to produce its first SnapshotMsg before 'no
+        heartbeat' fires. Called on initial spawn and on every master restart."""
+        self._last_snapshot_ts = self._time_fn()
+        self._master_first_snapshot_seen = False
+        self.heartbeat_warning = False
 
     def slave_ready(self, slave_id) -> bool:
         """A slave is ready once it has reported BOTH SymbolInfoMsg and its
@@ -197,6 +207,7 @@ class Supervisor:
             h.first_msg_seen = True
             if isinstance(msg, SnapshotMsg):
                 self._last_snapshot_ts = self._time_fn()
+                self._master_first_snapshot_seen = True
                 self.heartbeat_warning = False
                 snap = Snapshot(timestamp=msg.timestamp, heartbeat=msg.heartbeat,
                                 positions=msg.positions)
@@ -211,7 +222,9 @@ class Supervisor:
                     h.fatal = True
                 self._surface_error("master", f"master: {msg.message}")
             return True
-        if self._time_fn() - self._last_snapshot_ts > self._heartbeat_seconds * 2:
+        hb = (self._startup_grace_seconds if not self._master_first_snapshot_seen
+              else self._heartbeat_seconds * 2)
+        if self._time_fn() - self._last_snapshot_ts > hb:
             if not self.heartbeat_warning:
                 self.heartbeat_warning = True
                 self._surface_error("master", "no heartbeat from master")
@@ -316,6 +329,8 @@ class Supervisor:
         new_h.restart_count = new_count
         new_h.next_restart_at = new_next
         self._handles[name] = new_h
+        if h.role == "master":
+            self._reset_master_heartbeat()
         if self.on_restart:
             self.on_restart(name, h.role)
 

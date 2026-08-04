@@ -1,8 +1,11 @@
 # manager/tests/test_supervisor_readiness.py
 import time
+import multiprocessing
 
 from manager.engine.models import SymbolInfo, BUY, Position
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
+from manager.ipc.messages import SnapshotMsg
+from manager.ipc.pipe_framing import send_msg
 from manager.supervisor import Supervisor, WorkerHandle
 
 SI = SymbolInfo(point=0.00001, digits=5, tick_size=0.00001,
@@ -279,3 +282,92 @@ def test_stale_grace_falls_back_to_stale_seconds_after_first_message():
         "after first message, stale_seconds applies, not the grace window"
     sup._health_check()  # 2nd consecutive -> restart
     assert spawned, "silent-while-talking worker must be restarted fast"
+
+
+def test_heartbeat_grace_suppresses_warning_then_fires_after_grace():
+    """After spawn_master, no snapshot within heartbeat_seconds*2 (10s) must
+    NOT fire 'no heartbeat' while inside the grace window (30s here); it
+    MUST fire once the grace window elapses. Uses an open empty pipe so
+    _read_master reaches the heartbeat check (poll returns False)."""
+    clock = _FakeNow(0.0)
+    eng = _engine()
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=1000.0,
+                     consecutive_failures=5, startup_grace_seconds=30.0,
+                     poll_timeout=0.0, time_fn=clock)
+    errors = []
+    sup.on_error = lambda name, msg: errors.append((name, msg))
+    parent, child = multiprocessing.Pipe(duplex=True)  # peer alive, no data
+
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
+        return WorkerHandle(name=name, role=role, proc=_StubProc(),
+                            pipe=parent, config=config,
+                            adapter_kind=adapter_kind,
+                            fake_state=fake_state, last_msg_ts=clock.t)
+    sup._spawn = fake_spawn
+    try:
+        sup.spawn_master({"terminal_path": "C:/t/m.exe", "master_interval_ms": 20})
+        assert sup._master_first_snapshot_seen is False
+        # 12s: past steady-state heartbeat threshold (10s) but inside grace (30s)
+        clock.t = 12.0
+        sup._read_master(0.0)
+        assert sup.heartbeat_warning is False
+        assert not any("no heartbeat" in m for _, m in errors)
+        # 31s: past the grace window -> warning fires
+        clock.t = 31.0
+        sup._read_master(0.0)
+        assert sup.heartbeat_warning is True
+        assert any("no heartbeat" in m for _, m in errors)
+    finally:
+        parent.close()
+        child.close()
+
+
+def test_heartbeat_grace_resets_on_master_restart():
+    """After a master restart, the warning is suppressed again for the grace
+    window even though a prior snapshot had been seen: _restart(master)
+    resets _master_first_snapshot_seen / heartbeat_warning / _last_snapshot_ts."""
+    clock = _FakeNow(0.0)
+    eng = _engine()
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=1000.0,
+                     consecutive_failures=5, startup_grace_seconds=30.0,
+                     poll_timeout=0.0, time_fn=clock)
+    sup.on_error = lambda name, msg: None
+    pipes = []
+
+    def fake_spawn(name, role, config, adapter_kind, fake_state):
+        p, c = multiprocessing.Pipe(duplex=True)  # fresh empty pipe per spawn
+        pipes.append((p, c))
+        return WorkerHandle(name=name, role=role, proc=_StubProc(),
+                            pipe=p, config=config,
+                            adapter_kind=adapter_kind,
+                            fake_state=fake_state, last_msg_ts=clock.t)
+    sup._spawn = fake_spawn
+    try:
+        sup.spawn_master({"terminal_path": "C:/t/m.exe", "master_interval_ms": 20})
+        # first master produces a snapshot at t=0 -> first_snapshot_seen=True
+        send_msg(pipes[0][1], SnapshotMsg(source_id="master", timestamp=0,
+                                          heartbeat=1, positions=()))
+        sup._read_master(0.0)
+        assert sup._master_first_snapshot_seen is True
+        # master goes silent past 10s -> warning fires (steady-state threshold)
+        clock.t = 11.0
+        sup._read_master(0.0)
+        assert sup.heartbeat_warning is True
+        # restart the master at t=11 -> grace window resets
+        sup._restart("master")
+        assert sup._master_first_snapshot_seen is False
+        assert sup.heartbeat_warning is False
+        # 20s: 9s after restart, inside the new grace window -> no warning
+        clock.t = 20.0
+        sup._read_master(0.0)
+        assert sup.heartbeat_warning is False
+    finally:
+        for p, c in pipes:
+            try:
+                p.close()
+            except Exception:
+                pass
+            try:
+                c.close()
+            except Exception:
+                pass
