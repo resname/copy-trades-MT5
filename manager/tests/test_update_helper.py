@@ -25,6 +25,7 @@ def _make_wheel(path, name="copy-trades-mt5-manager", version="0.1.11"):
 
 def test_main_waits_for_parent_then_reinstalls_then_relaunches(monkeypatch, tmp_path):
     seq = []
+    monkeypatch.setattr(update_helper, "_can_show_window", lambda: False)
     monkeypatch.setattr(update_helper, "_pid_exists", lambda pid: pid != 12345)
     monkeypatch.setattr(update_helper, "_reinstall",
                         lambda wheel: seq.append(("install", wheel)) or 0)
@@ -37,6 +38,7 @@ def test_main_waits_for_parent_then_reinstalls_then_relaunches(monkeypatch, tmp_
 
 def test_main_does_not_reinstall_until_parent_gone(monkeypatch):
     alive = {"v": True}
+    monkeypatch.setattr(update_helper, "_can_show_window", lambda: False)
     seq = []
     def fake_pid(pid):
         return alive["v"]
@@ -51,15 +53,20 @@ def test_main_does_not_reinstall_until_parent_gone(monkeypatch):
     assert seq == [("install", "C:/w.whl"), ("relaunch",)]
 
 
-def test_main_skips_relaunch_when_pip_fails(monkeypatch):
+def test_main_relaunches_previous_version_when_pip_fails(monkeypatch):
+    """Regression: when pip reinstall fails, the manager has already quit. The
+    helper must relaunch the (previous) manager anyway so the user is never
+    left with no app running, and return 0 (handled). The failure detail lives
+    in update.log and (when a display is available) the progress window."""
+    monkeypatch.setattr(update_helper, "_can_show_window", lambda: False)
     monkeypatch.setattr(update_helper, "_pid_exists", lambda pid: False)
     monkeypatch.setattr(update_helper, "_reinstall", lambda wheel: 1)
     relaunched = []
     monkeypatch.setattr(update_helper, "_relaunch", lambda: relaunched.append(1))
     monkeypatch.setattr(update_helper, "_log", lambda m: None)
     rc = update_helper.main(["C:/w.whl", "1"])
-    assert rc == 1
-    assert relaunched == []
+    assert rc == 0
+    assert relaunched == [1]
 
 
 def test_main_missing_args(monkeypatch):
@@ -167,3 +174,13 @@ def test_reinstall_cleans_up_temp_copy(monkeypatch, tmp_path):
                             "d", os.path.dirname(cmd[-1])) or _run_ok(cmd, **k))
     update_helper._reinstall(str(w))
     assert not os.path.exists(seen["d"]), "temp copy dir should be removed after install"
+
+
+def test_read_wheel_metadata_returns_name_and_version(tmp_path):
+    """_read_wheel_metadata is shared by _valid_wheel_name (PEP 427 filename)
+    and the progress window's 'Installing v{version}…' label."""
+    w = _make_wheel(tmp_path / "manager-latest.whl",
+                    name="copy-trades-mt5-manager", version="0.1.42")
+    name, version = update_helper._read_wheel_metadata(str(w))
+    assert name == "copy-trades-mt5-manager"
+    assert version == "0.1.42"

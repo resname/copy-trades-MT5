@@ -8,11 +8,13 @@ overwritten by pip.
 from __future__ import annotations
 
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -77,6 +79,17 @@ def _wait_for_parent(parent_pid: int, timeout_s: float = 60.0) -> None:
         time.sleep(0.25)
 
 
+def _read_wheel_metadata(wheel: str) -> tuple[str, str]:
+    """Read (Name, Version) from the wheel's dist-info/METADATA. Shared by
+    _valid_wheel_name (PEP 427 filename) and the progress window label."""
+    with zipfile.ZipFile(wheel) as z:
+        meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+        text = z.read(meta).decode("utf-8", "replace")
+    name = re.search(r"^Name:\s*(.+)$", text, re.M).group(1).strip()
+    ver = re.search(r"^Version:\s*(.+)$", text, re.M).group(1).strip()
+    return name, ver
+
+
 def _valid_wheel_name(wheel: str) -> str:
     """Build a valid PEP 427 wheel filename from the wheel's own METADATA.
 
@@ -88,11 +101,7 @@ def _valid_wheel_name(wheel: str) -> str:
     update. A valid name built from the wheel's Name+Version (and its
     py3-none-any tag) makes pip accept it.
     """
-    with zipfile.ZipFile(wheel) as z:
-        meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
-        text = z.read(meta).decode("utf-8", "replace")
-    name = re.search(r"^Name:\s*(.+)$", text, re.M).group(1).strip()
-    ver = re.search(r"^Version:\s*(.+)$", text, re.M).group(1).strip()
+    name, ver = _read_wheel_metadata(wheel)
     dist = re.sub(r"[^A-Za-z0-9.]+", "_", name)
     return f"{dist}-{ver}-py3-none-any.whl"
 
@@ -139,6 +148,83 @@ def _relaunch() -> None:
     subprocess.Popen([sys.executable, "-m", "manager"], **kwargs)
 
 
+def _can_show_window() -> bool:
+    """True only if tkinter is importable. The actual Tk root creation is
+    additionally guarded inside _run_update_with_window so a missing display
+    degrades to the headless path."""
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _run_update_with_window(wheel: str, parent_pid: int) -> int:
+    """Show an indeterminate progress window while waiting for the parent and
+    reinstalling. The work runs in a thread so the bar keeps animating; the
+    worker posts its result through a queue that the main thread polls via
+    root.after (tkinter is not thread-safe — only the main thread touches Tk).
+    Returns the pip rc; relaunch is handled by the caller (main) on BOTH
+    success and failure. Falls back to headless on any tkinter/Tk error."""
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+        root = tk.Tk()           # raises TclError if there is no display
+    except Exception:
+        _wait_for_parent(parent_pid)
+        return _reinstall(wheel)
+    try:
+        try:
+            _, version = _read_wheel_metadata(wheel)
+        except Exception:
+            version = ""
+        root.title("CopyTrades MT5 — Updating")
+        root.resizable(False, False)
+        label = tk.Label(root, text=f"Installing update v{version}…",
+                         padx=24, pady=18)
+        label.pack()
+        bar = ttk.Progressbar(root, mode="indeterminate", length=260)
+        bar.pack(padx=24, pady=(0, 18))
+        bar.start(12)
+
+        done_q: queue.Queue = queue.Queue()
+
+        def _work():
+            try:
+                _wait_for_parent(parent_pid)
+                rc = _reinstall(wheel)
+            except Exception:
+                rc = 1
+            done_q.put(rc)
+
+        def _poll():
+            try:
+                rc = done_q.get_nowait()
+            except queue.Empty:
+                root.after(100, _poll)
+                return
+            bar.stop()
+            if rc == 0:
+                label.config(text="Update installed — restarting…")
+            else:
+                label.config(text="Update failed — see update.log\n"
+                                  "Relaunching previous version…")
+            root.after(800, root.quit)
+
+        threading.Thread(target=_work, daemon=True).start()
+        root.after(100, _poll)
+        root.mainloop()
+        try:
+            return done_q.get_nowait()
+        except queue.Empty:
+            return 0
+    finally:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if len(args) < 2:
@@ -147,13 +233,16 @@ def main(argv: list[str] | None = None) -> int:
     wheel = args[0]
     parent_pid = int(args[1])
     _log(f"update_helper start: wheel={wheel} parent={parent_pid}")
-    _wait_for_parent(parent_pid)
-    _log("parent gone; reinstalling")
-    rc = _reinstall(wheel)
+    if _can_show_window():
+        rc = _run_update_with_window(wheel, parent_pid)
+    else:
+        _wait_for_parent(parent_pid)
+        _log("parent gone; reinstalling")
+        rc = _reinstall(wheel)
     if rc != 0:
-        _log(f"pip install failed rc={rc}; not relaunching")
-        return rc
-    _log("pip install ok; relaunching manager")
+        _log(f"pip install failed rc={rc}; relaunching previous version")
+    else:
+        _log("pip install ok; relaunching manager")
     _relaunch()
     _log("relaunch spawned; helper exit")
     return 0
