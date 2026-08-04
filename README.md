@@ -67,8 +67,16 @@ For the full run-through, see [Usage](#usage). For demo setup, see
   position (so a partial close on the master closes the same fraction on the
   slave regardless of lot differences).
 - **Symbol mapping** — trade `US30` on the master → open `WS30` on a slave.
-- **Lot sizing** per slave — configurable balance step amount/size and a max
-  lot cap; volumes rounded down to the symbol's lot step.
+- **Lot sizing** per slave — choose a mode per slave:
+  - **Balance step (lots step)** — `floor(slave_balance / step_amount) * step_size`,
+    rounded down to the symbol's lot step, clamped to its min/max. Optionally set
+    a **Master base lot size** (the master's usual lot, e.g. 0.1): when a specific
+    master trade is *smaller* than the base, the slave opens a proportionally
+    smaller position (still snapped to lot steps); larger trades are not scaled up.
+  - **Copy master lot** — the slave mirrors the master's lot per trade (snapped to
+    the symbol's lot step, clamped to its min/max).
+  - **Fixed lot** — the slave opens one configured lot size for every trade.
+  All modes cap at the per-slave **max lot**.
 - **Auto-find MT5 instances** — discovers installed terminals via `origin.txt`
   and the default Program Files locations.
 - **Manual-login, terminal-path-only setup** — you log in to each MT5 terminal
@@ -181,7 +189,8 @@ same update from the command line.
    no login/server/password entered in the manager). **Algo Trading must be
    enabled on every terminal** (see Quick Start step 3) or Start is blocked.
 4. **Slaves**: click **Add slave** to open the slave editor — select each
-   slave's terminal, and set the per-slave symbol map / lot-sizing /
+   slave's terminal, and set the per-slave symbol map / lot-sizing mode
+   (balance step with optional master base lot, copy master lot, or fixed lot) /
    normalization options. Add as many slaves as you need (one terminal each).
 5. **Start**: the manager assigns terminals, spawns one worker per slave,
    waits for every slave to report ready (SymbolInfo + first status), then
