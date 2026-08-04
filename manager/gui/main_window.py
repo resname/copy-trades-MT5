@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel, QGroupBox,
+    QProgressBar,
 )
 
 from manager.app.controller import AccountSpec, StatusUpdate
@@ -26,6 +27,24 @@ class _UpdateWorker(QThread):
 
     def run(self):
         self.done.emit(self._fn())
+
+
+class _DownloadWorker(QThread):
+    """Runs updater.download_update(progress=cb) off the GUI thread; emits
+    progress(bytes_done, bytes_total) during the download and done(wheel) on
+    completion (wheel is a Path on success, None on failure)."""
+    done = Signal(object)
+    progress = Signal(int, int)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self):
+        self.done.emit(self._fn(self._emit))
+
+    def _emit(self, done, total):
+        self.progress.emit(done, total)
 
 
 class MainWindow(QMainWindow):
@@ -117,6 +136,9 @@ class MainWindow(QMainWindow):
         self.check_update_button = QPushButton("Check for updates")
         self.update_restart_button = QPushButton("Update & restart")
         self.update_restart_button.setVisible(False)
+        self.update_progress = QProgressBar()
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setVisible(False)
         updates_row = QHBoxLayout()
         updates_row.addWidget(self.update_label, 1)
         updates_row.addWidget(self.check_update_button)
@@ -133,6 +155,7 @@ class MainWindow(QMainWindow):
         root.addWidget(slave_box)
         root.addLayout(controls)
         root.addLayout(updates_row)
+        root.addWidget(self.update_progress)
         root.addWidget(QLabel("Status"))
         root.addWidget(self.status_view)
         root.addWidget(QLabel("Log"))
@@ -213,6 +236,14 @@ class MainWindow(QMainWindow):
     def set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
+        # Sync controllers that expose a set_running hook (test doubles) so
+        # _apply_update_button_state reads the post-stop state when set_running
+        # is called directly. Production CopyController has no set_running
+        # (state tracked via start/stop), so this is a no-op there.
+        _ctrl_set_running = getattr(self._controller, "set_running", None)
+        if _ctrl_set_running is not None:
+            _ctrl_set_running(running)
+        self._apply_update_button_state()
 
     # ---- updates ----
     def check_for_updates_now(self) -> None:
@@ -227,33 +258,60 @@ class MainWindow(QMainWindow):
         if info.latest is None and not info.available:
             self.update_label.setText("Couldn't check for updates")
             self.update_restart_button.setVisible(False)
+            self.update_progress.setVisible(False)
             return
         if info.available:
             self._latest_version = info.latest
-            self.update_label.setText(f"Update available: v{info.latest}")
+            self.update_label.setText(f"Update available: v{info.latest} — downloading…")
             self.update_restart_button.setVisible(True)
-            self.update_restart_button.setEnabled(not self._controller.is_running())
-            self._predownload_worker = _UpdateWorker(self._do_predownload, self)
+            self.update_restart_button.setEnabled(False)  # greyed until ready
+            self.update_progress.setRange(0, 100)
+            self.update_progress.setValue(0)
+            self.update_progress.setVisible(True)
+            self._predownload_worker = _DownloadWorker(self._do_predownload, self)
+            self._predownload_worker.progress.connect(self._on_download_progress)
             self._predownload_worker.done.connect(self._on_predownload_done)
             self._predownload_worker.start()
         else:
             self.update_label.setText(f"Up to date (v{info.current})")
             self.update_restart_button.setVisible(False)
+            self.update_progress.setVisible(False)
 
-    def _do_predownload(self):
+    def _do_predownload(self, progress_cb=None):
         from manager import updater
         try:
-            return updater.download_update()
+            return updater.download_update(progress=progress_cb)
         except Exception:
             return None
 
+    def _on_download_progress(self, done: int, total: int) -> None:
+        if total < 0:
+            self.update_progress.setRange(0, 0)  # indeterminate
+        else:
+            self.update_progress.setRange(0, 100)
+            pct = 0 if total == 0 else min(100, done * 100 // total)
+            self.update_progress.setValue(pct)
+
+    def _apply_update_button_state(self) -> None:
+        """Enable Update & restart only when a verified wheel is cached AND
+        the manager is idle. Called on download-done, on update-checked, and
+        from set_running (so stopping a copy job re-enables a ready update)."""
+        self.update_restart_button.setEnabled(
+            self._cached_wheel is not None
+            and not self._controller.is_running())
+
     def _on_predownload_done(self, wheel) -> None:
         self._predownload_worker = None
+        self.update_progress.setVisible(False)
         if wheel is None or self._latest_version is None:
+            self._cached_wheel = None
+            self.update_label.setText("Update download failed — click Check to retry")
+            self.update_restart_button.setEnabled(False)
             return
         self._cached_wheel = wheel
         self.update_label.setText(
-            f"Update available: v{self._latest_version} (ready — restart in seconds)")
+            f"Update ready: v{self._latest_version} — restart in seconds")
+        self._apply_update_button_state()
 
     def _on_update_restart(self) -> None:
         if self._controller.is_running():

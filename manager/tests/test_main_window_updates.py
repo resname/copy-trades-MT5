@@ -2,6 +2,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from pathlib import Path
 from manager.updater import UpdateInfo
 
 
@@ -11,6 +12,11 @@ class FakeController:
         self.stopped = []
     def is_running(self):
         return self._running
+    def set_running(self, running):
+        # Mirror the UI running state so _apply_update_button_state (which
+        # reads is_running()) sees the post-stop state when the test calls
+        # w.set_running(False) directly (without a prior controller.stop()).
+        self._running = running
     def stop(self):
         self.stopped.append(True)
     def discover_instances(self):
@@ -41,6 +47,21 @@ class _NoThreadUpdateWorker:
         pass  # no real thread, no network I/O
 
 
+class _NoThreadDownloadWorker:
+    """Test double for manager.gui.main_window._DownloadWorker. The real
+    worker runs updater.download_update(progress=cb) on a QThread (a real
+    network download); tests only check label/button/bar state, so this
+    no-op worker avoids leaking a running thread and network I/O. Its
+    done/progress signals are never emitted, so _on_predownload_done is never
+    called (button stays disabled = the 'still downloading' state)."""
+    done = _StubSignal()
+    progress = _StubSignal()
+    def __init__(self, fn, parent=None):
+        self._fn = fn
+    def start(self):
+        pass
+
+
 def test_update_ui_exists(qapp):
     from manager.gui.main_window import MainWindow
     w = MainWindow(FakeController())
@@ -48,19 +69,24 @@ def test_update_ui_exists(qapp):
     assert w.update_restart_button.isVisibleTo(w) is False
 
 
-def test_update_available_enables_restart_only_when_idle(qapp, monkeypatch):
+def test_update_available_disables_restart_until_downloaded(qapp, monkeypatch):
     from manager.gui.main_window import MainWindow
     monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
     w = MainWindow(FakeController(running=False))
     w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
     assert "0.1.2" in w.update_label.text()
     assert w.update_restart_button.isVisibleTo(w) is True
-    assert w.update_restart_button.isEnabled() is True
+    # greyed out until the predownloaded wheel is verified ready
+    assert w.update_restart_button.isEnabled() is False
+    # the progress bar is shown while the download is in progress
+    assert w.update_progress.isVisibleTo(w) is True
 
 
 def test_update_available_disables_restart_while_running(qapp, monkeypatch):
     from manager.gui.main_window import MainWindow
     monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
     w = MainWindow(FakeController(running=True))
     w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
     assert w.update_restart_button.isEnabled() is False
@@ -79,6 +105,57 @@ def test_check_failed_label(qapp):
     w = MainWindow(FakeController())
     w._on_update_checked(UpdateInfo(available=False, current="0.1.1", latest=None))
     assert "couldn't" in w.update_label.text().lower()
+
+
+def test_update_ready_enables_restart_when_idle(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    w = MainWindow(FakeController(running=False))
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
+    assert w.update_restart_button.isEnabled() is False
+    # simulate the predownload finishing with a verified wheel
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))
+    assert w.update_restart_button.isEnabled() is True
+    # the bar hides once the wheel is ready
+    assert w.update_progress.isVisibleTo(w) is False
+
+
+def test_ready_update_stays_disabled_while_running_and_enables_on_stop(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    w = MainWindow(FakeController(running=True))
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))  # wheel ready
+    assert w.update_restart_button.isEnabled() is False  # still copying
+    w.set_running(False)  # stop copying
+    assert w.update_restart_button.isEnabled() is True
+
+
+def test_download_progress_updates_bar(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    w = MainWindow(FakeController(running=False))
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
+    w._on_download_progress(50, 200)   # 50 of 200 bytes -> 25%
+    assert w.update_progress.maximum() == 100
+    assert w.update_progress.value() == 25
+    w._on_download_progress(0, -1)     # unknown total -> indeterminate
+    assert w.update_progress.maximum() == 0  # setRange(0,0) makes max 0
+
+
+def test_predownload_failure_keeps_button_disabled(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    w = MainWindow(FakeController(running=False))
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
+    w._on_predownload_done(None)  # download/verify failed
+    assert w.update_restart_button.isEnabled() is False
+    assert "failed" in w.update_label.text().lower()
+    assert w.update_progress.isVisibleTo(w) is False
 
 
 def test_update_restart_calls_updater_and_quits(qapp, monkeypatch):
