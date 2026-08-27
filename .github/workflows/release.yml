@@ -26,6 +26,7 @@ jobs:
         run: python -m pytest -q
 
       - name: Set version
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
@@ -37,11 +38,13 @@ jobs:
           echo "BUILD_VERSION=$VER" >> "$GITHUB_ENV"
 
       - name: Build wheel
+        if: github.ref_type == 'tag'
         run: |
           pip install build
           python -m build --wheel
 
       - name: Stage release assets (stable names)
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: |
           $whl = Get-ChildItem dist\*.whl | Select-Object -First 1
@@ -52,6 +55,7 @@ jobs:
           Copy-Item scripts/install.ps1 dist\install.ps1
 
       - name: Create release
+        if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,6 +66,7 @@ jobs:
             --notes "Auto-built release v$BUILD_VERSION from $GITHUB_SHA"
 
       - name: install.ps1 smoke (best-effort)
+        if: github.ref_type == 'tag'
         continue-on-error: true
         shell: pwsh
         run: |
