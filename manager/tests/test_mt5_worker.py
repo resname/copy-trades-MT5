@@ -196,6 +196,21 @@ def test_execute_partial_close_noop_when_target_meets_current():
     assert ack.remaining_volume == pytest.approx(0.06, abs=1e-8)
 
 
+def test_execute_partial_close_float_epsilon_keeps_full_step():
+    # delta 0.58 - 0.29 sits epsilon below 29 steps (0.29/0.01 =
+    # 28.999999999999996 in IEEE-754); a naive floor closes 0.28 and leaves
+    # the slave 0.01 overweight -- same float bug class as the lot-sizer
+    cmt = encode_comment(1, 1.0, 0.58)
+    mt = _adapter(positions=[Position(777, "EURUSD", BUY, 1.10010, 0.58, 0, 0, 0,
+                                      0.00001, comment=cmt)])
+    cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
+                     slave_ticket=777, new_master_volume=0.5,
+                     master_open_volume=1.0, slave_open_volume=0.58)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert ack.remaining_volume == pytest.approx(0.29, abs=1e-8)
+
+
 # ---- execute_command: CLOSE ----
 
 def test_execute_close_removes_position():

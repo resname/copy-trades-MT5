@@ -58,7 +58,9 @@ def _snap_clamp(lots: float, lot_step: float, min_lot: float,
     Returns 0.0 if lot_step <= 0 (cannot snap). Shared tail for every mode."""
     if lot_step <= 0.0:
         return 0.0
-    lots = math.floor(lots / lot_step) * lot_step
+    # +1e-9: a quotient sitting epsilon below its grid multiple (0.29/0.01 =
+    # 28.999999999999996 in IEEE-754) is on the grid, not a step below it.
+    lots = math.floor(lots / lot_step + 1e-9) * lot_step
     lots = max(lots, min_lot)
     lots = min(lots, max_lot_symbol)
     lots = min(lots, max_lot)
@@ -84,7 +86,9 @@ def calculate_slave_lot(mode: str, master_volume: float, balance: float,
     if mode == SIZING_BALANCE_STEP:
         if step_amount <= 0.0 or step_size <= 0.0:
             return 0.0
-        raw = math.floor(balance / step_amount) * step_size
+        # +1e-9: same float-epsilon guard as _snap_clamp — a balance sitting
+        # 1-ulp below a step multiple (float P/L accumulation) is on the step
+        raw = math.floor(balance / step_amount + 1e-9) * step_size
         if master_base_lot > 0.0 and master_volume < master_base_lot:
             raw *= master_volume / master_base_lot
         return _snap_clamp(raw, lot_step, min_lot, max_lot, max_lot_symbol)

@@ -103,6 +103,17 @@ def test_snap_clamp_invalid_lot_step_returns_zero():
     assert _snap_clamp(0.5, 0.0, 0.01, 10, 100) == 0.0
 
 
+def test_snap_clamp_float_epsilon_keeps_exact_grid_value():
+    # 0.29 / 0.01 = 28.999999999999996 in IEEE-754; a naive floor drops a full
+    # lot step (0.1.23 field bug: balance >= 2900 computed 0.29, copied 0.28)
+    assert _snap_clamp(0.29, 0.01, 0.01, 10, 100) == 0.29
+
+
+def test_snap_clamp_still_floors_genuinely_off_grid():
+    # epsilon tolerance must not round a true sub-step value up
+    assert _snap_clamp(0.2999, 0.01, 0.01, 10, 100) == 0.29
+
+
 def test_calculate_slave_lot_balance_step_no_base_equals_calculate_lots():
     # master_base_lot=0 -> disabled -> identical to legacy calculate_lots
     assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.5, 1000, 100, 0.01,
@@ -155,6 +166,19 @@ def test_calculate_slave_lot_fixed_lot_invalid_returns_zero():
 def test_calculate_slave_lot_balance_step_invalid_step_returns_zero():
     assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.5, 1000, 0, 0.01,
                                0.0, 0.01, 10, 0.01, 0.01, 100) == 0.0
+
+
+def test_calculate_slave_lot_balance_step_boundary_balance():
+    # field repro: balance 2917.94 -> 29 steps -> 0.29 lot; float noise in the
+    # snap grid must not drop it to 0.28 (seen live on 0.1.23)
+    assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.1, 2917.94, 100, 0.01,
+                               0.1, 0.01, 100, 0.01, 0.01, 100) == 0.29
+
+
+def test_calculate_lots_balance_float_epsilon_below_multiple():
+    # balance accumulated to 1-ulp below 2900 (float P/L sums) still counts
+    # as 29 steps, matching the terminal's displayed 2900.00
+    assert calculate_lots(2900 - 1e-9, 100, 0.01, 10, 0.01, 0.01, 100) == 0.29
 
 
 def test_calculate_slave_lot_unknown_mode_returns_zero():

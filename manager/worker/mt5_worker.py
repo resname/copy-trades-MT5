@@ -192,7 +192,9 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
         current = pos.volume
         fraction = cmd.new_master_volume / cmd.master_open_volume
         target = cmd.slave_open_volume * fraction
-        vol_to_close = math.floor((current - target) / info.volume_step) * info.volume_step
+        # +1e-9: float-epsilon guard (same as _snap_clamp) -- a delta sitting
+        # epsilon below N steps is N steps; naive floor short-closes or skips
+        vol_to_close = math.floor((current - target) / info.volume_step + 1e-9) * info.volume_step
         vol_to_close = min(vol_to_close, current)
         if vol_to_close <= 0.0:
             return AckMsg(slave_id=cmd.slave_id, action="PARTIAL_CLOSE",
