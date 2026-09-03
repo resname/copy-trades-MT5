@@ -108,6 +108,17 @@ def test_build_symbol_info_msg_reports_mapped_slave_symbols():
     assert msg.infos["EURUSD"].volume_step == 0.01
 
 
+def test_build_symbol_info_reply_names_requested_and_confirms_missing():
+    # regex rows like '(.+)\\.m=$1' derive slave names at trade time; the
+    # reply names every requested symbol so the engine can settle its inflight
+    # request (absent symbols are confirmed missing on the terminal)
+    from manager.worker.mt5_worker import build_symbol_info_reply
+    msg = build_symbol_info_reply(_adapter(), "s1", ["EURUSD", "WS30"])
+    assert isinstance(msg, SymbolInfoMsg)
+    assert set(msg.infos.keys()) == {"EURUSD"}  # WS30 not on this terminal
+    assert msg.requested == ["EURUSD", "WS30"]
+
+
 # ---- slave_init ----
 
 def test_slave_init_emits_recovery_symbolinfo_status():
@@ -335,6 +346,55 @@ def test_slave_loop_reconfigure_re_emits_symbol_info_and_updates_normalize():
         assert pos.sl == 1.09400 and pos.tp == 1.10600  # raw, not normalized
     finally:
         parent.close()  # -> worker reads EOFError -> graceful return
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "slave loop must exit when the pipe closes"
+
+
+def test_slave_loop_symbol_info_request_replies_with_requested():
+    """On SymbolInfoRequestMsg the slave loop replies with a SymbolInfoMsg
+    naming the requested symbols (absent ones confirmed missing) — the reply
+    that releases the engine's held NEW for regex-derived slave symbols."""
+    import multiprocessing
+    import threading
+    from manager.ipc.messages import (
+        RecoveryMsg, SymbolInfoMsg, StatusMsg, SymbolInfoRequestMsg,
+    )
+    from manager.ipc.pipe_framing import send_msg, recv_msg
+    from manager.worker.mt5_worker import _slave_loop
+
+    mt = FakeMt5(
+        symbol_infos={"EURUSD": SI, "GBPUSD": SI},
+        account={"login": 2, "balance": 1000.0, "equity": 1000.0,
+                 "currency": "USD", "server": "Demo"},
+    )
+    cfg = {"slave_id": "s1", "symbol_map_csv": "(.+)\\.m=$1",
+           "normalize_sltp": True, "retry_count": 1, "retry_delay_ms": 0,
+           "slave_status_interval_ms": 60000}
+
+    parent, child = multiprocessing.Pipe(duplex=True)
+    t = threading.Thread(target=_slave_loop, args=(child, mt, cfg), daemon=True)
+    t.start()
+
+    def _recv(timeout=5.0):
+        assert parent.poll(timeout), "worker did not reply in time"
+        return recv_msg(parent)
+
+    try:
+        # drain init: RecoveryMsg, SymbolInfoMsg (empty: map value '$1' is a
+        # template, not a symbol), StatusMsg
+        init = [_recv() for _ in range(3)]
+        assert isinstance(init[0], RecoveryMsg)
+        assert isinstance(init[1], SymbolInfoMsg) and init[1].infos == {}
+        assert isinstance(init[2], StatusMsg)
+
+        send_msg(parent, SymbolInfoRequestMsg(source_id="s1",
+                                               symbols=["EURUSD", "WS30"]))
+        reply = _recv()
+        assert isinstance(reply, SymbolInfoMsg)
+        assert set(reply.infos.keys()) == {"EURUSD"}
+        assert reply.requested == ["EURUSD", "WS30"]
+    finally:
+        parent.close()
         t.join(timeout=2.0)
         assert not t.is_alive(), "slave loop must exit when the pipe closes"
 

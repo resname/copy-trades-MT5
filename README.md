@@ -67,6 +67,9 @@ For the full run-through, see [Usage](#usage). For demo setup, see
   position (so a partial close on the master closes the same fraction on the
   slave regardless of lot differences).
 - **Symbol mapping** — trade `US30` on the master → open `WS30` on a slave.
+  Master entries can be **regular expressions** with optional `$1`–`$9`
+  group substitution in the slave name (see
+  [Symbol map: regex support](#symbol-map-regex-support)).
 - **Lot sizing** per slave — choose a mode per slave:
   - **Balance step (lots step)** — `floor(slave_balance / step_amount) * step_size`,
     rounded down to the symbol's lot step, clamped to its min/max. Optionally set
@@ -214,6 +217,78 @@ same update from the command line.
 
 For a full manual demo run-through (demo accounts only), see
 [`docs/smoke-test.md`](docs/smoke-test.md).
+
+---
+
+## Symbol map: regex support
+
+Each row of the slave editor's symbol map is `master=slave`. The master
+side may be a **regular expression**; the slave side may reference the
+pattern's captured groups with `$1`–`$9` (`$$` = a literal `$`).
+
+### How a master symbol is resolved
+
+Rows are checked in this order:
+
+1. **Exact match** — a row whose master entry equals the symbol
+   character-for-character always wins first, so old maps behave exactly as
+   before.
+2. **Regex rows, top to bottom** — each master entry is tried as a pattern
+   with a *full-match* rule: the entire master symbol must match the pattern.
+   The first row that matches wins; the slave entry has `$1`–`$9` substituted
+   with the captured groups.
+3. **Same-name fallback** — if no row matched, the master symbol itself is
+   used when it also exists on the slave terminal.
+
+A row that cannot work as a regex falls back to exact matching only — an
+entry that fails to compile (e.g. an unclosed `(`), or a slave entry
+referencing a group the pattern never captured (e.g. `AB=$1` on a pattern
+with no `(...)`), simply behaves like a plain literal pair. Nothing crashes,
+no existing config changes meaning.
+
+For regex rows the slave symbol is only known once a master symbol arrives,
+so its lot-step/tick-size info is fetched on demand: the first trade on such
+a symbol is held for a moment while the manager asks the slave terminal,
+then copied — you may see the copy land a second or two after the master
+trade. If the slave terminal answers that the derived symbol doesn't exist,
+the trade is skipped and the symbol is remembered as missing.
+
+### Regex syntax
+
+Python `re` patterns are supported. The pieces that matter for symbol names:
+
+| Syntax | Meaning | Example pattern | Matches |
+|---|---|---|---|
+| `.` | any single character | `US30.` | `US30.a`, `US30x` |
+| `*` | 0+ of the previous item | `ABC.*` | `ABC`, `ABC2026` |
+| `+` | 1+ of the previous item | `ABC\d+` | `ABC2026` |
+| `?` | 0/1 of the previous item | `US30.?` | `US30`, `US30A` |
+| `\d` `\w` `\s` | digit / word char / space | `ABC\d+` | `ABC2026` |
+| `[...]` | one char from a set | `US[35]0` | `US30`, `US50` |
+| `(...)` | capture group (usable as `$1`) | `(.+)\.m` | `EURUSD.m` (captures `EURUSD`) |
+| `a\|b` | either alternative | `US30\|US_30` | `US30` or `US_30` |
+| `\.` `\|` etc. | literal `.` \| etc. | `US30\.a` | `US30.a` exactly |
+
+Matching is **case-sensitive** and requires the **whole** symbol to match
+(`fullmatch`, not substring search): `ABC` alone does not match `ABC2026` —
+write `ABC.*` or `ABC\d+`.
+
+### Examples
+
+| Map row | Effect |
+|---|---|
+| `US_30=WS30` | Plain literal row (unchanged behavior): master `US_30` → slave `WS30`. |
+| `ABC\d+=US30` | Any `ABC` + digits symbol (`ABC2026`, `ABC9`) fans in to one fixed slave symbol `US30`. |
+| `US30.*=WS30` | `US30`, `US30.a`, `US30.pro` all → `WS30`. |
+| `(.+)\.m=$1` | Master `EURUSD.m` → slave `EURUSD`; one row handles every `.m`-suffixed symbol. |
+| `US(\d+)#US$1` | Master `US30` → slave `#US30`; `USTEC` → `#USTEC`. |
+| `US30\|US_30=WS30` | Either master spelling → `WS30`. |
+| `ABC(=US30` | Invalid regex → falls back to an exact pair: only the literal symbol `ABC(` maps to `US30`. |
+
+Limitations: the row separator is the first `=` — a literal `=` **inside**
+the pattern can't be expressed (write it as `\x3d`, e.g. `US30\x3dA=WS30`),
+and `,` separates rows, so a literal comma in a pattern must be written
+`\x2c`.
 
 ---
 

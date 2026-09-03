@@ -78,6 +78,46 @@ def test_end_to_end_open_through_subprocesses():
         sup.shutdown()
 
 
+def test_end_to_end_regex_mapped_open_with_on_demand_symbol_info():
+    """A regex row '(.+)\\.m=$1' derives the slave symbol at trade time, so the
+    worker's bulk map report contains no info for it. The flow must be: NEW
+    held -> supervisor sends SymbolInfoRequestMsg -> worker replies with the
+    derived symbol's info -> held NEW re-derived and OPENed."""
+    eng = CopyEngine()
+    eng.add_slave(SlaveConfig(slave_id="s1", symbol_map_csv="(.+)\\.m=$1",
+                              step_amount=100.0, step_size=0.01, max_lot=10.0,
+                              max_trade_age_minutes=999999, normalize_sltp=True))
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
+                     consecutive_failures=3, poll_timeout=0.02)
+    master_state = {
+        "positions": [Position(42, "EURUSD.m", BUY, 1.10000, 0.5, 1.095, 1.105,
+                               NOW, 0.00001, "")],
+        "symbol_infos": {"EURUSD.m": SI},
+        "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                    "currency": "USD", "server": "Demo"}}
+    # slave config carries the same regex map: its bulk report (built from the
+    # map's literal '$1' value) reports nothing, forcing the on-demand path
+    slave_cfg = dict(_slave_cfg(), symbol_map_csv="(.+)\\.m=$1")
+    sup.spawn_slave("s1", slave_cfg, adapter_kind="fake",
+                    fake_state=_slave_state())
+    # no map-literal infos to wait for; wait for the slave's first StatusMsg
+    _tick_until(sup, lambda: eng._slaves["s1"].balance > 0)
+    sup.spawn_master({"terminal_path": "C:/t/m.exe", "master_interval_ms": 20},
+                     adapter_kind="fake", fake_state=master_state)
+    try:
+        ok = _tick_until(
+            sup,
+            lambda: eng._slaves["s1"].table.get(42) is not None
+            and eng._slaves["s1"].table.get(42).slave_ticket != 0)
+        assert ok, "regex-mapped OPEN did not flow end-to-end"
+        rec = eng._slaves["s1"].table.get(42)
+        assert rec.slave_open_volume == 0.10
+        # the info was fetched on demand, not from the bulk map report
+        assert "EURUSD" in eng._slaves["s1"].symbol_infos
+    finally:
+        sup.shutdown()
+
+
 def test_restart_on_process_death():
     eng = _engine()
     sup = Supervisor(eng, stale_seconds=1000, consecutive_failures=5,

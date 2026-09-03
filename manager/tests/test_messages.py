@@ -121,3 +121,32 @@ def test_reconfigure_msg_round_trips_through_encode_decode():
     assert back.source_id == "s1"
     assert back.symbol_map_csv == "EURUSD=GBPUSD"
     assert back.normalize_sltp is False
+
+
+def test_symbol_info_request_round_trips_through_encode_decode():
+    msg = M.SymbolInfoRequestMsg(source_id="s1", symbols=["EURUSD", "WS30"])
+    d = M.encode(msg)
+    assert d["_kind"] == "symbol_info_request"
+    assert d["source_id"] == "s1"
+    assert d["symbols"] == ["EURUSD", "WS30"]
+    back = M.decode(d)
+    assert isinstance(back, M.SymbolInfoRequestMsg)
+    assert back.source_id == "s1"
+    assert back.symbols == ["EURUSD", "WS30"]
+
+
+def test_symbol_info_round_trip_carries_requested():
+    # a reply to SymbolInfoRequestMsg names the requested symbols so the
+    # engine can distinguish it from a bulk map report; requested symbols
+    # absent from infos are confirmed missing on the slave terminal
+    msg = M.SymbolInfoMsg(source_id="s1", infos={"EURUSD": _si()},
+                         requested=["EURUSD", "WS30"])
+    d = M.encode(msg)
+    assert d["requested"] == ["EURUSD", "WS30"]
+    back = M.decode(d)
+    assert isinstance(back, M.SymbolInfoMsg)
+    assert back.requested == ["EURUSD", "WS30"]
+    assert isinstance(back.infos["EURUSD"], SymbolInfo)
+    # default: bulk map report carries no requested list
+    bulk = M.SymbolInfoMsg(source_id="s1", infos={"EURUSD": _si()})
+    assert M.decode(M.encode(bulk)).requested == []

@@ -39,6 +39,64 @@ def test_resolve_explicit_overrides_fallback():
     assert mapper.resolve("EURUSD") == "EURUSD_Z"
 
 
+def test_resolve_regex_row_matches():
+    # the user's ABC case: any ABC+digit symbol fans in to one fixed slave
+    mapper = SymbolMapper("ABC\\d+=US30", exists_check=lambda s: False)
+    assert mapper.resolve("ABC2026") == "US30"
+
+
+def test_resolve_regex_is_fullmatch_not_search():
+    # the whole master symbol must match: a bare 'ABC' must not catch ABC2026
+    mapper = SymbolMapper("ABC=US30", exists_check=lambda s: False)
+    assert mapper.resolve("ABC2026") == ""
+
+
+def test_resolve_regex_backref_expands_group():
+    # $1 substitutes the first captured group
+    mapper = SymbolMapper("(.+)\\.m=$1", exists_check=lambda s: False)
+    assert mapper.resolve("EURUSD.m") == "EURUSD"
+
+
+def test_resolve_exact_row_beats_regex_row():
+    # exact entries keep priority: old configs behave identically
+    mapper = SymbolMapper("US30=WS30,US\\d+=WS99", exists_check=lambda s: False)
+    assert mapper.resolve("US30") == "WS30"
+    assert mapper.resolve("US99") == "WS99"
+
+
+def test_resolve_regex_row_beats_same_name_fallback():
+    mapper = SymbolMapper("ABC\\d+=US30",
+                         exists_check=lambda s: s == "ABC2026")
+    assert mapper.resolve("ABC2026") == "US30"
+
+
+def test_resolve_first_regex_row_wins():
+    # rows are tried in map order; first match wins
+    mapper = SymbolMapper("ABC\\d+=US30,ABC\\d\\d=WS99",
+                          exists_check=lambda s: False)
+    assert mapper.resolve("ABC2026") == "US30"
+
+
+def test_resolve_invalid_regex_falls_back_to_exact():
+    # 'ABC(' does not compile; the row must still work as a literal pair
+    mapper = SymbolMapper("ABC(=US30", exists_check=lambda s: False)
+    assert mapper.resolve("ABC(") == "US30"
+    assert mapper.resolve("ABC2026") == ""
+
+
+def test_resolve_backref_without_group_falls_back_to_exact():
+    # template references a group the pattern never captures -> exact-only row
+    mapper = SymbolMapper("AB=$1", exists_check=lambda s: False)
+    assert mapper.resolve("AB") == "$1"
+    assert mapper.resolve("ABX") == ""
+
+
+def test_resolve_template_dollar_dollar_is_literal():
+    # $$ escapes a literal dollar sign
+    mapper = SymbolMapper("ABC\\d+=US$$1", exists_check=lambda s: False)
+    assert mapper.resolve("ABC2026") == "US$1"
+
+
 from manager.engine.transform import calculate_lots
 
 

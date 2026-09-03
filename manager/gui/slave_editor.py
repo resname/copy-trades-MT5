@@ -42,7 +42,8 @@ class SlaveEditor(QDialog):
         root.addLayout(form)
 
         self.symbol_table = QTableWidget(0, 2)
-        self.symbol_table.setHorizontalHeaderLabels(["Master symbol", "Slave symbol"])
+        self.symbol_table.setHorizontalHeaderLabels(
+            ["Master symbol (regex)", "Slave symbol"])
         self.symbol_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch)
         root.addWidget(self.symbol_table)

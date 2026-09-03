@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 
 from manager.engine.models import Position, Record, SymbolInfo
 
@@ -88,6 +88,10 @@ class StatusMsg:
 class SymbolInfoMsg:
     source_id: str
     infos: dict[str, SymbolInfo]   # slave_symbol -> info
+    # non-empty when this is a reply to SymbolInfoRequestMsg: the requested
+    # symbols this reply answers. Requested symbols absent from infos are
+    # confirmed missing on the slave terminal. Empty for bulk map reports.
+    requested: list[str] = field(default_factory=list)
     KIND = "symbol_info"
 
 
@@ -160,11 +164,25 @@ class ReconfigureMsg:
     KIND = "reconfigure"
 
 
+@dataclass(frozen=True)
+class SymbolInfoRequestMsg:
+    """Manager -> slave: on-demand SymbolInfo for regex-mapped slave symbols.
+    Only knowable at trade time (e.g. '(.+)\\.m=$1' derives the slave name from
+    the master symbol), so the manager requests info when a NEW resolves to a
+    slave symbol the pre-reported map infos don't cover. The worker replies
+    with a SymbolInfoMsg containing only the requested symbols; a requested
+    symbol absent from the reply means it does not exist on the slave."""
+    source_id: str
+    symbols: list[str]
+    KIND = "symbol_info_request"
+
+
 _REGISTRY = {
     "start": StartMsg,
     "snapshot": SnapshotMsg,
     "status": StatusMsg,
     "symbol_info": SymbolInfoMsg,
+    "symbol_info_request": SymbolInfoRequestMsg,
     "recovery": RecoveryMsg,
     "command": CommandMsg,
     "ack": AckMsg,
@@ -182,7 +200,8 @@ def encode(msg) -> dict:
                 "positions": [_position_to_dict(p) for p in msg.positions]}
     if kind == "symbol_info":
         return {"_kind": kind, "source_id": msg.source_id,
-                "infos": {k: _symbol_info_to_dict(v) for k, v in msg.infos.items()}}
+                "infos": {k: _symbol_info_to_dict(v) for k, v in msg.infos.items()},
+                "requested": list(msg.requested)}
     if kind == "recovery":
         return {"_kind": kind, "source_id": msg.source_id,
                 "records": [_record_to_dict(r) for r in msg.records]}
@@ -209,7 +228,8 @@ def decode(d: dict):
     if kind == "symbol_info":
         return SymbolInfoMsg(
             source_id=d["source_id"],
-            infos={k: _symbol_info_from_dict(v) for k, v in d["infos"].items()})
+            infos={k: _symbol_info_from_dict(v) for k, v in d["infos"].items()},
+            requested=list(d.get("requested", [])))
     if kind == "recovery":
         return RecoveryMsg(
             source_id=d["source_id"],

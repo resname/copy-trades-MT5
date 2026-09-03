@@ -79,9 +79,78 @@ def test_new_unmapped_symbol_is_skipped():
 
 
 def test_new_without_symbol_info_is_skipped():
+    # no info yet AND the worker's reply confirms the symbol is missing ->
+    # skip (regex-mapped symbols are held until a reply arrives; see below)
+    eng = _engine()  # no symbol info applied
+    eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)  # NEW held awaiting info
+    eng.pop_symbol_info_requests()
+    cmds = eng.apply_symbol_info("s1", {}, requested=["EURUSD"])
+    assert cmds == []
+    # a fresh NEW on the confirmed-missing symbol skips immediately, no re-request
+    cmds2 = eng.ingest_snapshot(_snap([_pos(43)]), now=NOW)["s1"]
+    assert cmds2 == []
+    assert eng.pop_symbol_info_requests() == {}
+
+
+def test_new_missing_info_holds_and_requests_symbol():
     eng = _engine()  # no symbol info applied
     cmds = eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)["s1"]
-    assert cmds == []
+    assert cmds == []  # held, not skipped: info may arrive (regex-mapped symbol)
+    assert eng.pop_symbol_info_requests() == {"s1": ["EURUSD"]}
+    # the hold coalesces later events for the ticket; no duplicate request
+    cmds2 = eng.ingest_snapshot(
+        _snap([_pos(42, sl=1.09000, tp=1.11000)]), now=NOW)["s1"]
+    assert cmds2 == []
+    assert eng.pop_symbol_info_requests() == {}
+
+
+def test_symbol_info_reply_reemits_held_new():
+    eng = _engine()
+    eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)  # NEW held awaiting info
+    assert eng.pop_symbol_info_requests() == {"s1": ["EURUSD"]}
+    cmds = eng.apply_symbol_info("s1", {"EURUSD": SI}, requested=["EURUSD"])
+    assert len(cmds) == 1 and cmds[0].action == "OPEN"
+    assert cmds[0].symbol == "EURUSD" and cmds[0].master_ticket == 42
+    # outbox stays empty: the request was answered
+    assert eng.pop_symbol_info_requests() == {}
+
+
+def test_held_new_master_closes_before_reply_not_opened():
+    eng = _engine()
+    eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)  # NEW held awaiting info
+    eng.pop_symbol_info_requests()
+    # master closes before the reply: CLOSE coalesces over the held NEW
+    eng.ingest_snapshot(_snap([]), now=NOW)
+    cmds = eng.apply_symbol_info("s1", {"EURUSD": SI}, requested=["EURUSD"])
+    assert cmds == []  # CLOSE derives to None (no record) -> dropped
+    assert eng._slaves["s1"].table.has(42) is False
+
+
+def test_bulk_symbol_info_does_not_confirm_missing():
+    eng = _engine()
+    eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)  # held, EURUSD request inflight
+    eng.pop_symbol_info_requests()
+    # a bulk map report (e.g. after reconfigure) must NOT settle the inflight
+    # request: only a reply naming the requested symbol may
+    eng.apply_symbol_info("s1", {"GBPUSD": SI})
+    cmds = eng.ingest_snapshot(_snap([_pos(42), _pos(43)]), now=NOW)["s1"]
+    assert cmds == []  # NEW 43 held; EURUSD still inflight
+    assert eng.pop_symbol_info_requests() == {}  # no duplicate request
+    # the actual reply arrives later and releases both held NEWs
+    cmds2 = eng.apply_symbol_info("s1", {"EURUSD": SI}, requested=["EURUSD"])
+    assert len(cmds2) == 2  # tickets 42 and 43 both OPEN
+
+
+def test_reset_slave_clears_inflight_info_request():
+    eng = _engine()
+    eng.ingest_snapshot(_snap([_pos(42)]), now=NOW)  # held, request inflight
+    eng.pop_symbol_info_requests()
+    eng.reset_slave("s1")  # worker restart: the in-flight reply never comes
+    # fresh worker's bulk map report must not be treated as the missing reply
+    eng.apply_symbol_info("s1", {"EURUSD": SI})
+    cmds = eng.ingest_snapshot(
+        _snap([_pos(43, volume=0.2)]), now=NOW)["s1"]  # CLOSE 42 (dropped) + NEW 43
+    assert len(cmds) == 1 and cmds[0].action == "OPEN" and cmds[0].master_ticket == 43
 
 
 def test_modify_emits_modify_with_slave_ticket_and_raw_sltp():

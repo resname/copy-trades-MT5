@@ -56,6 +56,14 @@ def test_slave_editor_symbol_table_round_trips_into_csv(qapp):
     assert "EURUSD=EURUSD" in spec.symbol_map_csv
 
 
+def test_slave_editor_master_column_header_advertises_regex(qapp):
+    # the master column accepts regex patterns; the header must say so
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController())
+    assert dlg.symbol_table.horizontalHeaderItem(0).text() == "Master symbol (regex)"
+    assert dlg.symbol_table.horizontalHeaderItem(1).text() == "Slave symbol"
+
+
 def test_slave_editor_launch_button_runs_terminal64_exe(qapp, monkeypatch):
     from manager.gui.slave_editor import SlaveEditor
     dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))

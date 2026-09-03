@@ -13,7 +13,7 @@ from manager.engine.transform import (
 )
 from manager.ipc.messages import (
     AckMsg, ErrorMsg, SnapshotMsg, StatusMsg, SymbolInfoMsg, RecoveryMsg,
-    ReconfigureMsg,
+    ReconfigureMsg, SymbolInfoRequestMsg,
 )
 from manager.ipc.pipe_framing import send_msg, recv_msg
 from manager.worker.mt5_adapter import FakeMt5, RealMt5
@@ -69,6 +69,21 @@ def build_symbol_info_msg(adapter, slave_id: str, symbol_map_csv: str) -> Symbol
         if info is not None:
             infos[slave_symbol] = info
     return SymbolInfoMsg(source_id=slave_id, infos=infos)
+
+
+def build_symbol_info_reply(adapter, slave_id: str,
+                            symbols: list[str]) -> SymbolInfoMsg:
+    """Answer a SymbolInfoRequestMsg: report info for each requested symbol,
+    naming them all in `requested` so the manager can settle its inflight
+    request. Requested symbols absent from `infos` are confirmed missing on
+    this terminal (the manager skips their held NEWs instead of re-asking)."""
+    infos: dict[str, object] = {}
+    for symbol in symbols:
+        info = adapter.symbol_info(symbol)
+        if info is not None:
+            infos[symbol] = info
+    return SymbolInfoMsg(source_id=slave_id, infos=infos,
+                         requested=list(symbols))
 
 
 def _status(adapter, source_id: str, role: str, connected: bool) -> StatusMsg:
@@ -290,6 +305,17 @@ def _slave_loop(pipe, adapter, config):
                 try:
                     send_msg(pipe, build_symbol_info_msg(adapter, slave_id,
                                                          symbol_map_csv))
+                except (EOFError, OSError):
+                    return  # manager gone
+                last_status = time.time()
+                continue
+            if isinstance(cmd, SymbolInfoRequestMsg):
+                # On-demand info for regex-derived slave symbols: the reply
+                # names every requested symbol so the manager settles its
+                # request (absent = confirmed missing). No ack.
+                try:
+                    send_msg(pipe, build_symbol_info_reply(adapter, slave_id,
+                                                           cmd.symbols))
                 except (EOFError, OSError):
                     return  # manager gone
                 last_status = time.time()

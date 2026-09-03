@@ -34,12 +34,23 @@ class SlaveState:
     mapper: SymbolMapper
     pending: set[int] = field(default_factory=set)
     held: dict[int, Event] = field(default_factory=dict)
+    info_inflight: set[str] = field(default_factory=set)
+    confirmed_missing: set[str] = field(default_factory=set)
 
 
-def derive_command(state: SlaveState, event: Event, now: int) -> CommandMsg | None:
-    """Derive the command a slave should execute for one diff event, or None to
-    skip. Pure: no I/O, no mutation. The slave normalizes SL/TP + computes
-    partial volume, so OPEN/MODIFY carry RAW master sl/tp + master_open_price."""
+@dataclass(frozen=True)
+class _AwaitInfo:
+    """derive_command's signal that a NEW resolved to a slave symbol with no
+    SymbolInfo yet: the engine holds the event and requests the info (regex
+    rows like '(.+)\\.m=$1' derive slave names only at trade time)."""
+    slave_symbol: str
+
+
+def derive_command(state: SlaveState, event: Event, now: int) -> CommandMsg | _AwaitInfo | None:
+    """Derive the command a slave should execute for one diff event, _AwaitInfo
+    to hold the event until symbol info arrives, or None to skip. Pure: no I/O,
+    no mutation. The slave normalizes SL/TP + computes partial volume, so
+    OPEN/MODIFY carry RAW master sl/tp + master_open_price."""
     pos = event.position
     ticket = pos.ticket
     cfg = state.config
@@ -54,7 +65,9 @@ def derive_command(state: SlaveState, event: Event, now: int) -> CommandMsg | No
             return None
         info = state.symbol_infos.get(slave_symbol)
         if info is None:
-            return None
+            if slave_symbol in state.confirmed_missing:
+                return None  # worker said this symbol doesn't exist
+            return _AwaitInfo(slave_symbol)
         lots = calculate_slave_lot(cfg.sizing_mode, pos.volume, state.balance,
                                    cfg.step_amount, cfg.step_size,
                                    cfg.master_base_lot, cfg.fixed_lot,
@@ -106,6 +119,7 @@ class CopyEngine:
         self._slaves: dict[str, SlaveState] = {}
         self._prev: list[Position] = []
         self._last_now: int = 0
+        self._info_requests: dict[str, set[str]] = {}
 
     def add_slave(self, config: SlaveConfig) -> None:
         state = SlaveState(config=config, table=RecordTable(), symbol_infos={},
@@ -114,8 +128,31 @@ class CopyEngine:
                                     lambda s: s in state.symbol_infos)
         self._slaves[config.slave_id] = state
 
-    def apply_symbol_info(self, slave_id: str, infos: dict[str, SymbolInfo]) -> None:
-        self._slaves[slave_id].symbol_infos.update(infos)
+    def pop_symbol_info_requests(self) -> dict[str, list[str]]:
+        """Drain the queue of slave symbols needing on-demand SymbolInfo (built
+        up by ingest_snapshot). The caller sends one SymbolInfoRequestMsg per
+        slave; each request is queued at most once while its reply is inflight."""
+        out = {sid: sorted(syms) for sid, syms in self._info_requests.items()
+               if syms}
+        self._info_requests.clear()
+        return out
+
+    def apply_symbol_info(self, slave_id: str, infos: dict[str, SymbolInfo],
+                         requested: list[str] | None = None) -> list[CommandMsg]:
+        """Merge reported symbol infos. A reply to our request (`requested`
+        non-empty) also settles the inflight request: requested symbols absent
+        from the reply are confirmed missing on the slave terminal, and held
+        events are re-derived. A bulk map report (`requested` empty) only
+        merges infos. Returns commands re-derived from held events."""
+        state = self._slaves[slave_id]
+        state.symbol_infos.update(infos)
+        if not requested:
+            return []
+        for sym in requested:
+            state.info_inflight.discard(sym)
+            if sym not in infos:
+                state.confirmed_missing.add(sym)
+        return self._rederive_held(state)
 
     def apply_status(self, slave_id: str, status: StatusMsg) -> None:
         self._slaves[slave_id].balance = status.balance
@@ -126,11 +163,13 @@ class CopyEngine:
     def reset_slave(self, slave_id: str) -> None:
         """Clear a slave's table/pending/held on worker restart so recovery
         re-seeds cleanly (no duplicated trades). Symbol info is kept (the slave
-        re-sends it)."""
+        re-sends it); inflight info requests are dropped (their replies died
+        with the old worker process)."""
         state = self._slaves[slave_id]
         state.table = RecordTable()
         state.pending.clear()
         state.held.clear()
+        state.info_inflight.clear()
 
     def update_slave_config(self, slave_id: str, *, step_amount: float,
                             step_size: float, max_lot: float,
@@ -180,10 +219,21 @@ class CopyEngine:
     def _handle_event(self, state: SlaveState, event: Event,
                       now: int) -> CommandMsg | None:
         ticket = event.position.ticket
-        if ticket in state.pending:
-            state.held[ticket] = event  # coalesce to latest event; re-derive on ack
+        if ticket in state.pending or ticket in state.held:
+            state.held[ticket] = event  # coalesce to latest; re-derive when unblocked
             return None
+        return self._rederive(state, ticket, event, now=now)
+
+    def _rederive(self, state: SlaveState, ticket: int, event: Event,
+                  *, now: int) -> CommandMsg | None:
+        """Derive the event into a command and mark it pending, or park it in
+        held/_AwaitInfo. The single derive-and-bookkeep path for fresh events
+        and re-derives after an ack or an info reply."""
         cmd = derive_command(state, event, now)
+        if isinstance(cmd, _AwaitInfo):
+            state.held[ticket] = event
+            self._queue_info_request(state, cmd.slave_symbol)
+            return None
         if cmd is None:
             if (event.kind == "CLOSE" and state.table.has(ticket)
                     and state.table.get(ticket).slave_ticket == 0):
@@ -195,6 +245,29 @@ class CopyEngine:
                                    cmd.volume))
         state.pending.add(ticket)
         return cmd
+
+    def _queue_info_request(self, state: SlaveState, slave_symbol: str) -> None:
+        """Queue an on-demand SymbolInfo request for a regex-resolved slave
+        symbol, unless one is already inflight or the symbol is known missing."""
+        if (slave_symbol in state.info_inflight
+                or slave_symbol in state.confirmed_missing):
+            return
+        state.info_inflight.add(slave_symbol)
+        self._info_requests.setdefault(state.config.slave_id, set()).add(
+            slave_symbol)
+
+    def _rederive_held(self, state: SlaveState) -> list[CommandMsg]:
+        """Re-derive every held event that is not still awaiting an ack. Used
+        when a symbol-info reply unblocks NEW events."""
+        cmds: list[CommandMsg] = []
+        for ticket in list(state.held):
+            if ticket in state.pending:
+                continue
+            event = state.held.pop(ticket)
+            cmd = self._rederive(state, ticket, event, now=self._last_now)
+            if cmd is not None:
+                cmds.append(cmd)
+        return cmds
 
     def apply_ack(self, slave_id: str, ack: AckMsg) -> list[CommandMsg]:
         state = self._slaves[slave_id]
@@ -213,11 +286,5 @@ class CopyEngine:
         held_event = state.held.pop(ticket, None)
         if held_event is None:
             return []
-        cmd = derive_command(state, held_event, self._last_now)
-        if cmd is None:
-            if (held_event.kind == "CLOSE" and state.table.has(ticket)
-                    and state.table.get(ticket).slave_ticket == 0):
-                state.table.remove(ticket)
-            return []
-        state.pending.add(ticket)
-        return [cmd]
+        cmd = self._rederive(state, ticket, held_event, now=self._last_now)
+        return [cmd] if cmd is not None else []

@@ -9,7 +9,7 @@ from manager.engine.copy_loop import CopyEngine
 from manager.engine.models import Snapshot
 from manager.ipc.messages import (
     AckMsg, StatusMsg, SnapshotMsg, RecoveryMsg, SymbolInfoMsg, ErrorMsg,
-    ReconfigureMsg, StartMsg,
+    ReconfigureMsg, StartMsg, SymbolInfoRequestMsg,
 )
 from manager.ipc.pipe_framing import send_msg, recv_msg
 from manager.worker.mt5_worker import worker_main
@@ -207,7 +207,9 @@ class Supervisor:
         elif isinstance(msg, RecoveryMsg):
             self._engine.apply_recovery(slave_id, msg.records)
         elif isinstance(msg, SymbolInfoMsg):
-            self._engine.apply_symbol_info(slave_id, msg.infos)
+            for cmd in self._engine.apply_symbol_info(slave_id, msg.infos,
+                                                      msg.requested):
+                self._send(slave_id, cmd)
         elif isinstance(msg, ErrorMsg):
             if msg.fatal and h is not None:
                 h.fatal = True
@@ -256,6 +258,11 @@ class Supervisor:
                 for slave_id, clist in cmds.items():
                     for cmd in clist:
                         self._send(slave_id, cmd)
+                # on-demand SymbolInfo for symbols held NEWs are waiting on
+                # (regex rows like '(.+)\.m=$1' derive slave names at trade time)
+                for sid, symbols in self._engine.pop_symbol_info_requests().items():
+                    self._send(sid, SymbolInfoRequestMsg(source_id=sid,
+                                                          symbols=symbols))
             elif isinstance(msg, StatusMsg):
                 h.got_status = True
                 h.trade_allowed = msg.trade_allowed

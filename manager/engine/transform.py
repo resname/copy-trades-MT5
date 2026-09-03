@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Callable
 
 from manager.engine.models import BUY
@@ -27,23 +28,77 @@ def parse_symbol_map(map_csv: str) -> dict[str, str]:
 class SymbolMapper:
     """Resolves a master symbol to the slave symbol to trade.
 
+    Map rows are tried in three tiers, in order:
+    1. exact match on the master entry (legacy rows behave identically),
+    2. regex rows in map order: the master entry is a pattern matched with
+       re.fullmatch (the whole symbol must match); the slave entry is a
+       template where $1..$9 substitute captured groups and $$ a literal $,
+    3. same name if it exists on the slave terminal.
+
     exists_check(symbol) -> bool reports whether a symbol exists on the slave
     terminal (bound to mt5.symbol_info in production; a set/lambda in tests).
+
+    A row that cannot work as a regex (master entry does not compile, or the
+    template references a group the pattern never captures) falls back to
+    exact-match only, so no existing config changes behavior.
     """
 
     def __init__(self, map_csv: str, exists_check: Callable[[str], bool]) -> None:
         self._map = parse_symbol_map(map_csv)
         self._exists_check = exists_check
+        self._regex_rules: list[tuple[re.Pattern, str]] = []
+        for master, slave in self._map.items():
+            try:
+                pattern = re.compile(master)
+            except re.error:
+                continue  # exact-only row
+            template = _expand_template(slave, pattern.groups)
+            if template is None:
+                continue  # exact-only row
+            self._regex_rules.append((pattern, template))
 
     def resolve(self, master_symbol: str) -> str:
-        # 1. explicit mapping
+        # 1. exact mapping
         if master_symbol in self._map:
             return self._map[master_symbol]
-        # 2. fallback to same name if it exists on the slave
+        # 2. regex rows, first fullmatch wins
+        for pattern, template in self._regex_rules:
+            match = pattern.fullmatch(master_symbol)
+            if match is not None:
+                return match.expand(template)
+        # 3. fallback to same name if it exists on the slave
         if self._exists_check(master_symbol):
             return master_symbol
-        # 3. not found
+        # 4. not found
         return ""
+
+
+def _expand_template(slave: str, ngroups: int) -> str | None:
+    """Translate a slave entry into a Match.expand template: $1..$9 become
+    backreferences, $$ a literal $. Returns None (row falls back to exact-only)
+    when a referenced group exceeds the pattern's group count. Backslashes are
+    escaped so a literal \\ in a symbol name survives expansion."""
+    parts: list[str] = []
+    i = 0
+    while i < len(slave):
+        ch = slave[i]
+        if ch == "\\":
+            parts.append("\\\\")
+            i += 1
+        elif ch == "$" and i + 1 < len(slave) and slave[i + 1] == "$":
+            parts.append("$")
+            i += 2
+        elif (ch == "$" and i + 1 < len(slave)
+              and slave[i + 1].isdigit() and slave[i + 1] != "0"):
+            n = int(slave[i + 1])
+            if n > ngroups:
+                return None
+            parts.append(f"\\g<{n}>")
+            i += 2
+        else:
+            parts.append(ch)
+            i += 1
+    return "".join(parts)
 
 
 SIZING_BALANCE_STEP = "balance_step"
