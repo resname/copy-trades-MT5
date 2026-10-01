@@ -115,6 +115,25 @@ def _valid_wheel_copy(wheel: str) -> str:
     return dst
 
 
+def _ensure_ib_async() -> None:
+    # The wheel install uses --no-deps by design (shiboken6's locked
+    # msvcp140.dll fails a full --force-reinstall), so it never brings
+    # ib_async in. Older installs don't have it; a missing ib_async breaks
+    # every IB slave after an update, so install it explicitly. Never fatal:
+    # a machine without IB slaves must not have updates broken by this.
+    _log("ensuring ib_async")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade",
+             "ib_async==2.1.0"],
+            capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            _log(f"ib_async install rc={proc.returncode}")
+            _log(f"pip stderr:\n{proc.stderr}")
+    except Exception as exc:
+        _log(f"ib_async install error: {exc}")
+
+
 def _reinstall(wheel: str) -> int:
     # pip rejects the stable cache name (manager-latest.whl) as an invalid
     # wheel filename; install from a valid-named copy instead, and clean up
@@ -136,6 +155,8 @@ def _reinstall(wheel: str) -> int:
             _log(f"pip install failed rc={proc.returncode}")
             _log(f"pip stdout:\n{proc.stdout}")
             _log(f"pip stderr:\n{proc.stderr}")
+        else:
+            _ensure_ib_async()
         return proc.returncode
     finally:
         shutil.rmtree(os.path.dirname(valid), ignore_errors=True)

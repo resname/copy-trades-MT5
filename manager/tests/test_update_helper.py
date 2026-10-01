@@ -103,10 +103,13 @@ def test_reinstall_passes_valid_wheel_filename_to_pip(monkeypatch, tmp_path):
     captured = {}
 
     def fake_run(cmd, **k):
-        captured["cmd"] = cmd
-        # capture the copy's bytes now -- _reinstall removes the temp dir in
-        # its `finally` right after this returns
-        captured["wheel_bytes"] = Path(cmd[-1]).read_bytes()
+        # record only the wheel command -- the helper installs ib_async in a
+        # second pip call after the wheel succeeds
+        if os.path.basename(cmd[-1]).endswith(".whl"):
+            captured["cmd"] = cmd
+            # capture the copy's bytes now -- _reinstall removes the temp dir
+            # in its `finally` right after this returns
+            captured["wheel_bytes"] = Path(cmd[-1]).read_bytes()
         return _run_ok(cmd, **k)
 
     monkeypatch.setattr(update_helper.subprocess, "run", fake_run)
@@ -128,15 +131,16 @@ def test_reinstall_uses_no_deps_so_pip_skips_locked_dependency_dlls(monkeypatch,
     manager wheel is pure Python (py3-none-any); only it needs reinstalling, so
     _reinstall must pass --no-deps to pip."""
     w = _make_wheel(tmp_path / "manager-latest.whl")
-    captured = {}
+    seen_cmds: list[list[str]] = []
 
     def fake_run(cmd, **k):
-        captured["cmd"] = cmd
+        seen_cmds.append(list(cmd))
         return _run_ok(cmd, **k)
 
     monkeypatch.setattr(update_helper.subprocess, "run", fake_run)
     update_helper._reinstall(str(w))
-    assert "--no-deps" in captured["cmd"], \
+    wheel_cmds = [c for c in seen_cmds if c[-1].endswith(".whl")]
+    assert any("--no-deps" in c for c in wheel_cmds), \
         "_reinstall must pass --no-deps so pip skips reinstalling locked deps"
 
 
@@ -169,9 +173,13 @@ def test_reinstall_cleans_up_temp_copy(monkeypatch, tmp_path):
     repeated updates don't accumulate copies in temp."""
     w = _make_wheel(tmp_path / "manager-latest.whl")
     seen = {}
-    monkeypatch.setattr(update_helper.subprocess, "run",
-                        lambda cmd, **k: seen.__setitem__(
-                            "d", os.path.dirname(cmd[-1])) or _run_ok(cmd, **k))
+
+    def fake_run(cmd, **k):
+        if cmd[-1].endswith(".whl"):
+            seen["d"] = os.path.dirname(cmd[-1])
+        return _run_ok(cmd, **k)
+
+    monkeypatch.setattr(update_helper.subprocess, "run", fake_run)
     update_helper._reinstall(str(w))
     assert not os.path.exists(seen["d"]), "temp copy dir should be removed after install"
 
@@ -184,3 +192,24 @@ def test_read_wheel_metadata_returns_name_and_version(tmp_path):
     name, version = update_helper._read_wheel_metadata(str(w))
     assert name == "copy-trades-mt5-manager"
     assert version == "0.1.42"
+
+
+def test_reinstall_ensures_ib_async_after_wheel(tmp_path, monkeypatch):
+    """The helper's post-wheel install names the IB dependency: without it,
+    an in-app update (which installs with --no-deps) wipes ib_async and every
+    IB slave loses its connection on next Start."""
+    w = _make_wheel(tmp_path / "manager-latest.whl")   # the real cache shape
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(update_helper.subprocess, "run",
+                        lambda cmd, **k: cmds.append(list(cmd)) or _run_ok(cmd))
+    monkeypatch.setattr(update_helper, "_log", lambda _m: None)
+    rc = update_helper._reinstall(str(w))
+    assert rc == 0
+    ib = [c for c in cmds if any("ib_async==2.1.0" in a for a in c)]
+    assert ib, f"no ib_async install among {cmds}"
+    assert any("--upgrade" in c for c in ib)
+    # the ib install runs AFTER the wheel install
+    wheel_idx = next(i for i, c in enumerate(cmds)
+                     if os.path.basename(c[-1]).endswith(".whl"))
+    ib_idx = cmds.index(ib[0])
+    assert ib_idx > wheel_idx

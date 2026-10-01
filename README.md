@@ -51,6 +51,7 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 
 For the full run-through, see [Usage](#usage). For demo setup, see
 [`docs/smoke-test.md`](docs/smoke-test.md).
+For IB-paper slave setup, see [`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
 
 ---
 
