@@ -428,3 +428,67 @@ def test_master_trade_allowed_and_wait_for_master_status():
         assert sup.master_trade_allowed() is True
     finally:
         sup.shutdown()
+
+
+def test_spawn_ib_slave_uses_ib_worker():
+    """An IB slave's config platform selects the ib worker entry; end-to-end
+    through real subprocesses: spawn -> recovery/symbol-info/status arrive ->
+    the slave is ready and trade-allowed (the fake IB gateway reads fine)."""
+    eng = CopyEngine()
+    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
+                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
+                              max_trade_age_minutes=999999,
+                              normalize_sltp=True))
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
+                     consecutive_failures=3, poll_timeout=0.02)
+    cfg = {"slave_id": "ib1", "platform": "ib",
+           "contract_map": {"YM": {"exchange": "CME", "sec_type": "FUT",
+                                    "master_point_value": 1.0}},
+           "symbol_map_csv": "US30=YM", "normalize_sltp": True,
+           "sizing_mode": "balance_step", "roll_days": 5,
+           "ack_timeout_ms": 1500, "slave_status_interval_ms": 200}
+    sup.spawn_slave("ib1", cfg, adapter_kind="fake",
+                    fake_state={"prices": {"YM": (45_000.0, 45_001.0)},
+                                "months": {"YM": ["202612"]}})
+    try:
+        assert _tick_until(sup, lambda: sup.slave_ready("ib1")), \
+            "IB slave never became ready (worker/config/plumbing broken)"
+        assert sup.slave_trade_allowed("ib1")  # fake gateway: not read-only
+    finally:
+        sup.shutdown()
+
+
+def test_reconfigure_ib_slave_sends_contracts():
+    """Editing a running IB slave must forward its contract map so the
+    worker re-parses and re-reports contract state (worker side: Task 7)."""
+    from manager.ipc.messages import ReconfigureMsg
+    from manager.ipc.pipe_framing import recv_msg
+    eng = CopyEngine()
+    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
+                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
+                              max_trade_age_minutes=999999,
+                              normalize_sltp=True))
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
+                     consecutive_failures=3, poll_timeout=0.02)
+    parent, child = multiprocessing.Pipe(duplex=True)
+    sup._handles["ib1"] = WorkerHandle(
+        name="ib1", role="slave", proc=_StubProc(), pipe=child,
+        config={"platform": "ib"}, adapter_kind="", fake_state=None)
+    try:
+        contracts = {"YM": {"exchange": "CME", "sec_type": "FUT",
+                             "master_point_value": 2.0}}
+        sup.reconfigure_slave("ib1", "US30=YM", True, contracts=contracts)
+        msg = recv_msg(parent)
+        assert isinstance(msg, ReconfigureMsg) and msg.contracts == contracts
+        # stored for the respawn path (a restarted worker re-reads its config)
+        assert sup._handles["ib1"].config["contract_map"] == contracts
+
+        # MT5 path unchanged: contracts=None (the default) sends {} and does
+        # not inject contract_map into the config
+        sup.reconfigure_slave("ib1", "US30=YM", True)
+        msg2 = recv_msg(parent)
+        assert isinstance(msg2, ReconfigureMsg) and msg2.contracts == {}
+    finally:
+        sup.shutdown()
+        child.close()
+        parent.close()

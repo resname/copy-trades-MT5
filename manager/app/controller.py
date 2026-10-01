@@ -307,7 +307,8 @@ class CopyController:
             sizing_mode=spec.sizing_mode, master_base_lot=spec.master_base_lot,
             fixed_lot=spec.fixed_lot)
         self._supervisor.reconfigure_slave(
-            slave_id, spec.symbol_map_csv, spec.normalize_sltp)
+            slave_id, spec.symbol_map_csv, spec.normalize_sltp,
+            contracts=(spec.contract_map if spec.platform == "ib" else None))
 
     def is_running(self) -> bool:
         return self._supervisor is not None and self._supervisor._thread is not None \

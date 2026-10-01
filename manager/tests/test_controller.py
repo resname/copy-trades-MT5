@@ -198,7 +198,7 @@ def test_apply_slave_edit_updates_engine_and_reconfigures_when_running():
     try:
         reconfigured = []
         c._supervisor.reconfigure_slave = \
-            lambda sid, csv, norm: reconfigured.append((sid, csv, norm))
+            lambda sid, csv, norm, **kw: reconfigured.append((sid, csv, norm))
         new = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe",
                           symbol_map_csv="EURUSD=GBPUSD", step_amount=500.0,
                           step_size=0.02, max_lot=20.0,
@@ -277,7 +277,7 @@ def test_apply_slave_edit_forwards_sizing_fields():
                             "currency": "USD", "server": "Demo"}},
             slave_fake_state=_slave_state())
     try:
-        c._supervisor.reconfigure_slave = lambda sid, csv, norm: None
+        c._supervisor.reconfigure_slave = lambda sid, csv, norm, **kw: None
         new = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe",
                           symbol_map_csv="EURUSD=EURUSD", step_amount=100.0,
                           step_size=0.01, max_lot=10.0,
