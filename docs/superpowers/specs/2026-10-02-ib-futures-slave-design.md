@@ -103,10 +103,15 @@ Master side stays MT5 (`US30`, `US30.m`, regex rows unchanged).
 ## SL/TP parity (brackets)
 
 - **OPEN** = parent market order with attached children — stop-loss (`STP`)
-  and take-profit (`LMT`) — tagged `orderRef = "ct:{master_ticket}:{magic}"`.
+  and take-profit (`LMT`) — tagged with the engine's linkage comment verbatim
+  (`CPY#<master_ticket>|MV<..>|SV<..>`; ERRATUM 2026-10-02: the spec first
+  said `orderRef = "ct:{master_ticket}:{magic}"` — the plan supersedes this:
+  reusing the engine's existing comment lets recovery decode via the
+  existing `decode_comment`, and all tests pin `CPY#`).
   Children activate on parent fill (standard bracket).
-- **MODIFY** = locate tagged children and replace them (modify by same
-  orderId; cancel+new fallback). Raw master SL/TP arrive at the worker; the
+- **MODIFY** = locate tagged children and replace them (cancel+new;
+  ERRATUM 2026-10-02: the modify-by-same-orderId path is not built — v1
+  ships cancel+replace only). Raw master SL/TP arrive at the worker; the
   worker normalizes to contract tick size and validates against current
   price, rejecting nonsensical stops with `ok=False` (the MT5 retcode
   equivalent).
