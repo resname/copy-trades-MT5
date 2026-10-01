@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
 from manager.engine.models import BUY, SELL  # noqa: F401  (re-exported for GUI)
@@ -43,6 +43,13 @@ class AccountSpec:
     sizing_mode: str = "balance_step"
     master_base_lot: float = 0.0
     fixed_lot: float = 0.01
+    # platform: "mt5" (default) or "ib". An IB account has no MetaTrader
+    # terminal: terminal_path is ignored and terminal assignment skips it.
+    platform: str = "mt5"
+    ib_host: str = "127.0.0.1"
+    ib_port: int = 4002
+    ib_client_id: int = 7
+    contract_map: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,11 +111,17 @@ class CopyController:
         """Validate terminal-path assignments (uniqueness + normalize to exe
         path) and assign one instance per account. Raises ControllerError on
         duplicate/unresolvable assignments. No auto-provisioning — the user
-        brings terminals they have already installed and logged in to."""
+        brings terminals they have already installed and logged in to.
+        IB slaves are excluded (they have no MetaTrader terminal)."""
+        if master.platform == "ib":
+            raise ControllerError("IB accounts cannot be the master")
         seen: dict[str, str] = {}
-        accounts = [self._account_dict(master)] + [self._account_dict(s)
-                                                   for s in slaves]
-        for a in accounts:
+        mt5_accounts = [self._account_dict(master)]
+        for s in slaves:
+            if s.platform == "ib":
+                continue
+            mt5_accounts.append(self._account_dict(s))
+        for a in mt5_accounts:
             ov = a.get("terminal_path")
             if ov:
                 exe = _normalize_override_exe(ov)
@@ -119,7 +132,7 @@ class CopyController:
                         f"{seen[exe]} and {a['id']}")
                 seen[exe] = a["id"]
         self._status("info", "assigning terminal instances…")
-        assigned = self._terminal_manager.assign(accounts)
+        assigned = self._terminal_manager.assign(mt5_accounts)
         self._status("info", "terminal instances assigned")
         return assigned
 
@@ -131,7 +144,11 @@ class CopyController:
     def build_worker_configs(self, master: AccountSpec, slaves: list[AccountSpec],
                              assigned: dict[str, TerminalInstance]
                              ) -> dict[str, dict]:
-        """Build the per-account worker config dicts the Supervisor spawns."""
+        """Build the per-account worker config dicts the Supervisor spawns.
+
+        MT5 slave configs deliberately gain no "platform" key: the supervisor
+        defaults to MT5 on absence, which keeps pre-existing configs
+        byte-identical."""
         cfgs: dict[str, dict] = {}
         m_inst = assigned[master.id]
         cfgs[master.id] = {
@@ -139,6 +156,22 @@ class CopyController:
             "master_interval_ms": 1000,
         }
         for s in slaves:
+            if s.platform == "ib":
+                # No terminal instance: the IB worker connects to TWS/IB
+                # Gateway over its host:port instead.
+                cfgs[s.id] = {
+                    "slave_id": s.id, "platform": "ib",
+                    "symbol_map_csv": s.symbol_map_csv,
+                    "normalize_sltp": s.normalize_sltp,
+                    "contract_map": s.contract_map,
+                    "ib_host": s.ib_host, "ib_port": s.ib_port,
+                    "ib_client_id": s.ib_client_id,
+                    "sizing_mode": s.sizing_mode,
+                    "roll_days": 5, "ack_timeout_ms": 15000,
+                    "retry_count": 3, "retry_delay_ms": 500,
+                    "slave_status_interval_ms": 5000,
+                }
+                continue
             s_inst = assigned[s.id]
             cfgs[s.id] = {
                 "slave_id": s.id,
@@ -212,7 +245,8 @@ class CopyController:
         # Algo-Trading preflight (slaves): block before any copy is attempted.
         # A slave with Algo Trading off would silently accept commands whose
         # order_send is blocked (retcode 10030/invalid) — surface it now.
-        disabled = [(s.id, cfgs[s.id]["terminal_path"])
+        disabled = [(s.id, cfgs[s.id].get("terminal_path",
+                                          f"{s.ib_host}:{s.ib_port}"))
                     for s in slaves if not sup.slave_trade_allowed(s.id)]
         if disabled:
             names = [f"{sid} ({path})" for sid, path in disabled]

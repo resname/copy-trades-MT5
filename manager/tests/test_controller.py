@@ -382,3 +382,79 @@ def test_start_proceeds_when_all_algo_trading_enabled():
         assert any(s.kind == "ready" for s in statuses)
     finally:
         c.stop()
+
+
+# ---- IB platform plumbing (AccountSpec.platform / IB worker config) ----
+
+def _ib_spec(sid="ib1", contracts=None):
+    return AccountSpec(id=sid, terminal_path="", symbol_map_csv="US30=YM",
+                       step_amount=1000.0, step_size=1.0, max_lot=100.0,
+                       max_trade_age_minutes=10, normalize_sltp=True,
+                       platform="ib",
+                       contract_map=contracts or {"YM": {
+                           "exchange": "CME", "sec_type": "FUT",
+                           "master_point_value": 1.0}})
+
+
+def test_build_worker_configs_ib_slave():
+    """An IB slave needs no terminal instance: its config is built from the
+    spec alone (the supervisor dispatches it to the IB worker)."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata")]
+    c, _, _ = _controller(insts)
+    assigned = {"master": insts[0]}
+    cfgs = c.build_worker_configs(_master(), [_ib_spec()], assigned=assigned)
+    cfg = cfgs["ib1"]
+    assert cfg["platform"] == "ib"
+    assert cfg["contract_map"] == {"YM": {"exchange": "CME",
+                                           "sec_type": "FUT",
+                                           "master_point_value": 1.0}}
+    assert cfg["ib_host"] == "127.0.0.1"
+    assert cfg["ib_port"] == 4002
+    assert cfg["ib_client_id"] == 7
+    assert cfg["symbol_map_csv"] == "US30=YM"
+    assert cfg["normalize_sltp"] is True
+    assert cfg["sizing_mode"] == "balance_step"
+    assert cfg["roll_days"] == 5
+    assert cfg["ack_timeout_ms"] == 15000
+    assert cfg["retry_count"] == 3
+    assert cfg["retry_delay_ms"] == 500
+    assert cfg["slave_status_interval_ms"] == 5000
+    assert "terminal_path" not in cfg
+
+
+def test_build_worker_configs_mt5_unchanged():
+    """MT5 slave configs gain no new keys: platform is deliberately absent (the
+    supervisor defaults to MT5), so old configs stay byte-identical."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+             TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+    c, _, _ = _controller(insts)
+    assigned = c.prepare(_master(), [_slave()])
+    cfgs = c.build_worker_configs(_master(), [_slave()], assigned)
+    assert "platform" not in cfgs["s1"]
+    assert "contract_map" not in cfgs["s1"]
+    assert cfgs["s1"]["terminal_path"].endswith("terminal64.exe")
+
+
+def test_prepare_skips_ib_slaves_for_terminal_assignment():
+    """IB slaves have no terminal and are excluded from assignment; the
+    duplicate-terminal-path validation still runs for the MT5 accounts."""
+    insts = [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata")]
+    c, _, _ = _controller(insts)
+    assigned = c.prepare(_master(), [_ib_spec()])
+    assert "ib1" not in assigned
+    assert set(assigned) == {"master"}
+
+
+def test_prepare_still_validates_mt5_paths_when_ib_slave_present():
+    c, _, _ = _controller([])
+    with pytest.raises(ControllerError):
+        c.prepare(_master(), [_ib_spec(),
+                              _slave(terminal_path="C:/m/terminal64.exe")])
+
+
+def test_prepare_rejects_ib_master():
+    """The master is always MT5 (its snapshots come from a MetaTrader
+    terminal) — an IB AccountSpec cannot be the master."""
+    c, _, _ = _controller([])
+    with pytest.raises(ControllerError):
+        c.prepare(_ib_spec(), [_slave()])
