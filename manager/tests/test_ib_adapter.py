@@ -98,6 +98,21 @@ def test_open_bracket_read_only_server():
     assert not ok and "Read-Only" in err
 
 
+def test_partial_reduce_keeps_open_price():
+    # open long 4, reduce to 2 -> the remaining position keeps its avg price
+    gw = make_gw(); gw.initialize("h", 1, 1)
+    gw.open_bracket("YM", BUY, 4.0, 0.0, 0.0, "CPY#1|MV0.28|SV4")
+    ok, filled, err = gw.reduce("YM", BUY, 2.0, "CPY#1|MV0.28|SV4", close=False)
+    assert ok and filled == 2.0
+    pos = gw.net_positions()
+    assert len(pos) == 1 and pos[0].qty == 2.0
+    assert pos[0].open_price == 45_001.0        # the open fill price (ask)
+    # full close still drops the position from net_positions
+    ok, filled, err = gw.reduce("YM", BUY, 2.0, "CPY#1|MV0.28|SV4", close=True)
+    assert ok and filled == 2.0
+    assert gw.net_positions() == []
+
+
 def test_tick_and_positions_open_price():
     gw = make_gw(); gw.initialize("h", 1, 1)
     gw.open_bracket("YM", BUY, 2.0, 0.0, 0.0, "CPY#1|MV0.1|SV2")

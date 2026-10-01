@@ -178,10 +178,12 @@ class FakeIbGateway:
                     price: float) -> None:
         signed = qty if action == "BUY" else -qty
         current = self.positions.get(symbol, 0.0)
-        flipped = current != 0.0 and (current > 0) != (signed > 0)
+        new = current + signed
+        flipped = (current != 0.0 and new != 0.0
+                   and (current > 0) != (new > 0))   # true net flip only
         if flipped:
             self.avg_price.pop(symbol, None)
-        self.positions[symbol] = current + signed
+        self.positions[symbol] = new
         if self.positions[symbol] == 0.0:
             self.positions.pop(symbol, None)
             self.avg_price.pop(symbol, None)
@@ -232,6 +234,9 @@ class FakeIbGateway:
         self._trigger_checks()
 
     def _trigger_checks(self) -> None:
+        # Unfilled STP/LMT children fire for their full stated qty even after
+        # a manual partial reduce (raw IB order semantics); the worker
+        # re-syncs protections after partials instead of net-clamping here.
         for o in list(self.orders):
             if o.filled or not o.active or o.order_type not in ("STP", "LMT"):
                 continue
