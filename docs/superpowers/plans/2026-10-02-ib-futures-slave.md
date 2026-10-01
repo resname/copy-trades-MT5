@@ -1145,15 +1145,17 @@ class RealIbGateway:
 
     def _margin_estimate(self, contract) -> float:
         """whatIf probe: real maintenance margin per 1 contract. 0.0 = unknown
-        (the worker then skips the margin guard rather than refusing)."""
+        (the worker then skips the margin guard rather than refusing).
+        (ERRATUM: the whatIf OrderState arrives via `IB.whatIfOrder`, never as
+        a live Trade — `placeOrder`-keyed probing was dead code.)"""
         from ib_async import MarketOrder
         try:
             probe = MarketOrder("BUY", 1)
-            probe.whatIf = True
-            trade = self.ib.placeOrder(contract, probe)
-            margin = float(trade.orderStatus.initMarginAfter or 0.0) \
-                or float(trade.orderStatus.maintMarginAfter or 0.0)
-            self.ib.cancelOrder(probe)
+            state = self.ib.whatIfOrder(contract, probe)
+            margin = float(state.initMarginChange or 0.0) \
+                or float(state.maintMarginChange or 0.0) \
+                or float(state.initMarginAfter or 0.0) \
+                or float(state.maintMarginAfter or 0.0)
             return margin
         except Exception:
             return 0.0
@@ -1171,7 +1173,10 @@ class RealIbGateway:
             self._last_error = f"market data for {symbol}: {exc}"
             return None
         bid, ask = float(t.bid or 0.0), float(t.ask or 0.0)
-        if bid <= 0.0 or ask <= 0.0:
+        # (ERRATUM: Ticker.bid/ask default to NaN, which is truthy — guard
+        # finiteness, not just <= 0.)
+        if not math.isfinite(bid) or not math.isfinite(ask) \
+                or bid <= 0.0 or ask <= 0.0:
             self._last_error = (f"no live market data for {symbol} "
                                 f"(IB data subscription required)")
             return None
@@ -1230,7 +1235,7 @@ class RealIbGateway:
                 parent_id=int(tr.order.parentId or 0),
                 oca_group=tr.order.ocaGroup or "",
                 active=tr.orderStatus.status in
-                       ("Presubmitted", "PendingSubmit", "Submitted", "ApiPending"),
+                       ("PreSubmitted", "PendingSubmit", "Submitted", "ApiPending"),
                 filled=tr.orderStatus.status == "Filled"))
         return out
 
@@ -1275,7 +1280,9 @@ And the three command methods:
         if not self._wait_terminal(trade, timeout_s):
             return (False, 0.0, f"timeout waiting for {action} fill ({tag})")
         if trade.orderStatus.status == "Cancelled":
-            return (False, 0.0, f"order cancelled: {trade.orderStatus.warningText}")
+            # (ERRATUM: OrderStatus has no warningText — Trade.log entries do.)
+            reason = trade.log[-1].message if trade.log else ""
+            return (False, 0.0, f"order cancelled: {reason}")
         fill_px = float(trade.orderStatus.avgFillPrice or 0.0)
         oca = OCA_PREFIX + str(parent.orderId)
         prot = "SELL" if action == "BUY" else "BUY"
@@ -1302,7 +1309,9 @@ And the three command methods:
         oca = OCA_PREFIX + str(int(time.time() * 1000) % 1_000_000_000)
         for tr in list(self.ib.trades()):
             ref = tr.order.orderRef or ""
-            if (ref == tag and tr.contract.localSymbol == contract.localSymbol
+            # (ERRATUM: match on symbol(+month), not localSymbol — adapter-built
+            # contracts carry unqualified symbols; empty month = no month filter.)
+            if (ref == tag and tr.contract.symbol == contract.symbol
                     and tr.order.orderType in ("STP", "LMT")
                     and tr.orderStatus.status not in ("Filled", "Cancelled")):
                 self.ib.cancelOrder(tr.order)
@@ -1335,8 +1344,10 @@ And the three command methods:
         if not self._wait_terminal(trade, timeout_s):
             return (False, 0.0, "timeout waiting for fill")
         if trade.orderStatus.status == "Cancelled":
-            return (False, 0.0, f"order cancelled: {trade.orderStatus.warningText}")
-        filled = min(qty, float(trade.orderStatus.cumFillQuantity or 0.0))
+            reason = trade.log[-1].message if trade.log else ""
+            return (False, 0.0, f"order cancelled: {reason}")
+        # (ERRATUM: OrderStatus carries `filled`, not cumFillQuantity.)
+        filled = min(qty, float(trade.orderStatus.filled or 0.0))
         if close:
             flat = self._net_qty(symbol) == 0.0
             if flat:
@@ -1376,13 +1387,14 @@ And the three command methods:
                 total += float(p.position)
         return total
 
-    @staticmethod
-    def _wait_terminal(trade, timeout_s: float) -> bool:
+    # (ERRATUM: `Trade` has no `ib` attribute — poll via `self.ib.sleep`, an
+    # instance method, not a staticmethod.)
+    def _wait_terminal(self, trade, timeout_s: float) -> bool:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if trade.orderStatus.status in ("Filled", "Cancelled"):
                 return True
-            trade.ib.sleep(0.1)
+            self.ib.sleep(0.1)
         return False
 ```
 
@@ -1445,11 +1457,22 @@ def test_real_gateway_resolve_uses_pick_front_month(monkeypatch):
     r = gw.resolve_contract("YM", today="20261226", exchange="CME", roll_days=5)
     assert r["month"] == "202703" and r["rolling"] is True   # roll window
     assert r["multiplier"] == 5.0 and r["tick_size"] == 0.25
-    # the whatIf margin probe failed (stubbed placeOrder absent here) -> 0.0
+    # the whatIf margin probe failed (stub whatIfOrder raises here) -> 0.0
     assert r["margin_est"] == 0.0
 ```
 
-(`reqContractDetails` returns two months with no interest data, so `pick_front_month` falls back to nearest — `202612` — and today sits inside the 5-day roll window, so the next month is chosen with `rolling=True`; `multiplier`/`minTick` come off the matched detail. The margin probe's `placeOrder` path raises inside the stub and is swallowed to `0.0` — that is the documented unknown-margin behavior.)
+(`reqContractDetails` returns two months with no interest data, so `pick_front_month` falls back to nearest — `202612` — and today sits inside the 5-day roll window, so the next month is chosen with `rolling=True`; `multiplier`/`minTick` come off the matched detail. The margin probe's `whatIfOrder` path raises inside the stub and is swallowed to `0.0` — that is the documented unknown-margin behavior.)
+
+**Erratum (2026-10-02, post-review):** the Task 6 code blocks as first written carried five
+`ib_async` 2.1.0 API shapes that do not exist; the shipped code (`manager/worker/ib/adapter.py`)
+uses the corrected forms, and the ERRATUM comments above mark each one in place:
+`Trade` has no `ib` (poll `self.ib.sleep`); `OrderStatus` has `filled`, not `cumFillQuantity`;
+the whatIf margin estimate goes through `IB.whatIfOrder(contract, order) -> OrderState`;
+cancel reasons come from `trade.log[-1].message` (`OrderStatus.warningText` does not exist);
+`Ticker.bid/ask` default to NaN (guard `math.isfinite`). Also corrected: `PreSubmitted`
+spelling, and `set_protective`'s stale-cancel match on `symbol`(+`month`) rather than
+`localSymbol`. Task 11 implementers: trust the shipped `adapter.py`, not the pre-erratum
+snippets that survive in older checkouts.
 
 Also add (with `ib_async` absent from `sys.modules` — the class object must exist without the package importable; this is the lazy-import guarantee, and the imports must stay inside `adapter.py`):
 
