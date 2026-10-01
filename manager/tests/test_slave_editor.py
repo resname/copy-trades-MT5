@@ -247,3 +247,69 @@ def test_set_spec_pre_populates_sizing_fields(qapp):
     # fixed_lot mode -> fixed field visible, step fields hidden
     assert not dlg.fixed_lot.isHidden()
     assert dlg.step_amount.isHidden()
+
+
+# --- Task 9: platform picker + IB contract table ---------------------------
+
+def test_editor_platform_mt5_default(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController())
+    assert dlg.platform.currentData() == "mt5"
+    assert not dlg.terminal.isHidden()
+    # mt5 mode keeps the original 2-column symbol table
+    assert dlg.symbol_table.columnCount() == 2
+    assert dlg.symbol_table.horizontalHeaderItem(1).text() == "Slave symbol"
+
+
+def test_editor_ib_mode_hides_terminal_shows_ib_fields(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController())
+    dlg.platform.setCurrentIndex(1)             # IB
+    assert dlg.terminal.isHidden()
+    assert dlg.launch_terminal_button.isHidden()
+    assert not dlg.ib_host.isHidden() and not dlg.ib_port.isHidden()
+    assert not dlg.ib_client_id.isHidden()
+    # header labels switch to the contract columns
+    assert dlg.symbol_table.columnCount() == 5
+    assert dlg.symbol_table.horizontalHeaderItem(4).text() == "Master $/pt"
+
+
+def test_editor_ib_spec_roundtrip(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController())
+    dlg.platform.setCurrentIndex(1)
+    dlg.id_edit.setText("ib1")
+    dlg.symbol_table.setRowCount(1)
+    for col, text in enumerate(["US30", "YM", "CME", "FUT", "1.0"]):
+        dlg.symbol_table.setItem(0, col, _qitem(text))
+    dlg.ib_port.setText("4002")
+    dlg.sizing_mode.setCurrentIndex(1)          # copy_master
+    dlg._update_sizing_visibility()
+    dlg.accept()                                 # sets result() == Accepted; spec() reads it
+    spec = dlg.spec()
+    assert spec.platform == "ib" and spec.terminal_path is None
+    assert spec.symbol_map_csv == "US30=YM"
+    assert spec.contract_map == {"YM": {"exchange": "CME", "sec_type": "FUT",
+                                        "master_point_value": 1.0,
+                                        "currency": "USD"}}
+    assert spec.sizing_mode == "copy_master"
+
+
+def test_editor_edit_existing_ib_spec(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    dlg = SlaveEditor(FakeController())
+    spec = AccountSpec(id="ib1", platform="ib", terminal_path=None,
+                       symbol_map_csv="US30=YM",
+                       contract_map={"YM": {"exchange": "CME", "sec_type": "FUT",
+                                            "master_point_value": 1.0}})
+    dlg.set_spec(spec, lock_identity=True)
+    assert dlg.platform.currentData() == "ib"
+    assert dlg.symbol_table.columnCount() == 5
+    assert dlg.symbol_table.item(0, 1).text() == "YM"
+    assert dlg.symbol_table.item(0, 2).text() == "CME"
+    assert dlg.symbol_table.item(0, 3).text() == "FUT"
+    assert dlg.symbol_table.item(0, 4).text() == "1.0"
+    assert dlg.ib_port.text() == str(spec.ib_port)
+    # terminal row hidden in IB edit mode
+    assert dlg.terminal.isHidden()
