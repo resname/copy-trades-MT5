@@ -19,13 +19,15 @@ API. IB accounts therefore need a non-MT5 worker speaking the TWS API.
 
 **Goal:** an IB Gateway-driven slave that receives the same
 OPEN / MODIFY / PARTIAL_CLOSE / CLOSE command stream an MT5 slave receives
-today, with full SL/TP parity, shipping as a product feature.
+today, with full SL/TP parity, shipping as a product feature. The worker is
+contract-type-agnostic: the symbol map's `secType` selects the asset class
+(`FUT`, `STK`, `CASH`, `IND`, `BAG`…), so any asset class IB offers is in
+scope as long as it trades as positions.
 
 **Non-goals:**
 
 - No IB *master* support. The master side remains MT5-only.
 - No pending-order copying (unchanged product decision: positions only).
-- No options, spread orders, or non-futures IB asset classes.
 - No change to MT5-only installs' behavior. Everything is additive.
 
 ## Architecture
@@ -80,17 +82,20 @@ treats it like an MT5 terminal install.
 Master side stays MT5 (`US30`, `US30.m`, regex rows unchanged).
 
 - **Map row (IB slave):** the row's slave side names a contract:
-  `{master_pattern: {symbol, exchange, secType="FUT"}}` plus
-  `master_point_value` (the master CFD's dollar value per point per lot,
-  e.g. `$1` for US_30). The manager sends only the resolved slave symbol;
-  the worker owns full contract resolution, as it owns `symbol_info` today.
-- **Front month selection:** on first use the worker queries valid months
-  (contract details) and picks the most liquid, cached.
-- **Rollover:** within a configurable rollover window (default 5 trading
-  days) of expiry the worker re-resolves, freezes the old contract for
-  *new* orders, and routes new OPENs to the next front month. Existing
-  positions keep their contract until closed. The GUI shows contract
-  state (active / frozen / rolling).
+  `{master_pattern: {symbol, exchange, secType}}` — `secType` selects the
+  asset class (`FUT`, `STK`, `CASH`, `IND`, …) — plus `master_point_value`
+  (the master CFD's dollar value per point per lot, e.g. `$1` for US_30).
+  The manager sends only the resolved slave symbol; the worker owns full
+  contract resolution, as it owns `symbol_info` today.
+- **Front-month selection (expiry-bearing secTypes):** on first use the
+  worker queries valid months (contract details) and picks the most
+  liquid, cached.
+- **Rollover (expiry-bearing secTypes):** within a configurable rollover
+  window (default 5 trading days) of expiry the worker re-resolves,
+  freezes the old contract for *new* orders, and routes new OPENs to the
+  next front month. Existing positions keep their contract until closed.
+  The GUI shows contract state (active / frozen / rolling). Cash and
+  perpetual secTypes (`CASH`, `STK`, `IND`) skip this machinery entirely.
 - **Front-month measurement:** liquidity = IB open interest from contract
   details, falling back to nearest expiry when interest data is
   unavailable. A GUI override may pin a month later if needed; not in v1.
