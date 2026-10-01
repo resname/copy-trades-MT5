@@ -469,7 +469,8 @@ from manager.worker.ib.tags import synthetic_ticket, tag_master_ticket
 def test_synthetic_ticket_stable_and_positive():
     a = synthetic_ticket("YM", BUY)
     assert a == synthetic_ticket("YM", BUY)  # deterministic across processes
-    assert 0 < a < 2**31
+    # ticket space is [2e9, 3e9) — above every real MT5 ticket, no 2**31 cap
+    assert 2_000_000_000 <= a < 3_000_000_000
 
 
 def test_synthetic_ticket_differs_by_side_and_symbol():
