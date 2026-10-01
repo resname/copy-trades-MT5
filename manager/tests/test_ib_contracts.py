@@ -54,3 +54,16 @@ def test_pick_front_month_zero_oi_falls_back_to_nearest():
 def test_pick_front_month_none_when_no_future():
     assert pick_front_month([("20250601", None)], today="20261002",
                             roll_days=5) is None
+
+
+def test_pick_front_month_expired_day_expiry_is_not_future():
+    assert pick_front_month([("20261001", None)], today="20261002", roll_days=5) is None
+
+
+def test_parse_contract_map_rejects_nonfinite_point_values():
+    with pytest.raises(ValueError):
+        parse_contract_map({"YM": {"exchange": "CME", "sec_type": "FUT",
+                                    "master_point_value": "nan"}})
+    with pytest.raises(ValueError):
+        parse_contract_map({"YM": {"exchange": "CME", "sec_type": "FUT",
+                                    "master_point_value": "inf"}})

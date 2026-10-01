@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import calendar
+import math
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -41,6 +42,9 @@ def parse_contract_map(raw=None) -> dict[str, ContractSpec]:
         if spec.master_point_value <= 0.0:
             raise ValueError(
                 f"contract map: master_point_value must be > 0 for {symbol!r}")
+        if not math.isfinite(spec.master_point_value):
+            raise ValueError(
+                f"contract map: master_point_value must be finite for {symbol!r}")
         out[spec.symbol] = spec
     return out
 
@@ -52,7 +56,8 @@ def pick_front_month(candidates, today: str, roll_days: int = 5):
     Inside the roll window (<= roll_days to expiry) the NEXT month is picked
     for new orders instead. Returns (expiry, rolling) or None."""
     future = sorted((c, oi) for c, oi in candidates
-                    if c[:6] >= today[:6] and (oi is None or oi is not False))
+                    if (c >= today if len(c) == 8 else c[:6] >= today[:6])
+                    and (oi is None or oi is not False))
     if not future:
         return None
     with_oi = [(c, float(oi)) for c, oi in future if oi and float(oi) > 0.0]
