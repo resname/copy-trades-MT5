@@ -33,6 +33,7 @@ class WorkerHandle:
     fatal: bool = False  # set on a fatal ErrorMsg; _health_check won't restart
     trade_allowed: bool = True  # from the worker's initial StatusMsg (Algo Trading)
     first_msg_seen: bool = False  # False until first message -> grace window
+    detail: str = ""  # last forwarded StatusMsg.detail (change-triggered GUI callback)
 
 
 class Supervisor:
@@ -66,6 +67,7 @@ class Supervisor:
         self._thread = None
         self.on_restart = None  # callback(name, role) for GUI status (Plan 4)
         self.on_error = None    # callback(name, message) for GUI status/log
+        self.on_slave_status = None  # callback(name, detail) on StatusMsg.detail change
 
     def spawn_master(self, config, adapter_kind="real", fake_state=None):
         self._handles["master"] = self._spawn("master", "master", config,
@@ -213,6 +215,10 @@ class Supervisor:
             if h is not None:
                 h.trade_allowed = msg.trade_allowed
             self._engine.apply_status(slave_id, msg)
+            if (msg.detail and h is not None and h.detail != msg.detail
+                    and self.on_slave_status is not None):
+                h.detail = msg.detail
+                self.on_slave_status(slave_id, msg.detail)
         elif isinstance(msg, RecoveryMsg):
             self._engine.apply_recovery(slave_id, msg.records)
         elif isinstance(msg, SymbolInfoMsg):

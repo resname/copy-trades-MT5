@@ -193,6 +193,8 @@ class CopyController:
         sup.on_restart = lambda name, role: self._status(
             "info", f"restarted {role} {name}")
         sup.on_error = lambda name, message: self._on_supervisor_error(name, message)
+        sup.on_slave_status = lambda name, detail: self._status(
+            "slave_status", f"{name}: {detail}", slave_id=name)
         return sup
 
     def _on_supervisor_error(self, name: str, message: str) -> None:

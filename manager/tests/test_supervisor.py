@@ -492,3 +492,59 @@ def test_reconfigure_ib_slave_sends_contracts():
         sup.shutdown()
         child.close()
         parent.close()
+
+
+# ---- Task 10: StatusMsg.detail -> GUI status line (IB contract state) ----
+
+def _ib_status_handle() -> Supervisor:
+    """Supervisor with an IB slave registered but no worker spawned."""
+    eng = CopyEngine()
+    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
+                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
+                              max_trade_age_minutes=999999,
+                              normalize_sltp=True))
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
+                     consecutive_failures=3, poll_timeout=0.02)
+    sup._handles["ib1"] = WorkerHandle(
+        name="ib1", role="slave", proc=_StubProc(), pipe=None,
+        config={"platform": "ib"}, adapter_kind="", fake_state=None)
+    return sup
+
+
+def test_slave_status_detail_forwarded_when_changed():
+    from manager.ipc.messages import StatusMsg
+    sup = _ib_status_handle()
+    seen: list[tuple[str, str]] = []
+    sup.on_slave_status = lambda name, detail: seen.append((name, detail))
+    try:
+        sup._dispatch_slave("ib1", StatusMsg(
+            source_id="ib1", role="slave", connected=True, login=0,
+            balance=1.0, equity=1.0, currency="USD", server="ib-gateway",
+            trade_allowed=True, detail="YM 202612"))
+        assert seen == [("ib1", "YM 202612")]
+        sup._dispatch_slave("ib1", StatusMsg(
+            source_id="ib1", role="slave", connected=True, login=0,
+            balance=1.0, equity=1.0, currency="USD", server="ib-gateway",
+            trade_allowed=True, detail="YM 202612"))
+        assert seen == [("ib1", "YM 202612")]           # unchanged: no repeat
+    finally:
+        sup.shutdown()
+
+
+def test_mt5_status_never_forwards_detail():
+    from manager.ipc.messages import StatusMsg
+    eng = _engine()                                 # the file's existing MT5 builder
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
+                     consecutive_failures=3, poll_timeout=0.02)
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=None,
+        config={}, adapter_kind="", fake_state=None)
+    seen: list = []
+    sup.on_slave_status = lambda *a: seen.append(a)
+    try:
+        sup._dispatch_slave("s1", StatusMsg(
+            source_id="s1", role="slave", connected=True, login=1,
+            balance=1.0, equity=1.0, currency="USD", server="Demo"))
+        assert seen == []                           # empty detail => silent
+    finally:
+        sup.shutdown()
