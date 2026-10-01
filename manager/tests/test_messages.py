@@ -150,3 +150,33 @@ def test_symbol_info_round_trip_carries_requested():
     # default: bulk map report carries no requested list
     bulk = M.SymbolInfoMsg(source_id="s1", infos={"EURUSD": _si()})
     assert M.decode(M.encode(bulk)).requested == []
+
+
+def test_status_msg_detail_roundtrip():
+    m = M.StatusMsg(source_id="ib1", role="slave", connected=True, login=0,
+                    balance=1.0, equity=1.0, currency="USD", server="ib:4002",
+                    trade_allowed=True, detail="YM 202612 active")
+    copy = M.decode(M.encode(m))
+    assert copy.detail == "YM 202612 active"
+
+
+def test_status_msg_detail_defaults_empty():
+    m = M.StatusMsg(source_id="m", role="master", connected=True, login=1,
+                    balance=1.0, equity=1.0, currency="USD", server="s")
+    assert m.detail == ""
+
+
+def test_reconfigure_msg_contracts_roundtrip():
+    m = M.ReconfigureMsg(source_id="ib1", symbol_map_csv="US30=YM",
+                         normalize_sltp=True,
+                         contracts={"YM": {"exchange": "CME", "sec_type": "FUT",
+                                           "master_point_value": 1.0}})
+    copy = M.decode(M.encode(m))
+    assert copy.contracts == {"YM": {"exchange": "CME", "sec_type": "FUT",
+                                     "master_point_value": 1.0}}
+
+
+def test_reconfigure_msg_contracts_defaults_empty():
+    m = M.ReconfigureMsg(source_id="s1", symbol_map_csv="US30=WS30",
+                         normalize_sltp=True)
+    assert m.contracts == {}

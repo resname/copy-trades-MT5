@@ -81,6 +81,7 @@ class StatusMsg:
     currency: str
     server: str
     trade_allowed: bool = True
+    detail: str = ""    # worker-provided status line (IB: contract/roll state)
     KIND = "status"
 
 
@@ -161,6 +162,7 @@ class ReconfigureMsg:
     source_id: str
     symbol_map_csv: str
     normalize_sltp: bool
+    contracts: dict[str, dict] = field(default_factory=dict)
     KIND = "reconfigure"
 
 
