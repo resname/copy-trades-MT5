@@ -1234,21 +1234,21 @@ class RealIbGateway:
         return out
 
     def closed_per_tag(self, tag: str) -> float:
+        """Quantity closed against a tagged record: every fill under this
+        tag whose side OPPOSES the record's opening fill (fired children,
+        partial reduce orders, manual closes). The opening fill itself has
+        the same side as its own order, so a rule keyed on the fill's own
+        order action would misclassify reduce fills — key on the opening
+        side instead."""
         if self.ib is None:
             return 0.0
-        parents = {t.order.orderId: t.order.action
-                   for t in self.ib.trades()
-                   if (t.order.orderRef or "") == tag}
-        reduced = 0.0
-        for f in self.ib.fills():
-            if (f.execution.orderRef or "") != tag:
-                continue
-            parent_action = parents.get(f.execution.orderId)
-            is_reduce = (parent_action is None      # reduce/child session-scoped
-                         or f.execution.side != parent_action)
-            if is_reduce:
-                reduced += abs(float(f.execution.shares))
-        return reduced
+        fills = [f for f in self.ib.fills()
+                 if (f.execution.orderRef or "") == tag]
+        if not fills:
+            return 0.0
+        open_side = fills[0].execution.side     # first fill chronologically = the open
+        return sum(abs(float(f.execution.shares))
+                   for f in fills if f.execution.side != open_side)
 ```
 
 And the three command methods:
@@ -1767,6 +1767,7 @@ def test_recovery_builds_records_from_tags():
     rec = records[0]
     assert rec.master_ticket == 123
     assert rec.slave_open_volume == 4.0
+    assert rec.slave_ticket > 1_999_999_999   # resolved from the parent MKT order
     assert rec.magic == magic_for(123)
 
 
@@ -1924,34 +1925,26 @@ def build_symbol_info_msg(gw, slave_id: str, contracts: dict,
 
 def build_recovery_records(gw) -> list[Record]:
     """Rebuild linkage records from this slave's tagged orders (the tag IS the
-    engine's CPY comment). One record per master ticket."""
+    engine's CPY comment). One record per master ticket, anchored on its
+    parent MKT order — `Record` is frozen, so the synthetic ticket is derived
+    in the same pass rather than patched onto a built record."""
     out: list[Record] = []
     seen: set[int] = set()
     for o in gw.tagged_orders():
         dec = decode_comment(o.tag)
-        if dec is None:
-            continue
+        if dec is None or o.order_type != "MKT":
+            continue           # record anchors on its parent MKT order only
         master_ticket, mv, sv = dec
         if master_ticket in seen or mv is None or sv is None:
             continue
         seen.add(master_ticket)
+        side = BUY if o.action == "BUY" else SELL
         out.append(Record(master_ticket=master_ticket,
                           magic=magic_for(master_ticket),
-                          slave_ticket=0,   # set below from the parent order
+                          slave_ticket=synthetic_ticket(o.symbol, side),
                           master_open_volume=mv,
                           slave_open_volume=sv))
-        # slave_ticket: synthetic ticket of the net position share this tag
-        # maps to — resolved from the parent order's symbol + action
-    recs = {r.master_ticket: r for r in out}
-    for o in gw.tagged_orders():
-        dec = decode_comment(o.tag)
-        if dec is None or dec[0] not in recs:
-            continue
-        rec = recs[dec[0]]
-        if rec.slave_ticket == 0 and o.order_type == "MKT":
-            side = BUY if o.action == "BUY" else SELL
-            rec.slave_ticket = synthetic_ticket(o.symbol, side)
-    return [r for r in recs.values() if r.slave_ticket != 0]
+    return out
 
 
 def _holdings(gw, tag: str, ratio: float) -> int:
