@@ -1,6 +1,7 @@
 # manager/worker/ib/adapter.py
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -328,3 +329,348 @@ class FakeIbGateway:
                     o.active = False
                     self._oca_cancel(o.oca_group, o.order_id)
         return (True, filled, "")
+
+
+class RealIbGateway:
+    """IbGateway over ib_async (TWS API). Synchronous style: each method
+    submits and waits (bounded by the worker's ack_timeout contract). All
+    ib_async imports live here — MT5-only installs never import this module."""
+
+    def __init__(self):
+        from ib_async import IB     # ImportError = clear error, surfaced below
+        self._IB = IB
+        self.ib = None
+        self._account_id = ""
+        self._last_error = ""
+        self._resolved: dict[str, dict] = {}     # symbol -> resolve result
+        self._contracts: dict[str, object] = {}  # symbol -> current Contract
+        self._contracts_by_month: dict[tuple[str, str], object] = {}
+
+    # ---- lifecycle ----
+    def initialize(self, host: str, port: int, client_id: int) -> bool:
+        try:
+            ib = self._IB()
+            ib.connect(host, port, clientId=client_id, timeout=15.0)
+        except Exception as exc:
+            self._last_error = f"IB connect failed ({host}:{port}): {exc}"
+            return False
+        if not ib.isConnected():
+            self._last_error = f"IB connect failed ({host}:{port})"
+            return False
+        self.ib = ib
+        try:
+            ib.reqPositions()
+            self._account_id = (ib.managedAccounts or "").split(",")[0]
+            if self._account_id:
+                ib.reqAccountUpdates(True, self._account_id)
+        except Exception as exc:
+            self._last_error = f"IB setup failed: {exc}"
+            return False
+        return True
+
+    def shutdown(self) -> None:
+        if self.ib is not None:
+            try:
+                self.ib.disconnect()
+            except Exception:
+                pass
+            self.ib = None
+
+    def last_error(self) -> str:
+        return self._last_error
+
+    def read_only(self) -> bool:
+        # TWS/Gateway exposes no read-only introspection over the socket; the
+        # Start gate is connect-only and a read-only Gateway surfaces on the
+        # first rejected order (see spec + Review Focus #6).
+        return False
+
+    # ---- contracts ----
+    def resolve_contract(self, symbol: str, today: str, exchange: str = "",
+                         sec_type: str = "FUT", roll_days: int = 5) -> dict | None:
+        from ib_async import Contract
+        if self.ib is None:
+            return None
+        try:
+            if sec_type == "FUT":
+                probe = Contract(symbol=symbol, secType="FUT",
+                                 exchange=exchange or "CME")
+                details = sorted(self.ib.reqContractDetails(probe),
+                                 key=lambda d: d.lastTradeDateOrContractMonth)
+                months = [(d.lastTradeDateOrContractMonth, None)
+                          for d in details]
+                picked = pick_front_month(months, today, roll_days=roll_days)
+                if picked is None:
+                    self._last_error = f"no tradable future month for {symbol}"
+                    return None
+                month, rolling = picked
+                contract = Contract(symbol=symbol, secType="FUT",
+                                    exchange=exchange or "CME",
+                                    lastTradeDateOrContractMonth=month)
+                d0 = next((d for d in details
+                           if d.lastTradeDateOrContractMonth == month),
+                          details[0])
+            else:
+                probe = Contract(symbol=symbol, secType=sec_type,
+                                 exchange=exchange or "")
+                details = self.ib.reqContractDetails(probe)
+                if not details:
+                    self._last_error = f"no contract details for {symbol}"
+                    return None
+                month, rolling, d0 = "", False, details[0]
+                contract = d0.contract
+        except Exception as exc:
+            self._last_error = f"contract resolution failed for {symbol}: {exc}"
+            return None
+        try:
+            mult = float(d0.multiplier) if d0.multiplier else 1.0
+            tick = float(d0.minTick) if d0.minTick else 0.0
+        except (TypeError, ValueError):
+            mult, tick = 1.0, 0.0
+        margin_est = self._margin_estimate(contract)
+        res = {"month": month, "rolling": rolling, "multiplier": mult,
+               "tick_size": tick, "margin_est": margin_est,
+               "sec_type": sec_type, "exchange": exchange or ""}
+        self._resolved[symbol] = res
+        self._contracts[symbol] = contract
+        if month:
+            self._contracts_by_month[(symbol, month)] = contract
+        return res
+
+    def _margin_estimate(self, contract) -> float:
+        """whatIf probe: real maintenance margin per 1 contract. 0.0 = unknown
+        (the worker then skips the margin guard rather than refusing)."""
+        from ib_async import MarketOrder
+        try:
+            probe = MarketOrder("BUY", 1)
+            probe.whatIf = True
+            trade = self.ib.placeOrder(contract, probe)
+            margin = float(trade.orderStatus.initMarginAfter or 0.0) \
+                or float(trade.orderStatus.maintMarginAfter or 0.0)
+            self.ib.cancelOrder(probe)
+            return margin
+        except Exception:
+            return 0.0
+
+    # ---- market data / account ----
+    def tick(self, symbol: str) -> tuple[float, float] | None:
+        if self.ib is None:
+            return None
+        contract = self._contracts.get(symbol)  # the resolved contract
+        if contract is None:
+            return None
+        try:
+            t = self.ib.reqTickers(contract)[0]
+        except Exception as exc:
+            self._last_error = f"market data for {symbol}: {exc}"
+            return None
+        bid, ask = float(t.bid or 0.0), float(t.ask or 0.0)
+        if bid <= 0.0 or ask <= 0.0:
+            self._last_error = (f"no live market data for {symbol} "
+                                f"(IB data subscription required)")
+            return None
+        return bid, ask
+
+    def account(self) -> dict:
+        def val(tag: str) -> float:
+            return float({a.tag: a.value
+                          for a in self.ib.accountValues(self._account_id)}
+                         .get(tag, 0.0))
+        if self.ib is None:
+            return {}
+        vals = {a.tag for a in self.ib.accountValues(self._account_id)}
+        return {"balance": val("TotalCashValue"), "equity": val("NetLiquidation"),
+                "margin_available": val("AvailableFunds"),
+                "currency": "USD"}
+
+    # ---- reads ----
+    def net_positions(self) -> list[IbPosition]:
+        out: list[IbPosition] = []
+        if self.ib is None:
+            return out
+        for p in self.ib.positions():
+            if not p.position:
+                continue
+            symbol = p.contract.symbol
+            mult = float(p.contract.multiplier or 1) \
+                if getattr(p.contract, "multiplier", None) else 1.0
+            open_price = (abs(float(p.avgCost)) / mult) if mult else 0.0
+            out.append(IbPosition(symbol=symbol,
+                                  side=BUY if p.position > 0 else SELL,
+                                  qty=abs(float(p.position)),
+                                  open_price=open_price,
+                                  month=p.contract.lastTradeDateOrContractMonth
+                                  or ""))
+        return out
+
+    def tagged_orders(self) -> list[IbOrder]:
+        out: list[IbOrder] = []
+        if self.ib is None:
+            return out
+        type_map = {"MKT": "MKT", "LMT": "LMT", "STP": "STP"}
+        for tr in self.ib.trades():
+            ref = tr.order.orderRef or ""
+            if not ref.startswith("CPY#"):
+                continue
+            out.append(IbOrder(
+                order_id=int(tr.order.orderId), tag=ref,
+                symbol=tr.contract.symbol,
+                action=tr.order.action,
+                order_type=type_map.get(tr.order.orderType, tr.order.orderType),
+                qty=float(tr.order.totalQuantity),
+                month=tr.contract.lastTradeDateOrContractMonth or "",
+                limit_price=float(tr.order.lmtPrice or 0.0),
+                stop_price=float(tr.order.auxPrice or 0.0),
+                parent_id=int(tr.order.parentId or 0),
+                oca_group=tr.order.ocaGroup or "",
+                active=tr.orderStatus.status in
+                       ("Presubmitted", "PendingSubmit", "Submitted", "ApiPending"),
+                filled=tr.orderStatus.status == "Filled"))
+        return out
+
+    def closed_per_tag(self, tag: str) -> float:
+        """Quantity closed against a tagged record: every fill under this
+        tag whose side OPPOSES the record's opening fill (fired children,
+        partial reduce orders, manual closes). The opening fill itself has
+        the same side as its own order, so a rule keyed on the fill's own
+        order action would misclassify reduce fills — key on the opening
+        side instead."""
+        if self.ib is None:
+            return 0.0
+        fills = [f for f in self.ib.fills()
+                 if (f.execution.orderRef or "") == tag]
+        if not fills:
+            return 0.0
+        open_side = fills[0].execution.side     # first fill chronologically = the open
+        return sum(abs(float(f.execution.shares))
+                   for f in fills if f.execution.side != open_side)
+
+    # ---- commands (each bounded by its internal wait loop) ----
+    def open_bracket(self, symbol: str, side: int, qty: float,
+                     sl: float, tp: float, tag: str, month: str = "",
+                     timeout_s: float = 15.0) -> tuple[bool, float, str]:
+        from ib_async import MarketOrder, StopOrder, LimitOrder
+        if self.ib is None:
+            return (False, 0.0, self._last_error or "not connected")
+        contract = self._contract_for(symbol, month)
+        if contract is None:
+            return (False, 0.0, f"contract not resolved for {symbol}")
+        action = "BUY" if side == BUY else "SELL"
+        parent = MarketOrder(action, qty)
+        parent.orderRef = tag
+        try:
+            trade = self.ib.placeOrder(contract, parent)
+        except Exception as exc:
+            return (False, 0.0, f"order rejected: {exc}")
+        if not self._wait_terminal(trade, timeout_s):
+            return (False, 0.0, f"timeout waiting for {action} fill ({tag})")
+        if trade.orderStatus.status == "Cancelled":
+            return (False, 0.0, f"order cancelled: {trade.orderStatus.warningText}")
+        fill_px = float(trade.orderStatus.avgFillPrice or 0.0)
+        oca = OCA_PREFIX + str(parent.orderId)
+        prot = "SELL" if action == "BUY" else "BUY"
+        if sl > 0.0:
+            child = StopOrder(prot, qty, sl)
+            child.orderRef, child.parentId, child.ocaGroup = tag, parent.orderId, oca
+            self.ib.placeOrder(contract, child)
+        if tp > 0.0:
+            child = LimitOrder(prot, qty, tp)
+            child.orderRef, child.parentId, child.ocaGroup = tag, parent.orderId, oca
+            self.ib.placeOrder(contract, child)
+        return (True, fill_px, "")
+
+    def set_protective(self, symbol: str, side: int, tag: str,
+                       sl: float, tp: float, qty: float, month: str = "",
+                       timeout_s: float = 15.0) -> tuple[bool, str]:
+        from ib_async import StopOrder, LimitOrder
+        if self.ib is None:
+            return (False, self._last_error or "not connected")
+        contract = self._contract_for(symbol, month)
+        if contract is None:
+            return (False, f"contract not resolved for {symbol}")
+        prot = "SELL" if side == BUY else "BUY"
+        oca = OCA_PREFIX + str(int(time.time() * 1000) % 1_000_000_000)
+        for tr in list(self.ib.trades()):
+            ref = tr.order.orderRef or ""
+            if (ref == tag and tr.contract.localSymbol == contract.localSymbol
+                    and tr.order.orderType in ("STP", "LMT")
+                    and tr.orderStatus.status not in ("Filled", "Cancelled")):
+                self.ib.cancelOrder(tr.order)
+        if sl > 0.0:
+            child = StopOrder(prot, qty, sl)
+            child.orderRef, child.ocaGroup = tag, oca
+            self.ib.placeOrder(contract, child)
+        if tp > 0.0:
+            child = LimitOrder(prot, qty, tp)
+            child.orderRef, child.ocaGroup = tag, oca
+            self.ib.placeOrder(contract, child)
+        return (True, "")
+
+    def reduce(self, symbol: str, side: int, qty: float, tag: str,
+               close: bool, month: str = "", timeout_s: float = 15.0
+               ) -> tuple[bool, float, str]:
+        from ib_async import MarketOrder
+        if self.ib is None:
+            return (False, 0.0, self._last_error or "not connected")
+        contract = self._contract_for(symbol, month)
+        if contract is None:
+            return (False, 0.0, f"contract not resolved for {symbol}")
+        action = "SELL" if side == BUY else "BUY"
+        order = MarketOrder(action, qty)
+        order.orderRef = tag
+        try:
+            trade = self.ib.placeOrder(contract, order)
+        except Exception as exc:
+            return (False, 0.0, f"order rejected: {exc}")
+        if not self._wait_terminal(trade, timeout_s):
+            return (False, 0.0, "timeout waiting for fill")
+        if trade.orderStatus.status == "Cancelled":
+            return (False, 0.0, f"order cancelled: {trade.orderStatus.warningText}")
+        filled = min(qty, float(trade.orderStatus.cumFillQuantity or 0.0))
+        if close:
+            flat = self._net_qty(symbol) == 0.0
+            if flat:
+                for tr in list(self.ib.trades()):
+                    if ((tr.order.orderRef or "") == tag
+                            and tr.order.orderType in ("STP", "LMT")
+                            and tr.orderStatus.status not in ("Filled", "Cancelled")):
+                        self.ib.cancelOrder(tr.order)
+        return (True, filled, "")
+
+    # ---- helpers ----
+    def _contract_for(self, symbol: str, month: str = ""):
+        """month='': the currently resolved contract. A recorded month builds
+        the exact contract an existing position lives on (rollover keeps
+        existing positions on their month — Review Focus #5)."""
+        if self.ib is None:
+            return None
+        if not month:
+            return self._contracts.get(symbol)
+        spec = self._resolved.get(symbol, {})
+        if spec.get("sec_type", "FUT") != "FUT":
+            return self._contracts.get(symbol)  # non-FUT: one contract, no months
+        cached = self._contracts_by_month.get((symbol, month))
+        if cached is not None:
+            return cached
+        from ib_async import Contract
+        c = Contract(symbol=symbol, secType="FUT",
+                     exchange=spec.get("exchange", ""),
+                     lastTradeDateOrContractMonth=month)
+        self._contracts_by_month[(symbol, month)] = c
+        return c
+
+    def _net_qty(self, symbol: str) -> float:
+        total = 0.0
+        for p in self.ib.positions():
+            if p.contract.symbol == symbol:
+                total += float(p.position)
+        return total
+
+    @staticmethod
+    def _wait_terminal(trade, timeout_s: float) -> bool:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if trade.orderStatus.status in ("Filled", "Cancelled"):
+                return True
+            trade.ib.sleep(0.1)
+        return False

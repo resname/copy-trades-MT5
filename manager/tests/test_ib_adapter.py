@@ -118,3 +118,64 @@ def test_tick_and_positions_open_price():
     gw.open_bracket("YM", BUY, 2.0, 0.0, 0.0, "CPY#1|MV0.1|SV2")
     assert gw.tick("YM") == (45_000.0, 45_001.0)
     assert gw.net_positions()[0].open_price == 45_001.0
+
+
+class _IBStubClass:
+    """Stand-in for ib_async.IB: only the methods adapter.py touches."""
+    managedAccounts = "DU123"
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self._details = [self._detail("202612"), self._detail("202703")]
+
+    @staticmethod
+    def _detail(month):
+        from types import SimpleNamespace
+        return SimpleNamespace(lastTradeDateOrContractMonth=month,
+                               multiplier="5", minTick=0.25, contract=None)
+
+    def connect(self, host, port, clientId=0, timeout=10.0):
+        self.calls.append(("connect", host, port, clientId))
+        self.connected = True
+
+    def isConnected(self):
+        return getattr(self, "connected", False)
+
+    def reqPositions(self): ...
+    def reqAccountUpdates(self, subscribe, account_id): ...
+    def disconnect(self): ...
+
+    def reqContractDetails(self, contract):
+        self.calls.append(("details", contract.symbol))
+        return self._details
+
+
+def test_real_gateway_resolve_uses_pick_front_month(monkeypatch):
+    """resolve_contract over a stubbed ib_async picks the month through the
+    same pure helper the fake uses (roll window -> next month)."""
+    import sys
+    import types
+    from types import SimpleNamespace
+    from manager.worker.ib import adapter as ad
+
+    stub = types.ModuleType("ib_async")
+    stub.IB = _IBStubClass
+    stub.Contract = lambda **kw: SimpleNamespace(**kw)
+    stub.MarketOrder = stub.StopOrder = stub.LimitOrder = \
+        lambda *a, **k: SimpleNamespace(orderId=0)
+    monkeypatch.setitem(sys.modules, "ib_async", stub)
+
+    ib = _IBStubClass()
+    ib.connected = True
+    gw = ad.RealIbGateway()
+    gw.ib = ib                      # skip connect; simulate an initialized gw
+    r = gw.resolve_contract("YM", today="20261226", exchange="CME", roll_days=5)
+    assert r["month"] == "202703" and r["rolling"] is True   # roll window
+    assert r["multiplier"] == 5.0 and r["tick_size"] == 0.25
+    # the whatIf margin probe failed (stubbed placeOrder absent here) -> 0.0
+    assert r["margin_est"] == 0.0
+
+
+def test_adapter_import_does_not_require_ib_async():
+    import manager.worker.ib.adapter as mod
+    mod.RealIbGateway  # class object exists without ib_async present at import
