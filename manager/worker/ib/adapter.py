@@ -1,6 +1,7 @@
 # manager/worker/ib/adapter.py
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -438,17 +439,19 @@ class RealIbGateway:
         return res
 
     def _margin_estimate(self, contract) -> float:
-        """whatIf probe: real maintenance margin per 1 contract. 0.0 = unknown
-        (the worker then skips the margin guard rather than refusing)."""
+        """whatIf probe: real maintenance margin per 1 contract, via
+        IB.whatIfOrder -> OrderState (blocking; OrderState's margin fields
+        are strings). 0.0 = unknown (the worker then skips the margin guard
+        rather than refusing)."""
         from ib_async import MarketOrder
         try:
             probe = MarketOrder("BUY", 1)
             probe.whatIf = True
-            trade = self.ib.placeOrder(contract, probe)
-            margin = float(trade.orderStatus.initMarginAfter or 0.0) \
-                or float(trade.orderStatus.maintMarginAfter or 0.0)
-            self.ib.cancelOrder(probe)
-            return margin
+            state = self.ib.whatIfOrder(contract, probe)   # OrderState
+            return (float(state.initMarginChange or 0.0)
+                    or float(state.maintMarginChange or 0.0)
+                    or float(state.initMarginAfter or 0.0)
+                    or float(state.maintMarginAfter or 0.0))
         except Exception:
             return 0.0
 
@@ -465,7 +468,8 @@ class RealIbGateway:
             self._last_error = f"market data for {symbol}: {exc}"
             return None
         bid, ask = float(t.bid or 0.0), float(t.ask or 0.0)
-        if bid <= 0.0 or ask <= 0.0:
+        if (not math.isfinite(bid) or not math.isfinite(ask)
+                or bid <= 0.0 or ask <= 0.0):
             self._last_error = (f"no live market data for {symbol} "
                                 f"(IB data subscription required)")
             return None
@@ -524,7 +528,7 @@ class RealIbGateway:
                 parent_id=int(tr.order.parentId or 0),
                 oca_group=tr.order.ocaGroup or "",
                 active=tr.orderStatus.status in
-                       ("Presubmitted", "PendingSubmit", "Submitted", "ApiPending"),
+                       ("PreSubmitted", "PendingSubmit", "Submitted", "ApiPending"),
                 filled=tr.orderStatus.status == "Filled"))
         return out
 
@@ -565,7 +569,8 @@ class RealIbGateway:
         if not self._wait_terminal(trade, timeout_s):
             return (False, 0.0, f"timeout waiting for {action} fill ({tag})")
         if trade.orderStatus.status == "Cancelled":
-            return (False, 0.0, f"order cancelled: {trade.orderStatus.warningText}")
+            reason = trade.log[-1].message if trade.log else ""
+            return (False, 0.0, f"order cancelled: {reason}")
         fill_px = float(trade.orderStatus.avgFillPrice or 0.0)
         oca = OCA_PREFIX + str(parent.orderId)
         prot = "SELL" if action == "BUY" else "BUY"
@@ -592,7 +597,9 @@ class RealIbGateway:
         oca = OCA_PREFIX + str(int(time.time() * 1000) % 1_000_000_000)
         for tr in list(self.ib.trades()):
             ref = tr.order.orderRef or ""
-            if (ref == tag and tr.contract.localSymbol == contract.localSymbol
+            if (ref == tag and tr.contract.symbol == contract.symbol
+                    and (not month
+                         or tr.contract.lastTradeDateOrContractMonth == month)
                     and tr.order.orderType in ("STP", "LMT")
                     and tr.orderStatus.status not in ("Filled", "Cancelled")):
                 self.ib.cancelOrder(tr.order)
@@ -625,8 +632,9 @@ class RealIbGateway:
         if not self._wait_terminal(trade, timeout_s):
             return (False, 0.0, "timeout waiting for fill")
         if trade.orderStatus.status == "Cancelled":
-            return (False, 0.0, f"order cancelled: {trade.orderStatus.warningText}")
-        filled = min(qty, float(trade.orderStatus.cumFillQuantity or 0.0))
+            reason = trade.log[-1].message if trade.log else ""
+            return (False, 0.0, f"order cancelled: {reason}")
+        filled = min(qty, float(trade.orderStatus.filled or 0.0))
         if close:
             flat = self._net_qty(symbol) == 0.0
             if flat:
@@ -666,11 +674,13 @@ class RealIbGateway:
                 total += float(p.position)
         return total
 
-    @staticmethod
-    def _wait_terminal(trade, timeout_s: float) -> bool:
+    def _wait_terminal(self, trade, timeout_s: float) -> bool:
+        """Poll the live Trade until Filled/Cancelled, driving ib_async's own
+        event loop with IB.sleep (staticmethod of util.sleep) — NEVER
+        time.sleep (Trade is updated by the loop between sleeps)."""
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if trade.orderStatus.status in ("Filled", "Cancelled"):
                 return True
-            trade.ib.sleep(0.1)
+            self.ib.sleep(0.1)
         return False
