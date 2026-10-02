@@ -7,7 +7,7 @@ terminals — validate here before trusting the copier with a real account.
 
 ## Prereqs
 - Windows 11, Python 3.11+.
-- `pip install -e .` (pulls PySide6, pywin32, psutil, MetaTrader5).
+- `pip install -e .` (pulls PySide6, psutil, MetaTrader5).
 - Two MT5 test accounts on the same broker (one master, one slave),
   with their login (integer), password, and server name to hand.
 - Internet (the `mt5setup.exe` web installer downloads components).
