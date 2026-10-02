@@ -149,6 +149,38 @@ def test_config_round_trip_restores_master_and_slaves(qapp, tmp_path):
     assert w2.slave_list.count() == 1
 
 
+def test_load_config_drops_saved_ib_slave_and_keeps_mt5(qapp, tmp_path):
+    """A v0.1.26 settings.json with an IB slave loads on the MT5-only build:
+    the IB slave is dropped in memory (one log line, no crash, the file is
+    not rewritten); mt5 slaves survive."""
+    import json
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    path = tmp_path / "settings.json"
+    slaves = [
+        {"id": "ib1", "terminal_path": None,
+         "symbol_map_csv": "US30=YM", "platform": "ib",
+         "ib_host": "127.0.0.1", "ib_port": 4002, "ib_client_id": 7,
+         "contract_map": {}},
+        {"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+         "symbol_map_csv": "", "step_amount": 100.0,
+         "step_size": 0.01, "max_lot": 10.0,
+         "max_trade_age_minutes": 10.0, "normalize_sltp": True}]
+    # SettingsStore nests the GUI config under a "config" key
+    # (save_config/load_config), so write it pre-nested exactly as saved.
+    path.write_text(
+        json.dumps({"config": {"master": {"terminal_path": "C:/m/terminal64.exe"},
+                               "slaves": slaves}}),
+        encoding="utf-8")
+    store = SettingsStore(path=path)
+    w = MainWindow(FakeController(), store=store)
+    assert [x.id for x in w._slaves] == ["s1"]
+    assert w.slave_list.count() == 1
+    assert "ib1" in w.log_view.toPlainText()
+    # the file is NOT rewritten: it still contains the saved (dead) IB slave
+    assert "ib1" in path.read_text(encoding="utf-8")
+
+
 def test_load_config_skips_when_store_none(qapp):
     from manager.gui.main_window import MainWindow
     w = MainWindow(FakeController())  # store=None

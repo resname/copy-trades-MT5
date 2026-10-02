@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
 from manager.engine.models import BUY, SELL  # noqa: F401  (re-exported for GUI)
@@ -43,13 +43,6 @@ class AccountSpec:
     sizing_mode: str = "balance_step"
     master_base_lot: float = 0.0
     fixed_lot: float = 0.01
-    # platform: "mt5" (default) or "ib". An IB account has no MetaTrader
-    # terminal: terminal_path is ignored and terminal assignment skips it.
-    platform: str = "mt5"
-    ib_host: str = "127.0.0.1"
-    ib_port: int = 4002
-    ib_client_id: int = 7
-    contract_map: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -111,15 +104,10 @@ class CopyController:
         """Validate terminal-path assignments (uniqueness + normalize to exe
         path) and assign one instance per account. Raises ControllerError on
         duplicate/unresolvable assignments. No auto-provisioning — the user
-        brings terminals they have already installed and logged in to.
-        IB slaves are excluded (they have no MetaTrader terminal)."""
-        if master.platform == "ib":
-            raise ControllerError("IB accounts cannot be the master")
+        brings terminals they have already installed and logged in to."""
         seen: dict[str, str] = {}
         mt5_accounts = [self._account_dict(master)]
         for s in slaves:
-            if s.platform == "ib":
-                continue
             mt5_accounts.append(self._account_dict(s))
         for a in mt5_accounts:
             ov = a.get("terminal_path")
@@ -156,22 +144,6 @@ class CopyController:
             "master_interval_ms": 1000,
         }
         for s in slaves:
-            if s.platform == "ib":
-                # No terminal instance: the IB worker connects to TWS/IB
-                # Gateway over its host:port instead.
-                cfgs[s.id] = {
-                    "slave_id": s.id, "platform": "ib",
-                    "symbol_map_csv": s.symbol_map_csv,
-                    "normalize_sltp": s.normalize_sltp,
-                    "contract_map": s.contract_map,
-                    "ib_host": s.ib_host, "ib_port": s.ib_port,
-                    "ib_client_id": s.ib_client_id,
-                    "sizing_mode": s.sizing_mode,
-                    "roll_days": 5, "ack_timeout_ms": 15000,
-                    "retry_count": 3, "retry_delay_ms": 500,
-                    "slave_status_interval_ms": 5000,
-                }
-                continue
             s_inst = assigned[s.id]
             cfgs[s.id] = {
                 "slave_id": s.id,
@@ -193,8 +165,6 @@ class CopyController:
         sup.on_restart = lambda name, role: self._status(
             "info", f"restarted {role} {name}")
         sup.on_error = lambda name, message: self._on_supervisor_error(name, message)
-        sup.on_slave_status = lambda name, detail: self._status(
-            "slave_status", f"{name}: {detail}", slave_id=name)
         return sup
 
     def _on_supervisor_error(self, name: str, message: str) -> None:
@@ -247,8 +217,7 @@ class CopyController:
         # Algo-Trading preflight (slaves): block before any copy is attempted.
         # A slave with Algo Trading off would silently accept commands whose
         # order_send is blocked (retcode 10030/invalid) — surface it now.
-        disabled = [(s.id, cfgs[s.id].get("terminal_path",
-                                          f"{s.ib_host}:{s.ib_port}"))
+        disabled = [(s.id, cfgs[s.id].get("terminal_path", "?"))
                     for s in slaves if not sup.slave_trade_allowed(s.id)]
         if disabled:
             names = [f"{sid} ({path})" for sid, path in disabled]
@@ -308,16 +277,8 @@ class CopyController:
             symbol_map_csv=spec.symbol_map_csv, normalize_sltp=spec.normalize_sltp,
             sizing_mode=spec.sizing_mode, master_base_lot=spec.master_base_lot,
             fixed_lot=spec.fixed_lot)
-        if spec.platform == "ib":
-            # F5: the IB connection params must survive a respawn — a running
-            # worker re-reads h.config (not the saved spec) when re-spawned.
-            self._supervisor.reconfigure_slave(
-                slave_id, spec.symbol_map_csv, spec.normalize_sltp,
-                contracts=spec.contract_map, ib_host=spec.ib_host,
-                ib_port=spec.ib_port, ib_client_id=spec.ib_client_id)
-        else:
-            self._supervisor.reconfigure_slave(
-                slave_id, spec.symbol_map_csv, spec.normalize_sltp)
+        self._supervisor.reconfigure_slave(
+            slave_id, spec.symbol_map_csv, spec.normalize_sltp)
 
     def is_running(self) -> bool:
         return self._supervisor is not None and self._supervisor._thread is not None \

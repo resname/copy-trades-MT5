@@ -239,6 +239,11 @@ class MainWindow(QMainWindow):
         for s in (cfg.get("slaves") if isinstance(cfg, dict) else None) or []:
             if not isinstance(s, dict):
                 continue
+            if str(s.get("platform") or "").lower() == "ib":
+                self.append_log(
+                    f"slave {s.get('id', '?')} dropped: platform 'ib' no "
+                    "longer supported (saved by an older manager version)")
+                continue
             fields = AccountSpec.__dataclass_fields__
             kwargs = {k: s[k] for k in fields if k in s}
             try:
