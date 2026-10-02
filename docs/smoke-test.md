@@ -1,14 +1,14 @@
-# Manual Demo Smoke Test — CopyTrades MT5 (demo accounts only)
+# Manual Smoke Test — CopyTrades MT5
 
 **Scope:** the tier-3 manual validation. The full unit + fake-worker
 integration suite (`pytest manager/tests`) covers the copy logic with no
 terminal and no GUI. This runbook is the only step that touches real MT5
-terminals, and it is **demo accounts only** — never use a real account.
+terminals — validate here before trusting the copier with a real account.
 
 ## Prereqs
 - Windows 11, Python 3.11+.
 - `pip install -e .` (pulls PySide6, pywin32, psutil, MetaTrader5).
-- Two MT5 **demo** accounts on the same broker (one master, one slave),
+- Two MT5 test accounts on the same broker (one master, one slave),
   with their login (integer), password, and server name to hand.
 - Internet (the `mt5setup.exe` web installer downloads components).
 
@@ -22,7 +22,7 @@ terminals, and it is **demo accounts only** — never use a real account.
 3. **Discovery.** In the Master pane, open the Terminal dropdown. Confirm it
    lists any already-installed MT5 (`%APPDATA%\MetaQuotes\Terminal\<hash>\
    origin.txt` discovery + the default `C:\Program Files\MetaTrader 5\`).
-4. **Provisioning.** Add one Slave (Add Slave → fill the slave demo account).
+4. **Provisioning.** Add one Slave (Add Slave → fill in the slave account).
    Click Start. The status panel should show `provisioning…` then
    `provisioned 1 terminal instance(s): …instance_0`. Confirm a new terminal
    appears at `%LOCALAPPDATA%\CopyTradesMT5\terminals\instance_0\` with a
@@ -33,8 +33,8 @@ terminals, and it is **demo accounts only** — never use a real account.
    the slave reported SymbolInfo + Status. (This is the Plan 2/3 startup-race
    fix. Without it, the master's first snapshot would beat the slave's
    SymbolInfo and the first OPEN would be permanently skipped.)
-6. **Copy.** On the master demo terminal, open a small market position on a
-   symbol the slave maps (e.g. EURUSD). Within ~1–2 s the slave demo
+6. **Copy.** On the master terminal, open a small market position on a
+   symbol the slave maps (e.g. EURUSD). Within ~1–2 s the slave
    terminal should open the mirrored position with the `CPY#<ticket>|MV..|SV..`
    comment. Modify the master SL/TP → the slave follows. Partial-close the
    master → the slave partial-closes. Fully close the master → the slave

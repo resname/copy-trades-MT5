@@ -80,12 +80,12 @@ pytest -q manager/tests/test_supervisor_readiness.py::test_wait_for_slaves_ready
 
 ---
 
-## 5. Manual smoke test (demo accounts only)
+## 5. Manual smoke test
 
 The automated suite never touches a live MT5 terminal. For an end-to-end run
-against real (demo) MT5 terminals, follow the manual runbook:
+against real MT5 terminals, follow the manual runbook:
 
-[`docs/smoke-test.md`](smoke-test.md) — demo accounts only, never a real account.
+[`docs/smoke-test.md`](smoke-test.md) — validate before trusting a real account.
 
 ---
 

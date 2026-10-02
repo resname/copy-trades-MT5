@@ -32,7 +32,7 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
    source: `pip install -e .[test]` then `python -m manager` — see
    [Installation](#installation).
 2. **Install/log in to terminals**: one MetaTrader 5 terminal per account, each
-   logged in to a **DEMO account** (never a real account). Use the manager's
+   logged in to the account it will trade. Use the manager's
    **Install MetaTrader** button if you need more (choose a custom install path
    per terminal).
 3. **Enable Algo Trading on every terminal** ⚠️ — in each MetaTrader terminal,
@@ -49,11 +49,8 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 6. Close the window for an orderly stop — the engine stops and the app exits.
    The app auto-checks for updates hourly.
 
-For the full run-through, see [Usage](#usage). For demo setup, see
+For the full run-through, see [Usage](#usage). For a manual run-through, see
 [`docs/smoke-test.md`](docs/smoke-test.md).
-For IB slave setup — including how to enable the API in the TWS
-workstation — see [TWS / IB Gateway API setup](#tws--ib-gateway-api-setup)
-and [`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
 
 ---
 
@@ -86,7 +83,7 @@ and [`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
 - **Auto-find MT5 instances** — discovers installed terminals via `origin.txt`
   and the default Program Files locations.
 - **Manual-login, terminal-path-only setup** — you log in to each MT5 terminal
-  via its own UI (demo account), then select only the terminal path in the
+  via its own UI, then select only the terminal path in the
   manager; the manager never sees or stores credentials.
 - **Install MetaTrader / Open terminal for login buttons** — open the MT5
   download page to install another terminal (custom install path per
@@ -107,10 +104,6 @@ and [`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
 
 ## Security model
 
-- **Demo accounts only — never a real account.** This applies to the manual
-  login you perform in `terminal64.exe`; the manager enforces nothing here (it
-  never sees credentials), so it is user-side discipline, stated in the GUI
-  disclaimer.
 - **No credentials are stored, piped, or logged by the manager.** There is no
   DPAPI store, no password in the settings file, no password on the worker pipe
   or command line. The selected terminal path is the account identity; the
@@ -130,8 +123,8 @@ and [`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
   (via winget, with a python.org fallback), and on ARM64 Windows runs that
   x64 Python under emulation. On a plain x64 machine this is all automatic
   and invisible.
-- **MetaTrader 5** terminals installed and logged in to (one per account,
-  demo accounts). The manager discovers existing installs; install extras
+- **MetaTrader 5** terminals installed and logged in to (one per account).
+  The manager discovers existing installs; install extras
   via the **Install MetaTrader** button (custom install path per terminal).
 - Python dependencies (installed via `pip install -e .`):
   - `PySide6>=6.6` — GUI
@@ -190,8 +183,8 @@ same update from the command line.
    **custom install path** for each terminal (the default path collides with
    existing terminals). Install one terminal per account.
 2. **Log in to each terminal**: click **Launch terminal** to open a terminal's
-   login window (or open it yourself), and log in to a **DEMO account** (never
-   a real account). The terminal saves the account.
+   login window (or open it yourself), and log in to the account it will
+   trade. The terminal saves the account.
 3. **Master**: in the manager, select the master terminal from the dropdown.
    Click **Start** (the manager connects to that terminal's saved account —
    no login/server/password entered in the manager). **Algo Trading must be
@@ -218,63 +211,8 @@ same update from the command line.
    in seconds (no network in the restart path) and reliably relaunches the
    manager.
 
-For a full manual demo run-through (demo accounts only), see
+For a full manual run-through, see
 [`docs/smoke-test.md`](docs/smoke-test.md).
-For a full IB paper run-through, see
-[`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
-
----
-
-## TWS / IB Gateway API setup
-
-An IB slave connects over the **TWS API socket** — the same API served by
-both IB's Trader Workstation (TWS) and IB Gateway. It copies futures (and
-other IB-traded assets) through the `ib_async` library: the manager opens
-one socket connection to the program's API port; the account identity is
-whatever the program is logged in to, so the manager never sees or stores
-credentials. **Use a paper account.** Configure whichever program you run:
-
-### Enable the API in the program
-
-**Trader Workstation:** `File → Global Configuration` (or `Edit → Global
-Configuration`) → **API → Settings** →
-
-- Tick **Enable ActiveX and Socket Clients** (the whole TWS API).
-- Note the **socket port**: **7497** paper / **7496** live.
-- Untick **Read-Only API** — the manager places, modifies and cancels
-  orders, which a read-only connection rejects.
-- Leave **Allow connections from localhost only** ticked (default) — the
-  manager runs on the same machine and connects to `127.0.0.1`.
-
-**IB Gateway:** logged in, **Connection → API → Settings** → same three
-toggles; the socket port is **4002** paper / **4001** live.
-
-**TWS-only caveats:**
-
-- In `Global Configuration → Lock and Exit`, select **Auto restart**.
-  Without it, TWS locks and exits at its scheduled daily restart and the
-  API connection dies until someone logs back in; with auto-restart, TWS
-  restarts itself and the manager's worker reconnects.
-
-### Point a slave at the program
-
-In the manager's **Add slave / Edit slave** dialog, set platform to
-**IB Gateway (TWS API)** and fill in:
-
-| Field | Value |
-|-------|-------|
-| IB host | `127.0.0.1` |
-| IB port | The socket port from above — **7497** for TWS paper, **7496** for TWS live, **4002** for Gateway paper, **4001** for Gateway live. ⚠️ The field **defaults to 4002** (Gateway paper); if you run the TWS workstation program instead, change it. |
-| IB client ID | Any unique number (default **7**) — one ID per manager connection per program. |
-| Contract rows | One row per mapped master symbol: slave symbol, exchange (e.g. `CME`), sec type (`FUT`), and the master's $-per-point. |
-
-The rest of the editor (symbol map, lot sizing) works exactly like an MT5
-slave; the manager copies `US30` on the master to the mapped IB contract.
-
-> **Read-Only API left on:** the connection still passes the Start gate
-> (the socket and login handshake succeed), but the first copy command
-> fails with an error in the status — check the program's API settings if
-> a working socket never produces orders.
 
 ---
 
@@ -383,14 +321,14 @@ manager/
   gui/
     main_window.py       Main window (master terminal form + Launch/Install buttons, slave list, status/log, update UI)
     slave_editor.py      Add/edit slave account dialog
-  tests/                 pytest suite (180 headless / 215 with PySide6)
+  tests/                 pytest suite (291 headless / 357 with PySide6)
 scripts/
   install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
   smoke-install.ps1      Local install.ps1 smoke check
 .github/workflows/
   release.yml            Build wheel + publish GitHub Release (auto on push to main)
 docs/
-  smoke-test.md          Manual demo smoke runbook
+  smoke-test.md          Manual smoke runbook
   TESTING.md             How to run the test suite
 ```
 
@@ -403,8 +341,9 @@ The non-GUI logic is fully unit-tested with `pytest`; the GUI tests use
 installed and run on a PySide6-enabled host.
 
 ```powershell
-pytest -q
-# expected on a headless env: 180 passed, 5 skipped (215 passed with PySide6)
+python -m pytest manager/tests -q
+# headless (no PySide6): 291 passed, 5 GUI modules skipped
+# on a host with PySide6 installed: 357 passed
 ```
 
 See [`docs/TESTING.md`](docs/TESTING.md) for the suite layout and how to run
@@ -434,7 +373,7 @@ individual test modules.
 |---------|--------------|-----|
 | `Could not find a version that satisfies the requirement MetaTrader5` (`from versions: none`) | An ARM64 or Microsoft Store Python is in the venv — `MetaTrader5` has only `win_amd64` wheels | Re-run the one-liner; the installer skips Store/ARM64 Pythons and installs x64. If installing manually, use an x64 (`win-amd64`) Python |
 | `mt5.initialize` returns `False` / `-10003` | A stale `terminal64.exe` is holding the terminal's IPC | The supervisor kills the stale terminal before respawn; restart the manager if it persists |
-| Slaves never reach `ready` | Worker failed to log in or fetch SymbolInfo | Check the log view for the worker error; confirm the terminal is logged in to a demo account (the manager does not enter credentials — log in via the terminal's own UI / the Launch button) |
+| Slaves never reach `ready` | Worker failed to log in or fetch SymbolInfo | Check the log view for the worker error; confirm the terminal is logged in via the terminal's own UI / the Launch button (the manager does not enter credentials) |
 | Not enough terminal instances | Fewer installed terminals than accounts | Install more via the Install MetaTrader button (custom path) and log in, or point accounts at specific terminals via the dropdown |
 | Update & restart closes the app but it doesn't reopen | The detached helper's pip install or relaunch step failed | Open `%LOCALAPPDATA%\CopyTradesMT5\updates\update.log` for the step that failed; re-run `copytrades update` or the one-liner installer |
 | Start blocked: "Algo Trading is disabled on: …" / trades don't copy | The Algo Trading toolbar button is off on one or more terminals (the MT5 Python API's `order_send` is blocked) | Enable the **Algo Trading** button in each named terminal (or Tools → Options → Expert Advisors → Allow algorithmic trading), then click Start again |
