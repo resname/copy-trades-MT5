@@ -51,7 +51,9 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
 
 For the full run-through, see [Usage](#usage). For demo setup, see
 [`docs/smoke-test.md`](docs/smoke-test.md).
-For IB-paper slave setup, see [`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
+For IB slave setup — including how to enable the API in the TWS
+workstation — see [TWS / IB Gateway API setup](#tws--ib-gateway-api-setup)
+and [`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
 
 ---
 
@@ -218,6 +220,61 @@ same update from the command line.
 
 For a full manual demo run-through (demo accounts only), see
 [`docs/smoke-test.md`](docs/smoke-test.md).
+For a full IB paper run-through, see
+[`docs/smoke-test-ib.md`](docs/smoke-test-ib.md).
+
+---
+
+## TWS / IB Gateway API setup
+
+An IB slave connects over the **TWS API socket** — the same API served by
+both IB's Trader Workstation (TWS) and IB Gateway. It copies futures (and
+other IB-traded assets) through the `ib_async` library: the manager opens
+one socket connection to the program's API port; the account identity is
+whatever the program is logged in to, so the manager never sees or stores
+credentials. **Use a paper account.** Configure whichever program you run:
+
+### Enable the API in the program
+
+**Trader Workstation:** `File → Global Configuration` (or `Edit → Global
+Configuration`) → **API → Settings** →
+
+- Tick **Enable ActiveX and Socket Clients** (the whole TWS API).
+- Note the **socket port**: **7497** paper / **7496** live.
+- Untick **Read-Only API** — the manager places, modifies and cancels
+  orders, which a read-only connection rejects.
+- Leave **Allow connections from localhost only** ticked (default) — the
+  manager runs on the same machine and connects to `127.0.0.1`.
+
+**IB Gateway:** logged in, **Connection → API → Settings** → same three
+toggles; the socket port is **4002** paper / **4001** live.
+
+**TWS-only caveats:**
+
+- In `Global Configuration → Lock and Exit`, select **Auto restart**.
+  Without it, TWS locks and exits at its scheduled daily restart and the
+  API connection dies until someone logs back in; with auto-restart, TWS
+  restarts itself and the manager's worker reconnects.
+
+### Point a slave at the program
+
+In the manager's **Add slave / Edit slave** dialog, set platform to
+**IB Gateway (TWS API)** and fill in:
+
+| Field | Value |
+|-------|-------|
+| IB host | `127.0.0.1` |
+| IB port | The socket port from above — **7497** for TWS paper, **7496** for TWS live, **4002** for Gateway paper, **4001** for Gateway live. ⚠️ The field **defaults to 4002** (Gateway paper); if you run the TWS workstation program instead, change it. |
+| IB client ID | Any unique number (default **7**) — one ID per manager connection per program. |
+| Contract rows | One row per mapped master symbol: slave symbol, exchange (e.g. `CME`), sec type (`FUT`), and the master's $-per-point. |
+
+The rest of the editor (symbol map, lot sizing) works exactly like an MT5
+slave; the manager copies `US30` on the master to the mapped IB contract.
+
+> **Read-Only API left on:** the connection still passes the Start gate
+> (the socket and login handshake succeed), but the first copy command
+> fails with an error in the status — check the program's API settings if
+> a working socket never produces orders.
 
 ---
 

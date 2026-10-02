@@ -10,7 +10,11 @@ so this runbook is the only step that touches IB Gateway, and it is
 - IB Gateway installed (ibkrguides.com/software/gateway — IB Gateway 10.x),
   logged in to a **paper** account.
 - Gateway API settings (login → Connection → API → Settings): enable
-  "ActiveX and Socket Clients", disable "Read-Only API".
+  "ActiveX and Socket Clients", disable "Read-Only API". Socket port:
+  **4002** paper / **4001** live (TWS instead: 7497 paper / 7496 live) —
+  set the slave's IB port field to match. See the README's
+  [TWS / IB Gateway API setup](../README.md#tws--ib-gateway-api-setup)
+  section for the full walkthrough.
 - `pip install -e .` fresh installs `ib_async==2.1.0` from pyproject.
 - Windows 11, Python 3.11+; the manager venv already ships ib_async (the
   in-app updater installs it explicitly after its `--no-deps` wheel
