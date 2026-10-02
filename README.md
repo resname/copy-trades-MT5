@@ -342,7 +342,7 @@ installed and run on a PySide6-enabled host.
 
 ```powershell
 python -m pytest manager/tests -q
-# headless (no PySide6): 291 passed, 5 GUI modules skipped
+# headless (no PySide6): 291 passed, 4 skipped
 # on a host with PySide6 installed: 357 passed
 ```
 

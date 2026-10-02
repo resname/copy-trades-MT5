@@ -51,15 +51,12 @@ terminals — validate here before trusting the copier with a real account.
    log should show `restarted slave …` and copying should resume — with NO
    `initialize failed: -10003` error (the stale-terminal IPC collision the
    kill clears).
-9. **Close-to-tray.** Close the window. It should hide to the tray (process
-   + workers stay alive; copying continues). Double-click the tray icon to
-   show it again.
-10. **Orderly quit.** Tray → Quit. The log should show `stopping…` then
-    `stopped`; all `terminal64.exe` the manager launched should exit within
-    a few seconds (workers `mt5.shutdown()` on pipe EOF).
+9. **Orderly quit.** Close the window. The log should show `stopping…` then
+   `stopped`; all `terminal64.exe` the manager launched should exit within
+   a few seconds (workers `mt5.shutdown()` on pipe EOF).
 
 ## Pass criteria
-- Steps 5, 6, 8, 10 behave as described. Steps 3, 4, 7, 9 show the expected
+- Steps 5, 6, 8, 9 behave as described. Steps 3, 4, 7 show the expected
   UI/FS state. No `CredentialDecryptError` on a fresh install (no stored
   creds yet); if you copy the settings file to another user/machine and
   Start, the GUI must re-prompt for the password (DPAPI cross-user failure).

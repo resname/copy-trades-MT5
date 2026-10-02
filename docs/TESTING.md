@@ -34,13 +34,13 @@ pytest -q
 Expected on a headless Windows env without PySide6 installed:
 
 ```
-180 passed, 5 skipped
+291 passed, 4 skipped
 ```
 
-The 5 skips are the GUI test modules (`test_main_window`,
-`test_main_window_updates`, `test_slave_editor`, `test_tray`,
+The 4 skips are the GUI test modules (`test_main_window`,
+`test_main_window_updates`, `test_slave_editor`,
 `test_main_entry`) — they call `pytest.importorskip("PySide6")` at module level.
-On a host with PySide6 installed they run too (then `215 passed`).
+On a host with PySide6 installed they run too (then `357 passed`).
 
 ---
 
@@ -66,7 +66,7 @@ Tests live in `manager/tests/` and mirror the package structure:
 | `test_version.py` | `_version.__version__` single source of truth |
 | `test_updater.py` | Version compare + wheel pre-download/SHA-verify/cache + apply-and-restart (mocked network/popen) |
 | `test_update_helper.py` | Detached update helper: wait for parent exit → reinstall → relaunch (mocked) |
-| `test_main_window.py`, `test_slave_editor.py`, `test_tray.py`, `test_main_entry.py` | GUI construction + app-graph wiring (skip without PySide6) |
+| `test_main_window.py`, `test_slave_editor.py`, `test_main_entry.py`, `test_main_window_updates.py` | GUI construction + app-graph wiring (skip without PySide6) |
 | `test_main_window_updates.py` | GUI update UI: check-for-updates, Update available, engine-idle-gated Update & restart (skip without PySide6) |
 
 ---
