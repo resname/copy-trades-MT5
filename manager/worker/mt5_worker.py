@@ -294,8 +294,20 @@ def _slave_loop(pipe, adapter, config):
     last_status = time.time()
     poll_timeout = min(1.0, status_interval)
     while True:
-        if pipe.poll(poll_timeout):
-            cmd = recv_msg(pipe)  # raises EOFError on manager close
+        try:
+            has_cmd = pipe.poll(poll_timeout)
+        except (EOFError, OSError):
+            # Windows: poll on a peer-closed empty pipe raises
+            # BrokenPipeError; clean close is EOFError. Either way the
+            # manager is gone — same graceful shutdown worker_main grants
+            # on EOF (direct invocations, e.g. tests running this loop in
+            # a bare thread, have no outer catcher).
+            return
+        if has_cmd:
+            try:
+                cmd = recv_msg(pipe)  # raises EOFError on manager close
+            except (EOFError, OSError):
+                return  # manager closed the pipe mid-frame
             if isinstance(cmd, ReconfigureMsg):
                 # Live reconfigure: update this loop's params and re-report the
                 # symbol info for the NEW map's slave symbols. Open positions
