@@ -252,6 +252,13 @@ class SlaveEditor(QDialog):
         self.sizing_mode.setCurrentIndex(idx if idx >= 0 else 0)
         self.master_base_lot.setText(str(spec.master_base_lot))
         self.fixed_lot.setText(str(spec.fixed_lot))
+        # F5: an IB edit keeps its connection params; when identity is locked
+        # the platform combo may not switch platforms (a locked existing-slave
+        # edit would silently respawn as the wrong worker otherwise)
+        self.platform.setEnabled(not lock_identity)
+        self.ib_host.setText(spec.ib_host)
+        self.ib_port.setText(str(spec.ib_port))
+        self.ib_client_id.setText(str(spec.ib_client_id))
         self.step_amount.setText(str(spec.step_amount))
         self.step_size.setText(str(spec.step_size))
         self.max_lot.setText(str(spec.max_lot))

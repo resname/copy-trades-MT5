@@ -494,6 +494,47 @@ def test_reconfigure_ib_slave_sends_contracts():
         parent.close()
 
 
+def test_reconfigure_ib_slave_carries_connection_params_into_config():
+    """F5: editing a running IB slave's connection (port 4001 -> 4002) must
+    land in h.config so the respawned worker connects with the new port —
+    otherwise a later respawn fatal-fails on the old port. MT5 slaves have
+    none of these keys; the absent values are never injected (additive)."""
+    from manager.ipc.messages import ReconfigureMsg
+    from manager.ipc.pipe_framing import recv_msg
+    eng = CopyEngine()
+    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
+                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
+                              max_trade_age_minutes=999999,
+                              normalize_sltp=True))
+    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
+                     consecutive_failures=3, poll_timeout=0.02)
+    parent, child = multiprocessing.Pipe(duplex=True)
+    sup._handles["ib1"] = WorkerHandle(
+        name="ib1", role="slave", proc=_StubProc(), pipe=child,
+        config={"platform": "ib", "ib_host": "127.0.0.1", "ib_port": 4001,
+                "ib_client_id": 7},
+        adapter_kind="", fake_state=None)
+    sup._handles["s2"] = WorkerHandle(
+        name="s2", role="slave", proc=_StubProc(), pipe=None,
+        config={"terminal_path": "C:/t/s.exe"},
+        adapter_kind="", fake_state=None)
+    try:
+        sup.reconfigure_slave("ib1", "US30=YM", True, ib_host="127.0.0.1",
+                              ib_port=4002, ib_client_id=9)
+        recv_msg(parent)                       # the ReconfigureMsg still flows
+        cfg = sup._handles["ib1"].config
+        assert (cfg["ib_host"], cfg["ib_port"], cfg["ib_client_id"]) \
+            == ("127.0.0.1", 4002, 9)
+        # MT5 path: absent keys untouched — the config grows no ib_* keys
+        sup.reconfigure_slave("s2", "EURUSD=GBPUSD", False)
+        cfg2 = sup._handles["s2"].config
+        assert not any(k in cfg2 for k in ("ib_host", "ib_port", "ib_client_id"))
+    finally:
+        sup.shutdown()
+        child.close()
+        parent.close()
+
+
 # ---- Task 10: StatusMsg.detail -> GUI status line (IB contract state) ----
 
 def _ib_status_handle() -> Supervisor:

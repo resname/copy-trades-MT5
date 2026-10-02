@@ -308,9 +308,16 @@ class CopyController:
             symbol_map_csv=spec.symbol_map_csv, normalize_sltp=spec.normalize_sltp,
             sizing_mode=spec.sizing_mode, master_base_lot=spec.master_base_lot,
             fixed_lot=spec.fixed_lot)
-        self._supervisor.reconfigure_slave(
-            slave_id, spec.symbol_map_csv, spec.normalize_sltp,
-            contracts=(spec.contract_map if spec.platform == "ib" else None))
+        if spec.platform == "ib":
+            # F5: the IB connection params must survive a respawn — a running
+            # worker re-reads h.config (not the saved spec) when re-spawned.
+            self._supervisor.reconfigure_slave(
+                slave_id, spec.symbol_map_csv, spec.normalize_sltp,
+                contracts=spec.contract_map, ib_host=spec.ib_host,
+                ib_port=spec.ib_port, ib_client_id=spec.ib_client_id)
+        else:
+            self._supervisor.reconfigure_slave(
+                slave_id, spec.symbol_map_csv, spec.normalize_sltp)
 
     def is_running(self) -> bool:
         return self._supervisor is not None and self._supervisor._thread is not None \

@@ -313,3 +313,35 @@ def test_editor_edit_existing_ib_spec(qapp):
     assert dlg.ib_port.text() == str(spec.ib_port)
     # terminal row hidden in IB edit mode
     assert dlg.terminal.isHidden()
+
+
+def test_set_spec_locks_platform_combo_and_carries_ib_connection(qapp):
+    """F5: a locked existing-slave edit must not be able to switch platforms
+    (the respawn would come back as the wrong worker), and an IB slave's
+    connection fields must round-trip into spec() — an edited port survives
+    the respawn path via the supervisor's config propagation."""
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    spec = AccountSpec(id="ib1", platform="ib", terminal_path=None,
+                       symbol_map_csv="US30=YM", ib_host="127.0.0.1",
+                       ib_port=4001, ib_client_id=3,
+                       contract_map={"YM": {"exchange": "CME",
+                                            "sec_type": "FUT",
+                                            "master_point_value": 1.0}})
+    dlg = SlaveEditor(FakeController())
+    dlg.set_spec(spec, lock_identity=True)
+    assert not dlg.platform.isEnabled()          # platform locked
+    assert dlg.ib_host.text() == "127.0.0.1"
+    assert dlg.ib_port.text() == "4001"          # populated from the spec
+    assert dlg.ib_client_id.text() == "3"
+    # an unlocked (identity-free) edit keeps the platform switchable...
+    dlg2 = SlaveEditor(FakeController())
+    dlg2.set_spec(spec, lock_identity=False)
+    assert dlg2.platform.isEnabled()
+    # ...and an edited connection round-trips out of spec()
+    dlg2.ib_port.setText("4002")
+    dlg2.ib_client_id.setText("9")
+    dlg2.accept()
+    out = dlg2.spec()
+    assert out.platform == "ib" and out.ib_port == 4002
+    assert out.ib_client_id == 9 and out.ib_host == "127.0.0.1"

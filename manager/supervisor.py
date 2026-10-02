@@ -313,7 +313,10 @@ class Supervisor:
 
     def reconfigure_slave(self, slave_id: str, symbol_map_csv: str,
                           normalize_sltp: bool,
-                          contracts: dict | None = None) -> None:
+                          contracts: dict | None = None,
+                          ib_host: str | None = None,
+                          ib_port: int | None = None,
+                          ib_client_id: int | None = None) -> None:
         """Live-update a running slave's symbol map + normalize flag. Always
         updates h.config so a subsequent _restart spawns with the new params
         (a dead non-fatal worker is restarted by _health_check and picks up the
@@ -321,7 +324,10 @@ class Supervisor:
         worker is not fatal. No-op when the handle is missing. IB slaves pass
         their contract map: it is stored (for the respawn path) and forwarded
         so the worker re-parses it; None (every MT5 call) sends contracts={}
-        and touches nothing."""
+        and touches nothing. The IB connection params (ib_host/ib_port/
+        ib_client_id) land in h.config only when passed (F5: an edited port
+        must survive a respawn); MT5 configs have none of these keys and the
+        absent values are never injected."""
         h = self._handles.get(slave_id)
         if h is None:
             return
@@ -329,6 +335,12 @@ class Supervisor:
         h.config["normalize_sltp"] = normalize_sltp
         if contracts:
             h.config["contract_map"] = contracts
+        if ib_host is not None:
+            h.config["ib_host"] = ib_host
+        if ib_port is not None:
+            h.config["ib_port"] = ib_port
+        if ib_client_id is not None:
+            h.config["ib_client_id"] = ib_client_id
         if h.pipe is None or h.fatal:
             return  # worker gone/fatal: can't send, but h.config is updated
         self._send(slave_id, ReconfigureMsg(
