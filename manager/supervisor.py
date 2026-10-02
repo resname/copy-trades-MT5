@@ -33,7 +33,6 @@ class WorkerHandle:
     fatal: bool = False  # set on a fatal ErrorMsg; _health_check won't restart
     trade_allowed: bool = True  # from the worker's initial StatusMsg (Algo Trading)
     first_msg_seen: bool = False  # False until first message -> grace window
-    detail: str = ""  # last forwarded StatusMsg.detail (change-triggered GUI callback)
 
 
 class Supervisor:
@@ -67,7 +66,6 @@ class Supervisor:
         self._thread = None
         self.on_restart = None  # callback(name, role) for GUI status (Plan 4)
         self.on_error = None    # callback(name, message) for GUI status/log
-        self.on_slave_status = None  # callback(name, detail) on StatusMsg.detail change
 
     def spawn_master(self, config, adapter_kind="real", fake_state=None):
         self._handles["master"] = self._spawn("master", "master", config,
@@ -140,12 +138,8 @@ class Supervisor:
         return h.got_status
 
     def _worker_target(self, config):
-        """Pick the worker entry point from the config's platform. Master is
-        always MT5 (spec non-goal); a missing platform key = mt5 (old configs
-        byte-identical). ib_async stays unimported until an IB slave spawns."""
-        if str(config.get("platform", "mt5")).lower() == "ib":
-            from manager.worker.ib.worker import worker_main as ib_worker_main
-            return ib_worker_main
+        """MT5 is the only worker target. Legacy configs carrying a platform
+        key spawn MT5 too — configs are no longer platform-tagged."""
         return worker_main
 
     def _spawn(self, name, role, config, adapter_kind, fake_state):
@@ -215,10 +209,6 @@ class Supervisor:
             if h is not None:
                 h.trade_allowed = msg.trade_allowed
             self._engine.apply_status(slave_id, msg)
-            if (msg.detail and h is not None and h.detail != msg.detail
-                    and self.on_slave_status is not None):
-                h.detail = msg.detail
-                self.on_slave_status(slave_id, msg.detail)
         elif isinstance(msg, RecoveryMsg):
             self._engine.apply_recovery(slave_id, msg.records)
         elif isinstance(msg, SymbolInfoMsg):
@@ -312,40 +302,22 @@ class Supervisor:
             self.errors.append(f"lost slave {slave_id}")
 
     def reconfigure_slave(self, slave_id: str, symbol_map_csv: str,
-                          normalize_sltp: bool,
-                          contracts: dict | None = None,
-                          ib_host: str | None = None,
-                          ib_port: int | None = None,
-                          ib_client_id: int | None = None) -> None:
+                          normalize_sltp: bool) -> None:
         """Live-update a running slave's symbol map + normalize flag. Always
         updates h.config so a subsequent _restart spawns with the new params
         (a dead non-fatal worker is restarted by _health_check and picks up the
         edit). Sends the ReconfigureMsg only when the pipe is open and the
-        worker is not fatal. No-op when the handle is missing. IB slaves pass
-        their contract map: it is stored (for the respawn path) and forwarded
-        so the worker re-parses it; None (every MT5 call) sends contracts={}
-        and touches nothing. The IB connection params (ib_host/ib_port/
-        ib_client_id) land in h.config only when passed (F5: an edited port
-        must survive a respawn); MT5 configs have none of these keys and the
-        absent values are never injected."""
+        worker is not fatal. No-op when the handle is missing."""
         h = self._handles.get(slave_id)
         if h is None:
             return
         h.config["symbol_map_csv"] = symbol_map_csv
         h.config["normalize_sltp"] = normalize_sltp
-        if contracts:
-            h.config["contract_map"] = contracts
-        if ib_host is not None:
-            h.config["ib_host"] = ib_host
-        if ib_port is not None:
-            h.config["ib_port"] = ib_port
-        if ib_client_id is not None:
-            h.config["ib_client_id"] = ib_client_id
         if h.pipe is None or h.fatal:
             return  # worker gone/fatal: can't send, but h.config is updated
         self._send(slave_id, ReconfigureMsg(
             source_id=slave_id, symbol_map_csv=symbol_map_csv,
-            normalize_sltp=normalize_sltp, contracts=contracts or {}))
+            normalize_sltp=normalize_sltp))
 
     def _health_check(self) -> None:
         for name, h in list(self._handles.items()):

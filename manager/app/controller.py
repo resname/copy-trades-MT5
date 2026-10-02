@@ -47,7 +47,7 @@ class AccountSpec:
 
 @dataclass
 class StatusUpdate:
-    kind: str            # "info" | "error" | "ready" | "slave_status"
+    kind: str            # "info" | "error" | "ready"
     message: str
     slave_id: str | None = None
     connected: bool | None = None

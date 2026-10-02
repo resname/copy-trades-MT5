@@ -392,6 +392,16 @@ def test_master_status_records_trade_allowed_on_handle():
         sup.shutdown()
 
 
+def test_worker_target_is_always_mt5():
+    """The MT5 worker is the only reachable target — a legacy config even
+    carrying a stale 'platform' key must still spawn the MT5 worker."""
+    from manager.worker.mt5_worker import worker_main
+    sup = Supervisor(None, poll_timeout=0.0)
+    assert sup._worker_target({}) is worker_main
+    assert sup._worker_target({"platform": "ib"}) is worker_main
+    assert sup._worker_target({"platform": "mt5"}) is worker_main
+
+
 def test_reconfigure_slave_noop_when_handle_missing():
     eng = _engine()
     sup = Supervisor(eng, poll_timeout=0.0)
@@ -426,166 +436,5 @@ def test_master_trade_allowed_and_wait_for_master_status():
         assert sup.wait_for_master_status(timeout=5.0) is True
         assert sup._handles["master"].got_status is True
         assert sup.master_trade_allowed() is True
-    finally:
-        sup.shutdown()
-
-
-def test_spawn_ib_slave_uses_ib_worker():
-    """An IB slave's config platform selects the ib worker entry; end-to-end
-    through real subprocesses: spawn -> recovery/symbol-info/status arrive ->
-    the slave is ready and trade-allowed (the fake IB gateway reads fine)."""
-    eng = CopyEngine()
-    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
-                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
-                              max_trade_age_minutes=999999,
-                              normalize_sltp=True))
-    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
-                     consecutive_failures=3, poll_timeout=0.02)
-    cfg = {"slave_id": "ib1", "platform": "ib",
-           "contract_map": {"YM": {"exchange": "CME", "sec_type": "FUT",
-                                    "master_point_value": 1.0}},
-           "symbol_map_csv": "US30=YM", "normalize_sltp": True,
-           "sizing_mode": "balance_step", "roll_days": 5,
-           "ack_timeout_ms": 1500, "slave_status_interval_ms": 200}
-    sup.spawn_slave("ib1", cfg, adapter_kind="fake",
-                    fake_state={"prices": {"YM": (45_000.0, 45_001.0)},
-                                "months": {"YM": ["202612"]}})
-    try:
-        assert _tick_until(sup, lambda: sup.slave_ready("ib1")), \
-            "IB slave never became ready (worker/config/plumbing broken)"
-        assert sup.slave_trade_allowed("ib1")  # fake gateway: not read-only
-    finally:
-        sup.shutdown()
-
-
-def test_reconfigure_ib_slave_sends_contracts():
-    """Editing a running IB slave must forward its contract map so the
-    worker re-parses and re-reports contract state (worker side: Task 7)."""
-    from manager.ipc.messages import ReconfigureMsg
-    from manager.ipc.pipe_framing import recv_msg
-    eng = CopyEngine()
-    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
-                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
-                              max_trade_age_minutes=999999,
-                              normalize_sltp=True))
-    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
-                     consecutive_failures=3, poll_timeout=0.02)
-    parent, child = multiprocessing.Pipe(duplex=True)
-    sup._handles["ib1"] = WorkerHandle(
-        name="ib1", role="slave", proc=_StubProc(), pipe=child,
-        config={"platform": "ib"}, adapter_kind="", fake_state=None)
-    try:
-        contracts = {"YM": {"exchange": "CME", "sec_type": "FUT",
-                             "master_point_value": 2.0}}
-        sup.reconfigure_slave("ib1", "US30=YM", True, contracts=contracts)
-        msg = recv_msg(parent)
-        assert isinstance(msg, ReconfigureMsg) and msg.contracts == contracts
-        # stored for the respawn path (a restarted worker re-reads its config)
-        assert sup._handles["ib1"].config["contract_map"] == contracts
-
-        # MT5 path unchanged: contracts=None (the default) sends {} and does
-        # not inject contract_map into the config
-        sup.reconfigure_slave("ib1", "US30=YM", True)
-        msg2 = recv_msg(parent)
-        assert isinstance(msg2, ReconfigureMsg) and msg2.contracts == {}
-    finally:
-        sup.shutdown()
-        child.close()
-        parent.close()
-
-
-def test_reconfigure_ib_slave_carries_connection_params_into_config():
-    """F5: editing a running IB slave's connection (port 4001 -> 4002) must
-    land in h.config so the respawned worker connects with the new port —
-    otherwise a later respawn fatal-fails on the old port. MT5 slaves have
-    none of these keys; the absent values are never injected (additive)."""
-    from manager.ipc.messages import ReconfigureMsg
-    from manager.ipc.pipe_framing import recv_msg
-    eng = CopyEngine()
-    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
-                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
-                              max_trade_age_minutes=999999,
-                              normalize_sltp=True))
-    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
-                     consecutive_failures=3, poll_timeout=0.02)
-    parent, child = multiprocessing.Pipe(duplex=True)
-    sup._handles["ib1"] = WorkerHandle(
-        name="ib1", role="slave", proc=_StubProc(), pipe=child,
-        config={"platform": "ib", "ib_host": "127.0.0.1", "ib_port": 4001,
-                "ib_client_id": 7},
-        adapter_kind="", fake_state=None)
-    sup._handles["s2"] = WorkerHandle(
-        name="s2", role="slave", proc=_StubProc(), pipe=None,
-        config={"terminal_path": "C:/t/s.exe"},
-        adapter_kind="", fake_state=None)
-    try:
-        sup.reconfigure_slave("ib1", "US30=YM", True, ib_host="127.0.0.1",
-                              ib_port=4002, ib_client_id=9)
-        recv_msg(parent)                       # the ReconfigureMsg still flows
-        cfg = sup._handles["ib1"].config
-        assert (cfg["ib_host"], cfg["ib_port"], cfg["ib_client_id"]) \
-            == ("127.0.0.1", 4002, 9)
-        # MT5 path: absent keys untouched — the config grows no ib_* keys
-        sup.reconfigure_slave("s2", "EURUSD=GBPUSD", False)
-        cfg2 = sup._handles["s2"].config
-        assert not any(k in cfg2 for k in ("ib_host", "ib_port", "ib_client_id"))
-    finally:
-        sup.shutdown()
-        child.close()
-        parent.close()
-
-
-# ---- Task 10: StatusMsg.detail -> GUI status line (IB contract state) ----
-
-def _ib_status_handle() -> Supervisor:
-    """Supervisor with an IB slave registered but no worker spawned."""
-    eng = CopyEngine()
-    eng.add_slave(SlaveConfig(slave_id="ib1", symbol_map_csv="US30=YM",
-                              step_amount=1000.0, step_size=1.0, max_lot=100.0,
-                              max_trade_age_minutes=999999,
-                              normalize_sltp=True))
-    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
-                     consecutive_failures=3, poll_timeout=0.02)
-    sup._handles["ib1"] = WorkerHandle(
-        name="ib1", role="slave", proc=_StubProc(), pipe=None,
-        config={"platform": "ib"}, adapter_kind="", fake_state=None)
-    return sup
-
-
-def test_slave_status_detail_forwarded_when_changed():
-    from manager.ipc.messages import StatusMsg
-    sup = _ib_status_handle()
-    seen: list[tuple[str, str]] = []
-    sup.on_slave_status = lambda name, detail: seen.append((name, detail))
-    try:
-        sup._dispatch_slave("ib1", StatusMsg(
-            source_id="ib1", role="slave", connected=True, login=0,
-            balance=1.0, equity=1.0, currency="USD", server="ib-gateway",
-            trade_allowed=True, detail="YM 202612"))
-        assert seen == [("ib1", "YM 202612")]
-        sup._dispatch_slave("ib1", StatusMsg(
-            source_id="ib1", role="slave", connected=True, login=0,
-            balance=1.0, equity=1.0, currency="USD", server="ib-gateway",
-            trade_allowed=True, detail="YM 202612"))
-        assert seen == [("ib1", "YM 202612")]           # unchanged: no repeat
-    finally:
-        sup.shutdown()
-
-
-def test_mt5_status_never_forwards_detail():
-    from manager.ipc.messages import StatusMsg
-    eng = _engine()                                 # the file's existing MT5 builder
-    sup = Supervisor(eng, heartbeat_seconds=5, stale_seconds=30,
-                     consecutive_failures=3, poll_timeout=0.02)
-    sup._handles["s1"] = WorkerHandle(
-        name="s1", role="slave", proc=_StubProc(), pipe=None,
-        config={}, adapter_kind="", fake_state=None)
-    seen: list = []
-    sup.on_slave_status = lambda *a: seen.append(a)
-    try:
-        sup._dispatch_slave("s1", StatusMsg(
-            source_id="s1", role="slave", connected=True, login=1,
-            balance=1.0, equity=1.0, currency="USD", server="Demo"))
-        assert seen == []                           # empty detail => silent
     finally:
         sup.shutdown()
