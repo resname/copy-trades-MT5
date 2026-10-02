@@ -10,7 +10,6 @@ dependencies = [
     "PySide6>=6.6",
     "psutil>=5.9",
     "MetaTrader5>=5.0.45",
-    "ib_async==2.1.0",
 ]
 
 [project.scripts]

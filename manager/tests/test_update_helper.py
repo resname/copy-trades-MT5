@@ -103,8 +103,7 @@ def test_reinstall_passes_valid_wheel_filename_to_pip(monkeypatch, tmp_path):
     captured = {}
 
     def fake_run(cmd, **k):
-        # record only the wheel command -- the helper installs ib_async in a
-        # second pip call after the wheel succeeds
+        # record only the wheel install command
         if os.path.basename(cmd[-1]).endswith(".whl"):
             captured["cmd"] = cmd
             # capture the copy's bytes now -- _reinstall removes the temp dir
@@ -194,22 +193,21 @@ def test_read_wheel_metadata_returns_name_and_version(tmp_path):
     assert version == "0.1.42"
 
 
-def test_reinstall_ensures_ib_async_after_wheel(tmp_path, monkeypatch):
-    """The helper's post-wheel install names the IB dependency: without it,
-    an in-app update (which installs with --no-deps) wipes ib_async and every
-    IB slave loses its connection on next Start."""
-    w = _make_wheel(tmp_path / "manager-latest.whl")   # the real cache shape
+def test_reinstall_runs_wheel_install_only(tmp_path, monkeypatch):
+    """The update is one pip command: the --no-deps wheel install. No extra
+    install step runs after it (the removed post-wheel ensure step must not
+    come back via old call sites)."""
+    w = _make_wheel(tmp_path / "manager-latest.whl")
     cmds: list[list[str]] = []
     monkeypatch.setattr(update_helper.subprocess, "run",
                         lambda cmd, **k: cmds.append(list(cmd)) or _run_ok(cmd))
-    monkeypatch.setattr(update_helper, "_log", lambda _m: None)
     rc = update_helper._reinstall(str(w))
     assert rc == 0
-    ib = [c for c in cmds if any("ib_async==2.1.0" in a for a in c)]
-    assert ib, f"no ib_async install among {cmds}"
-    assert any("--upgrade" in c for c in ib)
-    # the ib install runs AFTER the wheel install
-    wheel_idx = next(i for i, c in enumerate(cmds)
-                     if os.path.basename(c[-1]).endswith(".whl"))
-    ib_idx = cmds.index(ib[0])
-    assert ib_idx > wheel_idx
+    assert len(cmds) == 1, f"expected exactly one pip command, saw {cmds}"
+    cmd = cmds[0]
+    # exactly the command list the real call site builds, except the final
+    # wheel arg (a valid-named temp copy whose path differs per run)
+    assert cmd[:-1] == [sys.executable, "-m", "pip", "install", "--no-deps",
+                        "--upgrade", "--force-reinstall"]
+    assert os.path.basename(cmd[-1]) == \
+        "copy_trades_mt5_manager-0.1.11-py3-none-any.whl"
