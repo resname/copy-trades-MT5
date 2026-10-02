@@ -28,7 +28,7 @@ class SlaveEditor(QDialog):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        self._top_form = form = QFormLayout()
+        form = QFormLayout()
         self.id_edit = QLineEdit()
         self.id_edit.setPlaceholderText("s1")
         self.terminal = QComboBox()
