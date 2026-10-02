@@ -104,8 +104,7 @@ class MainWindow(QMainWindow):
         self.install_disclaimer_label = QLabel(
             "Install MetaTrader opens the download page. Download and run "
             "mt5setup.exe, and choose a CUSTOM install path for each terminal "
-            "— the default path collides with existing terminals. Log in to a "
-            "DEMO account only.")
+            "— the default path collides with existing terminals.")
         self.install_disclaimer_label.setWordWrap(True)
         mform.addRow("", self.install_disclaimer_label)
         master_box.setLayout(mform)
