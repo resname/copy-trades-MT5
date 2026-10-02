@@ -25,6 +25,7 @@ class IbOrder:
     oca_group: str = ""
     active: bool = True     # children sit inactive until the parent fills
     filled: bool = False
+    status: str = ""        # raw IB trade status ("" = fake: always filled)
 
 
 @dataclass
@@ -349,6 +350,14 @@ class RealIbGateway:
 
     # ---- lifecycle ----
     def initialize(self, host: str, port: int, client_id: int) -> bool:
+        if self.ib is not None:
+            # reconnect (F2): the dropped session's client must be torn down
+            # before a fresh connect, or the dead socket lingers under self.ib
+            try:
+                self.ib.disconnect()
+            except Exception:
+                pass
+            self.ib = None
         try:
             ib = self._IB()
             ib.connect(host, port, clientId=client_id, timeout=15.0)
@@ -529,7 +538,8 @@ class RealIbGateway:
                 oca_group=tr.order.ocaGroup or "",
                 active=tr.orderStatus.status in
                        ("PreSubmitted", "PendingSubmit", "Submitted", "ApiPending"),
-                filled=tr.orderStatus.status == "Filled"))
+                filled=tr.orderStatus.status == "Filled",
+                status=str(tr.orderStatus.status or "")))
         return out
 
     def closed_per_tag(self, tag: str) -> float:
