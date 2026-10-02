@@ -81,7 +81,7 @@ class StatusMsg:
     currency: str
     server: str
     trade_allowed: bool = True
-    detail: str = ""    # worker-provided status line (IB: contract/roll state)
+    detail: str = ""    # worker-provided status line
     KIND = "status"
 
 

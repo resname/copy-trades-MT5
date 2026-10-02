@@ -66,7 +66,7 @@ Tests live in `manager/tests/` and mirror the package structure:
 | `test_version.py` | `_version.__version__` single source of truth |
 | `test_updater.py` | Version compare + wheel pre-download/SHA-verify/cache + apply-and-restart (mocked network/popen) |
 | `test_update_helper.py` | Detached update helper: wait for parent exit → reinstall → relaunch (mocked) |
-| `test_main_window.py`, `test_slave_editor.py`, `test_main_entry.py`, `test_main_window_updates.py` | GUI construction + app-graph wiring (skip without PySide6) |
+| `test_main_window.py`, `test_slave_editor.py`, `test_main_entry.py` | GUI construction + app-graph wiring (skip without PySide6) |
 | `test_main_window_updates.py` | GUI update UI: check-for-updates, Update available, engine-idle-gated Update & restart (skip without PySide6) |
 
 ---
