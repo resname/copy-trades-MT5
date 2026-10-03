@@ -69,6 +69,10 @@ class MainWindow(QMainWindow):
         self._resume_copy = bool(resume_copy)
         # guard state for the auto-restart toggle (persisted in autostart)
         self._auto_update_last_attempt = ""
+        # countdown popup for the auto-restart (see _auto_update_maybe_restart)
+        self._update_prompt = None
+        self._auto_update_delay_timer: QTimer | None = None
+        self._prev_auto_update_last_attempt: str | None = None
         self._build_ui()
         self._populate_terminals()
         self._load_config()
@@ -373,26 +377,74 @@ class MainWindow(QMainWindow):
             on_quit=self._do_update_quit, cached_wheel=self._cached_wheel,
             resume=self._controller.is_running())
 
+    _AUTO_UPDATE_PROMPT_COUNTDOWN_S = 60
+    _AUTO_UPDATE_PROMPT_DELAY_MS = 5 * 60 * 1000
+
     def _auto_update_maybe_restart(self) -> None:
-        """The 'Auto restart when update is available' toggle. Fires once per
-        newer version: the target version is recorded (and saved) BEFORE the
-        helper is spawned, so a pip failure that relaunches the old version
-        cannot loop auto-restarts for the same release."""
+        """The 'Auto restart when update is available' toggle. Instead of
+        restarting silently, a countdown popup asks for confirmation: it
+        restarts itself at zero, or on "Restart now"; "Delay 5 minutes" and
+        closing the popup defer/decline.
+
+        The once-per-version guard mark is recorded (and saved) when the popup
+        first SHOWS — before any restart can happen — so a pip failure that
+        relaunches the old version cannot loop auto-restarts for the same
+        release. Closing the popup reverts the mark to its prior value, so the
+        next update check prompts again rather than silently never applying."""
         if not self.autostart_auto_update_checkbox.isChecked():
             return
         latest = self._latest_version
         if not latest:
             return
+        if self._update_prompt is not None:
+            return  # already prompting (delayed re-prompt overlap guard)
         from manager.updater import parse_version
         try:
             if parse_version(self._auto_update_last_attempt) >= parse_version(latest):
                 return  # already tried this version (or a newer one)
         except Exception:
             return  # unparsable versions: never auto-restart
+        self._prev_auto_update_last_attempt = self._auto_update_last_attempt
         self._auto_update_last_attempt = latest
         self._save_config()
-        self.append_log(f"auto-restarting for update v{latest}")
+        self._show_update_prompt()
+
+    def _show_update_prompt(self) -> None:
+        from manager.gui.update_prompt import UpdateRestartPrompt
+        latest = self._latest_version or ""
+        self._update_prompt = UpdateRestartPrompt(
+            latest,
+            on_now=self._auto_update_fire_now,
+            on_delay=self._auto_update_delay,
+            on_dismiss=self._auto_update_prompt_dismissed,
+            countdown_s=self._AUTO_UPDATE_PROMPT_COUNTDOWN_S)
+        self._update_prompt.show()
+        self.append_log(f"update v{latest} ready — restarting in "
+                        f"{self._AUTO_UPDATE_PROMPT_COUNTDOWN_S} s (or delay)")
+
+    def _auto_update_fire_now(self) -> None:
+        # countdown reached zero or the user clicked Restart now
+        self._update_prompt = None
+        self.append_log(f"auto-restarting for update v{self._latest_version}")
         self._on_update_restart()
+
+    def _auto_update_delay(self) -> None:
+        self._update_prompt = None  # dialog hid itself (accepted)
+        self._auto_update_delay_timer = QTimer(self)
+        self._auto_update_delay_timer.setSingleShot(True)
+        self._auto_update_delay_timer.timeout.connect(self._show_update_prompt)
+        self._auto_update_delay_timer.start(self._AUTO_UPDATE_PROMPT_DELAY_MS)
+        self.append_log("update restart delayed by 5 minutes")
+
+    def _auto_update_prompt_dismissed(self) -> None:
+        # popup closed (X / Esc): revert the once-per-version mark so the
+        # hourly check prompts again, instead of silently never auto-applying
+        self._update_prompt = None
+        self._auto_update_last_attempt = (
+            self._prev_auto_update_last_attempt or "")
+        self._save_config()
+        self.append_log("update restart dismissed — will re-prompt on the "
+                        "next update check")
 
     def _do_update_quit(self) -> None:
         self._controller.stop()

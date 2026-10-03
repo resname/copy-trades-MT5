@@ -34,13 +34,13 @@ pytest -q
 Expected on a headless Windows env without PySide6 installed:
 
 ```
-294 passed, 4 skipped
+294 passed, 5 skipped
 ```
 
-The 4 skips are the GUI test modules (`test_main_window`,
-`test_main_window_updates`, `test_slave_editor`,
+The 5 skips are the GUI test modules (`test_main_window`,
+`test_main_window_updates`, `test_update_prompt`, `test_slave_editor`,
 `test_main_entry`) — they call `pytest.importorskip("PySide6")` at module level.
-On a host with PySide6 installed they run too (then `365 passed`).
+On a host with PySide6 installed they run too (then `373 passed`).
 
 ---
 
@@ -67,7 +67,8 @@ Tests live in `manager/tests/` and mirror the package structure:
 | `test_updater.py` | Version compare + wheel pre-download/SHA-verify/cache + apply-and-restart (mocked network/popen) |
 | `test_update_helper.py` | Detached update helper: wait for parent exit → reinstall → relaunch (mocked) |
 | `test_main_window.py`, `test_slave_editor.py`, `test_main_entry.py` | GUI construction + app-graph wiring (skip without PySide6) |
-| `test_main_window_updates.py` | GUI update UI: check-for-updates, Update available, update & restart (allowed mid-copy, resume flag), auto-restart toggle + restart-loop guard (skip without PySide6) |
+| `test_main_window_updates.py` | GUI update UI: check-for-updates, Update available, update & restart (allowed mid-copy, resume flag), auto-restart toggle + countdown popup (restart now / delay 5 min / dismiss reverts the once-per-version guard) (skip without PySide6) |
+| `test_update_prompt.py` | Auto-restart countdown popup dialog: 60 s countdown fires restart-now, Restart now / Delay 5 minutes buttons, X/Esc dismiss (skip without PySide6) |
 
 ---
 
