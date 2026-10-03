@@ -1,9 +1,13 @@
-# Copy Trades MT5 — Local Manager
+# Copy Trades MT5 — Free MT5 Trade Copier for MetaTrader 5
 
-A standalone **Windows desktop app** (PySide6/Qt) that copies trades from one
-**master** MetaTrader 5 account to one or more **slave** accounts. It drives MT5
-terminals through the official `MetaTrader5` Python package — no Expert Advisor,
-no DLL imports, no manual chart attachment.
+**Copy Trades MT5** is a **free trade copier for MetaTrader 5 (MT5)** — a
+standalone **Windows desktop app** (PySide6/Qt) that automatically copies
+trades from one **master** MT5 account to one or more **slave** accounts.
+Unlike paid copy-trading services or EA-based copiers, it is **100% free —
+no license key, no subscription, no EA to buy** — and it runs entirely on
+your own PC. It drives MT5 terminals through the official `MetaTrader5`
+Python package — no Expert Advisor, no DLL imports, no manual chart
+attachment.
 
 ```
 1 master  ──►  manager process (GUI + engine)
@@ -56,7 +60,11 @@ For the full run-through, see [Usage](#usage). For a manual run-through, see
 
 ## Features
 
-- **1 master → many slaves**, each mirrored independently.
+The copy-trading essentials you'd otherwise pay for — free, local, and open
+source:
+
+- **1 master → many slaves** — multi-account copy trading, each slave
+  mirrored independently.
 - **Positions only** — mirrors opens, modifies, partial closes, and full closes
   (matches the EA's behavior; no pending-order copying).
 - **Recent + forward** — on start, copies master positions opened within the
@@ -70,7 +78,7 @@ For the full run-through, see [Usage](#usage). For a manual run-through, see
   Master entries can be **regular expressions** with optional `$1`–`$9`
   group substitution in the slave name (see
   [Symbol map: regex support](#symbol-map-regex-support)).
-- **Lot sizing** per slave — choose a mode per slave:
+- **Risk-managed lot sizing** per slave — choose a mode per slave:
   - **Balance step (lots step)** — `floor(slave_balance / step_amount) * step_size`,
     rounded down to the symbol's lot step, clamped to its min/max. Optionally set
     a **Master base lot size** (the master's usual lot, e.g. 0.1): when a specific
@@ -381,6 +389,41 @@ individual test modules.
 
 ---
 
+## FAQ
+
+**Is Copy Trades MT5 free?**
+Yes — it is a completely **free MetaTrader 5 trade copier**: no license key,
+no subscription, no per-lot fee, and no premium tier. The source is public,
+and the one-liner installer pulls every verified release straight from this
+GitHub repository.
+
+**Does it work with MT4?**
+No — Copy Trades MT5 copies trades between **MetaTrader 5** accounts only.
+It uses the official `MetaTrader5` Python integration, which does not
+support the older MT4 platform.
+
+**Do I need an Expert Advisor (EA), a VPS, or DLL imports?**
+No. The copier drives each MT5 terminal through the official Python API from
+a plain Windows desktop app — no EA to attach to charts, no DLL imports to
+allow, and no VPS required (it runs fine on one if you prefer).
+
+**Does it store my MT5 login or password?**
+No. You log in to each terminal through MT5's own window; the manager only
+remembers terminal paths and never sees, stores, or transmits your
+credentials — see [Security model](#security-model).
+
+**How many slave accounts can copy from one master?**
+As many as you like — one MT5 terminal per account, added with the
+**Add slave** button. Each slave mirrors independently with its own symbol
+map and lot sizing.
+
+**Can it copy between brokers / prop firms with different symbol names?**
+Yes — per-slave symbol mapping handles renamed instruments (`US30` → `WS30`,
+`.m` suffixes, etc.), including regular-expression patterns with group
+substitution (see [Symbol map: regex support](#symbol-map-regex-support)).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -403,3 +446,9 @@ git add -A
 git commit -m "fix: ..." -m "Co-Authored-By: Claude <noreply@anthropic.com>"
 git push origin main
 ```
+
+---
+
+**Copy Trades MT5** — a free MT5 trade copier for MetaTrader 5: copy trades
+between MT5 accounts, mirror master→slave positions, multi-account copy
+trading on Windows. No Expert Advisor, no VPS, no subscription.
