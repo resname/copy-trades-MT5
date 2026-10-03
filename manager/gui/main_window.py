@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
     thread. Closing the window is the orderly quit path (controller.stop() then
     QApplication.quit()); there is no tray."""
 
-    def __init__(self, controller, store=None, parent=None):
+    def __init__(self, controller, store=None, parent=None, resume_copy=False):
         super().__init__(parent)
         self.setWindowTitle("CopyTrades MT5 — Local Manager")
         self._controller = controller
@@ -64,6 +64,11 @@ class MainWindow(QMainWindow):
         self._slaves: list[AccountSpec] = []
         self._countdown_timer: QTimer | None = None
         self._countdown_remaining = 0
+        # --resume-copy: set by update_helper's relaunch after an update
+        # restart, resumes copying via the countdown regardless of the toggle
+        self._resume_copy = bool(resume_copy)
+        # guard state for the auto-restart toggle (persisted in autostart)
+        self._auto_update_last_attempt = ""
         self._build_ui()
         self._populate_terminals()
         self._load_config()
@@ -125,14 +130,17 @@ class MainWindow(QMainWindow):
         sl.addLayout(row)
         slave_box.setLayout(sl)
 
-        # Auto-start (boot + auto-copy)
+        # Auto-start (boot + auto-copy + auto-update)
         self.autostart_box = QGroupBox("Auto-start")
         as_layout = QVBoxLayout()
         self.autostart_boot_checkbox = QCheckBox("Launch on Windows startup")
         self.autostart_copy_checkbox = QCheckBox(
             "Auto-start copying on launch (15 s countdown)")
+        self.autostart_auto_update_checkbox = QCheckBox(
+            "Auto restart when update is available")
         as_layout.addWidget(self.autostart_boot_checkbox)
         as_layout.addWidget(self.autostart_copy_checkbox)
+        as_layout.addWidget(self.autostart_auto_update_checkbox)
         self.autostart_box.setLayout(as_layout)
 
         # Start/Stop + countdown Cancel
@@ -194,6 +202,8 @@ class MainWindow(QMainWindow):
             self._on_autostart_boot_toggled)
         self.autostart_copy_checkbox.toggled.connect(
             self._on_autostart_copy_toggled)
+        self.autostart_auto_update_checkbox.toggled.connect(
+            self._on_auto_update_toggled)
         self.autostart_cancel_button.clicked.connect(self._cancel_autostart_copy)
 
     def _populate_terminals(self):
@@ -212,6 +222,10 @@ class MainWindow(QMainWindow):
             "autostart": {
                 "on_boot": self.autostart_boot_checkbox.isChecked(),
                 "auto_copy": self.autostart_copy_checkbox.isChecked(),
+                "auto_update": self.autostart_auto_update_checkbox.isChecked(),
+                # restart-loop guard: the newest version this install already
+                # auto-tried (set when the auto-restart actually fires)
+                "auto_update_last_attempt": self._auto_update_last_attempt,
             },
         }
 
@@ -263,6 +277,12 @@ class MainWindow(QMainWindow):
         self.autostart_copy_checkbox.blockSignals(True)
         self.autostart_copy_checkbox.setChecked(bool(as_cfg.get("auto_copy", False)))
         self.autostart_copy_checkbox.blockSignals(False)
+        self.autostart_auto_update_checkbox.blockSignals(True)
+        self.autostart_auto_update_checkbox.setChecked(
+            bool(as_cfg.get("auto_update", False)))
+        self.autostart_auto_update_checkbox.blockSignals(False)
+        self._auto_update_last_attempt = \
+            str(as_cfg.get("auto_update_last_attempt", "") or "")
         self.autostart_boot_checkbox.blockSignals(True)
         self.autostart_boot_checkbox.setChecked(autostart.is_autostart_enabled())
         self.autostart_boot_checkbox.blockSignals(False)
@@ -279,7 +299,6 @@ class MainWindow(QMainWindow):
     def set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
-        self._apply_update_button_state()
 
     # ---- updates ----
     def check_for_updates_now(self) -> None:
@@ -329,12 +348,10 @@ class MainWindow(QMainWindow):
             self.update_progress.setValue(pct)
 
     def _apply_update_button_state(self) -> None:
-        """Enable Update & restart only when a verified wheel is cached AND
-        the manager is idle. Called on download-done, on update-checked, and
-        from set_running (so stopping a copy job re-enables a ready update)."""
-        self.update_restart_button.setEnabled(
-            self._cached_wheel is not None
-            and not self._controller.is_running())
+        """Enable Update & restart whenever a verified wheel is cached —
+        copying is allowed too: the quit path orders the stop, and the relaunched
+        manager resumes copying (resume flag carried by the relaunch chain)."""
+        self.update_restart_button.setEnabled(self._cached_wheel is not None)
 
     def _on_predownload_done(self, wheel) -> None:
         self._predownload_worker = None
@@ -348,14 +365,34 @@ class MainWindow(QMainWindow):
         self.update_label.setText(
             f"Update ready: v{self._latest_version} — restart in seconds")
         self._apply_update_button_state()
+        self._auto_update_maybe_restart()
 
     def _on_update_restart(self) -> None:
-        if self._controller.is_running():
-            self.append_log("stop copying before updating")
-            return
         from manager import updater
         updater.apply_update_and_restart(
-            on_quit=self._do_update_quit, cached_wheel=self._cached_wheel)
+            on_quit=self._do_update_quit, cached_wheel=self._cached_wheel,
+            resume=self._controller.is_running())
+
+    def _auto_update_maybe_restart(self) -> None:
+        """The 'Auto restart when update is available' toggle. Fires once per
+        newer version: the target version is recorded (and saved) BEFORE the
+        helper is spawned, so a pip failure that relaunches the old version
+        cannot loop auto-restarts for the same release."""
+        if not self.autostart_auto_update_checkbox.isChecked():
+            return
+        latest = self._latest_version
+        if not latest:
+            return
+        from manager.updater import parse_version
+        try:
+            if parse_version(self._auto_update_last_attempt) >= parse_version(latest):
+                return  # already tried this version (or a newer one)
+        except Exception:
+            return  # unparsable versions: never auto-restart
+        self._auto_update_last_attempt = latest
+        self._save_config()
+        self.append_log(f"auto-restarting for update v{latest}")
+        self._on_update_restart()
 
     def _do_update_quit(self) -> None:
         self._controller.stop()
@@ -412,12 +449,19 @@ class MainWindow(QMainWindow):
         # No OS side effect; the countdown only fires on launch, not mid-session.
         self._save_config()
 
+    def _on_auto_update_toggled(self, _checked: bool) -> None:
+        # No immediate effect: the next ready update fires the restart
+        # (see _auto_update_maybe_restart). Persist the choice now.
+        self._save_config()
+
     def _maybe_begin_autostart_copy(self) -> None:
-        """On launch, if the auto-copy toggle is on and a master + slaves are
-        configured, start a 15 s countdown to auto-Start. Cancel via the
-        dedicated Cancel button. No-op otherwise (toggle off or config
+        """On launch, if the auto-copy toggle is on (or --resume-copy was
+        passed by the update relaunch) and a master + slaves are configured,
+        start a 15 s countdown to auto-Start. Cancel via the dedicated Cancel
+        button. No-op otherwise (toggle off, no resume flag, or config
         incomplete)."""
-        if not self.autostart_copy_checkbox.isChecked():
+        if not self.autostart_copy_checkbox.isChecked() \
+                and not self._resume_copy:
             return
         terminal_path = self.master_terminal.currentText().strip()
         if not terminal_path or not self._slaves:

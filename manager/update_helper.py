@@ -141,11 +141,13 @@ def _reinstall(wheel: str) -> int:
         shutil.rmtree(os.path.dirname(valid), ignore_errors=True)
 
 
-def _relaunch() -> None:
+def _relaunch(extras: list[str] | None = None) -> None:
+    """Start the relaunched manager with optional passthrough args (currently
+    one: --resume-copy, set when the manager was copying at update time)."""
     kwargs: dict = {"close_fds": True}
     if sys.platform == "win32":
         kwargs["creationflags"] = _DETACHED_FLAGS
-    subprocess.Popen([sys.executable, "-m", "manager"], **kwargs)
+    subprocess.Popen([sys.executable, "-m", "manager", *(extras or [])], **kwargs)
 
 
 def _can_show_window() -> bool:
@@ -233,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     wheel = args[0]
     parent_pid = int(args[1])
+    extras = args[2:]  # passthrough flags, e.g. --resume-copy
     _log(f"update_helper start: wheel={wheel} parent={parent_pid}")
     if _can_show_window():
         rc = _run_update_with_window(wheel, parent_pid)
@@ -244,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         _log(f"pip install failed rc={rc}; relaunching previous version")
     else:
         _log("pip install ok; relaunching manager")
-    _relaunch()
+    _relaunch(extras)  # passthrough survives BOTH relaunch paths
     _log("relaunch spawned; helper exit")
     return 0
 

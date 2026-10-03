@@ -211,22 +211,28 @@ def test_update_restart_passes_cached_wheel(qapp, monkeypatch):
     captured = {}
     from manager import updater
     monkeypatch.setattr(updater, "apply_update_and_restart",
-                        lambda on_quit, cached_wheel=None: captured.update(
-                            {"on_quit": on_quit, "cached_wheel": cached_wheel}))
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        captured.update({"on_quit": on_quit,
+                                         "cached_wheel": cached_wheel,
+                                         "resume": resume}))
     w = MainWindow(FakeController())
     w._cached_wheel = Path("C:/cached/manager-latest.whl")
     w._on_update_restart()
     assert captured["cached_wheel"] == Path("C:/cached/manager-latest.whl")
 
 
-def test_update_restart_refuses_while_running(qapp):
+def test_update_restart_passes_resume_true_while_running(qapp, monkeypatch):
     from manager.gui.main_window import MainWindow
+    from manager import updater
+    captured = {}
     c = FakeController()
-    c.started = True
+    c.started = True  # copying is live
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        captured.update({"resume": resume}))
     w = MainWindow(c)
-    w._cached_wheel = None
-    w._on_update_restart()  # is_running() True -> logs, does not call apply
-    assert "stop" in w.log_view.toPlainText().lower()
+    w._on_update_restart()
+    assert captured["resume"] is True
 
 
 def test_about_to_quit_persists_config(qapp, tmp_path):
@@ -489,6 +495,30 @@ def test_autostart_copy_countdown_skipped_when_toggle_off(qapp, tmp_path, monkey
     w = MainWindow(c, store=store)
     assert w._countdown_timer is None
     assert c.started is False
+
+
+def test_resume_copy_flag_begins_countdown_even_when_toggle_off(
+        qapp, tmp_path, monkeypatch):
+    """--resume-copy (set by update_helper's relaunch after an update-restart)
+    resumes copying via the same countdown machinery regardless of the saved
+    auto_copy toggle. The flag is one-shot argv — normal launches are idle."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path",
+                        lambda: tmp_path / "nope.lnk")
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": False}})
+    c = FakeController()
+    w = MainWindow(c, store=store, resume_copy=True)
+    assert w._countdown_timer is not None  # countdown began like boot auto-copy
+    # cancel works and returns the app to idle
+    w._cancel_autostart_copy()
+    assert w._countdown_timer is None
+    assert c.started is False
+    assert "auto-start cancelled" in w.log_view.toPlainText().lower()
 
 
 def test_autostart_copy_countdown_skipped_when_config_incomplete(qapp, tmp_path, monkeypatch):

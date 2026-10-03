@@ -169,13 +169,16 @@ def _helper_exe() -> str:
     return str(sibling) if sibling.exists() else exe
 
 
-def apply_update_and_restart(on_quit, cached_wheel: Path | None = None) -> None:
+def apply_update_and_restart(on_quit, cached_wheel: Path | None = None,
+                             resume: bool = False) -> None:
     """Ensure a verified wheel is ready (cached_wheel, else cached_update(),
     else download now + verify). On failure, return WITHOUT calling on_quit
     so the app stays running. On success: spawn the detached update_helper with
     (wheel, parent_pid), then call on_quit() so the caller stops the engine and
     exits. The helper waits for this process to exit, reinstalls the wheel, and
-    relaunches the manager."""
+    relaunches the manager. resume=True (the manager was copying) travels to
+    the relaunch as --resume-copy so copying is resumed by the same countdown
+    machinery; it is passed through even when pip fails (old version relaunched)."""
     wheel = cached_wheel
     if wheel is None:
         wheel = cached_update()
@@ -188,7 +191,9 @@ def apply_update_and_restart(on_quit, cached_wheel: Path | None = None) -> None:
     kwargs: dict = {"close_fds": True}
     if sys.platform == "win32":
         kwargs["creationflags"] = _DETACHED_FLAGS
-    subprocess.Popen(
-        [_helper_exe(), "-m", "manager.update_helper", str(wheel), str(parent_pid)],
-        **kwargs)
+    helper_cmd = [_helper_exe(), "-m", "manager.update_helper", str(wheel),
+                  str(parent_pid)]
+    if resume:
+        helper_cmd.append("--resume-copy")
+    subprocess.Popen(helper_cmd, **kwargs)
     on_quit()

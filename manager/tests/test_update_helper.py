@@ -29,11 +29,12 @@ def test_main_waits_for_parent_then_reinstalls_then_relaunches(monkeypatch, tmp_
     monkeypatch.setattr(update_helper, "_pid_exists", lambda pid: pid != 12345)
     monkeypatch.setattr(update_helper, "_reinstall",
                         lambda wheel: seq.append(("install", wheel)) or 0)
-    monkeypatch.setattr(update_helper, "_relaunch", lambda: seq.append(("relaunch",)))
+    monkeypatch.setattr(update_helper, "_relaunch",
+                        lambda extras=None: seq.append(("relaunch", list(extras or []))))
     monkeypatch.setattr(update_helper, "_log", lambda m: None)
     rc = update_helper.main(["C:/cached/manager-latest.whl", "12345"])
     assert rc == 0
-    assert seq == [("install", "C:/cached/manager-latest.whl"), ("relaunch",)]
+    assert seq == [("install", "C:/cached/manager-latest.whl"), ("relaunch", [])]
 
 
 def test_main_does_not_reinstall_until_parent_gone(monkeypatch):
@@ -46,11 +47,27 @@ def test_main_does_not_reinstall_until_parent_gone(monkeypatch):
     monkeypatch.setattr(update_helper, "_wait_for_parent",
                         lambda pid, timeout_s=60.0: alive.__setitem__("v", False))
     monkeypatch.setattr(update_helper, "_reinstall", lambda wheel: seq.append(("install", wheel)) or 0)
-    monkeypatch.setattr(update_helper, "_relaunch", lambda: seq.append(("relaunch",)))
+    monkeypatch.setattr(update_helper, "_relaunch",
+                        lambda extras=None: seq.append(("relaunch",)))
     monkeypatch.setattr(update_helper, "_log", lambda m: None)
     rc = update_helper.main(["C:/w.whl", "999"])
     assert rc == 0
     assert seq == [("install", "C:/w.whl"), ("relaunch",)]
+
+
+def test_main_passes_extra_args_through_to_relaunch(monkeypatch):
+    """--resume-copy (set by apply_update_and_restart when the manager was
+    copying) must survive the helper's pip step and reach the relaunched
+    manager — on the success path; see next test for the pip-fail path."""
+    monkeypatch.setattr(update_helper, "_can_show_window", lambda: False)
+    monkeypatch.setattr(update_helper, "_pid_exists", lambda pid: False)
+    monkeypatch.setattr(update_helper, "_reinstall", lambda wheel: 0)
+    seen = []
+    monkeypatch.setattr(update_helper, "_relaunch", lambda extras: seen.append(extras))
+    monkeypatch.setattr(update_helper, "_log", lambda m: None)
+    rc = update_helper.main(["C:/w.whl", "1", "--resume-copy"])
+    assert rc == 0
+    assert seen == [["--resume-copy"]]
 
 
 def test_main_relaunches_previous_version_when_pip_fails(monkeypatch):
@@ -62,11 +79,22 @@ def test_main_relaunches_previous_version_when_pip_fails(monkeypatch):
     monkeypatch.setattr(update_helper, "_pid_exists", lambda pid: False)
     monkeypatch.setattr(update_helper, "_reinstall", lambda wheel: 1)
     relaunched = []
-    monkeypatch.setattr(update_helper, "_relaunch", lambda: relaunched.append(1))
+    monkeypatch.setattr(update_helper, "_relaunch", lambda extras: relaunched.append(extras))
     monkeypatch.setattr(update_helper, "_log", lambda m: None)
-    rc = update_helper.main(["C:/w.whl", "1"])
+    rc = update_helper.main(["C:/w.whl", "1", "--resume-copy"])
     assert rc == 0
-    assert relaunched == [1]
+    # passthrough survives even the pip-failure relaunch (old version resumes)
+    assert relaunched == [["--resume-copy"]]
+
+
+def test_relaunch_appends_passthrough_args(monkeypatch):
+    captured = []
+    monkeypatch.setattr(update_helper.subprocess, "Popen",
+                        lambda cmd, **k: captured.append(cmd) or MagicMock())
+    update_helper._relaunch(["--resume-copy"])
+    assert captured[0] == [sys.executable, "-m", "manager", "--resume-copy"]
+    update_helper._relaunch([])
+    assert captured[1] == [sys.executable, "-m", "manager"]
 
 
 def test_main_missing_args(monkeypatch):

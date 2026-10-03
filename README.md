@@ -174,9 +174,13 @@ python -m manager   # from a dev checkout / venv
 ```
 
 The app also checks for updates automatically (on launch, then hourly) and
-shows an **Update available** indicator with an **Update & restart** button
-(enabled only while the copy engine is idle). `copytrades update` runs the
-same update from the command line.
+shows an **Update available** indicator with an **Update & restart** button.
+**Update & restart works while copying is live**: your copy job is stopped
+orderly, the update installs, and the relaunched manager resumes copying with
+the same setup (a Cancel-able 15 s countdown, then Start). With **Auto restart
+when update is available** ticked (in Auto-start), that whole cycle happens
+without any interaction. `copytrades update` runs the same update from the
+command line.
 
 1. **Install terminals** (if you don't have enough): click **Install MetaTrader**
    to open the download page, download and run `mt5setup.exe`, and choose a
@@ -203,13 +207,17 @@ same update from the command line.
 7. **Auto-start (optional)**: in the **Auto-start** group, tick **Launch on
    Windows startup** to start the app at login (a shortcut in `shell:startup`),
    and/or **Auto-start copying on launch** to begin copying 15 s after the app
-   opens — a **Cancel** button appears during the countdown. Auto-start fails
-   silently (a log line) if no master/slaves are configured or Algo Trading is
-   off; it never shows a modal, so an unattended reboot is not blocked.
+   opens — a **Cancel** button appears during the countdown. **Auto restart
+   when update is available** applies any downloaded update without a click
+   (including mid-copy: copying is stopped orderly and resumed by the same
+   countdown afterwards). Auto-start fails silently (a log line) if no
+   master/slaves are configured or Algo Trading is off; it never shows a
+   modal, so an unattended reboot is not blocked.
 8. **Updates**: the app checks for updates hourly and pre-downloads the
    verified wheel when one is found, so clicking **Update & restart** finishes
    in seconds (no network in the restart path) and reliably relaunches the
-   manager.
+   manager. The button works while copying is live; the relaunched manager
+   resumes copying with the same setup via a Cancel-able countdown.
 
 For a full manual run-through, see
 [`docs/smoke-test.md`](docs/smoke-test.md).
@@ -321,7 +329,7 @@ manager/
   gui/
     main_window.py       Main window (master terminal form + Launch/Install buttons, slave list, status/log, update UI)
     slave_editor.py      Add/edit slave account dialog
-  tests/                 pytest suite (291 headless / 357 with PySide6)
+  tests/                 pytest suite (294 headless / 365 with PySide6)
 scripts/
   install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
   smoke-install.ps1      Local install.ps1 smoke check
@@ -342,8 +350,8 @@ installed and run on a PySide6-enabled host.
 
 ```powershell
 python -m pytest manager/tests -q
-# headless (no PySide6): 291 passed, 4 skipped
-# on a host with PySide6 installed: 357 passed
+# headless (no PySide6): 294 passed, 4 skipped
+# on a host with PySide6 installed: 365 passed
 ```
 
 See [`docs/TESTING.md`](docs/TESTING.md) for the suite layout and how to run

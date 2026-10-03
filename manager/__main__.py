@@ -21,7 +21,7 @@ class _StatusBridge(QObject):
     log = Signal(str)
 
 
-def build_app_graph(app: QApplication):
+def build_app_graph(app: QApplication, resume_copy: bool = False):
     store = SettingsStore()
     terminal_manager = TerminalManager(store=store)
     bridge = _StatusBridge()
@@ -29,7 +29,7 @@ def build_app_graph(app: QApplication):
         terminal_manager=terminal_manager, store=store,
         on_status=lambda s: bridge.status.emit(s),
         on_log=lambda m: bridge.log.emit(m))
-    window = MainWindow(controller, store=store)
+    window = MainWindow(controller, store=store, resume_copy=resume_copy)
     bridge.status.connect(window.append_status)
     bridge.log.connect(window.append_log)
     return window, controller, bridge
@@ -52,9 +52,13 @@ def main(argv=None) -> int:
         from manager import updater
         updater.apply_update_and_restart(on_quit=lambda: sys.exit(0))
         return 0
+    # set by update_helper's relaunch after an update restart: resume copying
+    resume_copy = "--resume-copy" in args
+    if resume_copy:  # not a Qt option — keep it off QApplication's argv
+        gui_args = [a for a in gui_args if a != "--resume-copy"]
 
     app = QApplication.instance() or QApplication(gui_args)
-    window, controller, bridge = build_app_graph(app)
+    window, controller, bridge = build_app_graph(app, resume_copy=resume_copy)
     window.show()
     return app.exec()
 

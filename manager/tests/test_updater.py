@@ -81,6 +81,22 @@ def test_apply_update_and_restart_uses_cached_wheel(monkeypatch):
     assert str(Path("C:/pre/manager-latest.whl")) in captured[0]
 
 
+def test_apply_update_and_restart_passes_resume_flag_to_helper(monkeypatch):
+    """resume=True (manager was copying) travels to helper argv so the helper
+    relaunches the manager with --resume-copy; resume=False adds nothing."""
+    from manager import updater
+    captured = []
+    monkeypatch.setattr(updater, "cached_update",
+                        lambda: Path("C:/pre/manager-latest.whl"))
+    monkeypatch.setattr(updater.subprocess, "Popen",
+                        lambda cmd, **k: captured.append(cmd) or MagicMock())
+    monkeypatch.setattr(updater, "_helper_exe", lambda: "pyw")
+    updater.apply_update_and_restart(on_quit=lambda: None, resume=True)
+    assert captured[0][-1] == "--resume-copy"
+    updater.apply_update_and_restart(on_quit=lambda: None, resume=False)
+    assert "--resume-copy" not in captured[1]
+
+
 def test_apply_update_and_restart_aborts_when_no_wheel_and_download_fails(monkeypatch):
     from manager import updater
     monkeypatch.setattr(updater, "cached_update", lambda: None)

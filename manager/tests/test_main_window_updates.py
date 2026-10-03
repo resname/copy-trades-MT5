@@ -83,6 +83,9 @@ def test_update_available_disables_restart_until_downloaded(qapp, monkeypatch):
 
 
 def test_update_available_disables_restart_while_running(qapp, monkeypatch):
+    # the BUTTON gating no longer considers copying: while the wheel is still
+    # downloading it is disabled for any state; once ready it enables even
+    # while copying (see test_ready_update_enabled_even_while_running).
     from manager.gui.main_window import MainWindow
     monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
     monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
@@ -120,17 +123,16 @@ def test_update_ready_enables_restart_when_idle(qapp, monkeypatch):
     assert w.update_progress.isVisibleTo(w) is False
 
 
-def test_ready_update_stays_disabled_while_running_and_enables_on_stop(qapp, monkeypatch):
+def test_ready_update_enabled_even_while_running(qapp, monkeypatch):
+    # Update & restart is allowed mid-copy: the quit path orders the stop, and
+    # the relaunched manager resumes copying (resume flag chain).
     from manager.gui.main_window import MainWindow
     monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
     monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
     w = MainWindow(FakeController(running=True))
     w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
     w._on_predownload_done(Path("C:/cached/manager-latest.whl"))  # wheel ready
-    assert w.update_restart_button.isEnabled() is False  # still copying
-    w._controller.stop()   # mirrors _on_stop's controller.stop()
-    w.set_running(False)   # mirrors _on_stop's set_running(False)
-    assert w.update_restart_button.isEnabled() is True
+    assert w.update_restart_button.isEnabled() is True  # while copying
 
 
 def test_download_progress_updates_bar(qapp, monkeypatch):
@@ -163,20 +165,132 @@ def test_update_restart_calls_updater_and_quits(qapp, monkeypatch):
     import manager.updater as updater
     calls = []
     monkeypatch.setattr(updater, "apply_update_and_restart",
-                        lambda on_quit, cached_wheel=None: calls.append(on_quit))
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        calls.append((on_quit, resume)))
     w = MainWindow(FakeController(running=False))
     w._on_update_restart()
     assert len(calls) == 1
     # the on_quit passed in is the window's _do_update_quit (bound method)
-    assert calls[0] == w._do_update_quit
+    assert calls[0][0] == w._do_update_quit
+    assert calls[0][1] is False  # nothing was copying -> no resume flag
 
 
-def test_update_restart_refuses_while_running(qapp, monkeypatch):
+def test_update_restart_while_copying_passes_resume_true(qapp, monkeypatch):
+    # was the reason for the old refusal; now the click is allowed mid-copy and
+    # records the running state so the relaunched manager resumes it.
     from manager.gui.main_window import MainWindow
     import manager.updater as updater
     calls = []
     monkeypatch.setattr(updater, "apply_update_and_restart",
-                        lambda on_quit: calls.append(on_quit))
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        calls.append(resume))
     w = MainWindow(FakeController(running=True))
     w._on_update_restart()
-    assert calls == []  # refused; nothing spawned
+    assert calls == [True]
+
+
+def test_auto_update_checkbox_triggers_restart_when_ready(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: tmp_path / "nope.lnk")
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    import manager.updater as updater
+    calls = []
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        calls.append(resume))
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": False,
+                                     "auto_update": True}})
+    w = MainWindow(FakeController(running=False), store=store)
+    assert w.autostart_auto_update_checkbox.isChecked()
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))
+    assert calls == [False]  # auto-restart fired (not copying -> no resume)
+    # the attempted version is recorded for the restart-loop guard
+    w2 = MainWindow(FakeController(running=False), store=store)
+    assert w2._auto_update_last_attempt == "0.1.2"
+    # cleanup: stop timers so pytest can reap qapp threads cleanly
+    w._update_timer.stop(); w2._update_timer.stop()
+
+
+def test_auto_update_skips_version_already_attempted(qapp, tmp_path, monkeypatch):
+    # pip-failed loop guard: the helper relaunched the OLD version, which finds
+    # the same update again -> no auto-restart for a version we already tried.
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: tmp_path / "nope.lnk")
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    import manager.updater as updater
+    calls = []
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        calls.append(resume))
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": False,
+                                     "auto_update": True,
+                                     "auto_update_last_attempt": "0.1.2"}})
+    w = MainWindow(FakeController(running=False), store=store)
+    assert w._auto_update_last_attempt == "0.1.2"
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))
+    assert calls == []  # same version already attempted -> no auto-restart
+    w._update_timer.stop()
+
+
+def test_auto_update_fires_again_for_newer_version(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: tmp_path / "nope.lnk")
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    import manager.updater as updater
+    calls = []
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        calls.append(resume))
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": False,
+                                     "auto_update": True,
+                                     "auto_update_last_attempt": "0.1.2"}})
+    w = MainWindow(FakeController(running=False), store=store)
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.2", latest="0.1.3"))
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))
+    assert calls == [False]
+    w._update_timer.stop()
+
+
+def test_auto_update_off_never_triggers_restart(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: tmp_path / "nope.lnk")
+    monkeypatch.setattr("manager.gui.main_window._UpdateWorker", _NoThreadUpdateWorker)
+    monkeypatch.setattr("manager.gui.main_window._DownloadWorker", _NoThreadDownloadWorker)
+    import manager.updater as updater
+    calls = []
+    monkeypatch.setattr(updater, "apply_update_and_restart",
+                        lambda on_quit, cached_wheel=None, resume=False:
+                        calls.append(resume))
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe"}],
+                       "autostart": {"on_boot": False, "auto_copy": False,
+                                     "auto_update": False}})
+    w = MainWindow(FakeController(running=False), store=store)
+    assert not w.autostart_auto_update_checkbox.isChecked()
+    w._on_update_checked(UpdateInfo(available=True, current="0.1.1", latest="0.1.2"))
+    w._on_predownload_done(Path("C:/cached/manager-latest.whl"))
+    assert calls == []
+    w._update_timer.stop()
