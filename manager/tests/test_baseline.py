@@ -68,3 +68,18 @@ def test_seed_from_recovery_reapply_without_reset_is_noop():
     assert seed_from_recovery(table, legs) == 1
     assert seed_from_recovery(table, legs) == 0
     assert table.get(1).slave_open_volume == pytest.approx(1.0)
+
+
+def test_seed_from_recovery_within_batch_duplicate_ticket_not_double_summed():
+    # ticket 101's record appears TWICE in one batch (repeated record or a
+    # duplicate leg): merging it twice would sum its SV to 1.5 for a real 1.0
+    table = RecordTable()
+    legs = [Record(1, 1077, 100, 1.0, 0.5), Record(1, 1077, 101, 1.0, 0.5),
+            Record(1, 1077, 101, 1.0, 0.5)]
+    added = seed_from_recovery(table, legs)
+    assert added == 1
+    rec = table.get(1)
+    assert rec is not None
+    assert rec.slave_ticket == 100            # first leg's ticket is the record's
+    assert rec.slave_open_volume == pytest.approx(1.0)  # duplicate NOT double-summed
+    assert rec.master_open_volume == pytest.approx(1.0)

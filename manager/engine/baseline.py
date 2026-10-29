@@ -18,13 +18,20 @@ def seed_from_recovery(table: RecordTable, records: Iterable[Record]) -> int:
     """Populate a RecordTable from records recovered by a slave worker on
     (re)start. Records are grouped by master ticket first: a split order's
     legs (N records, one per slave leg) merge into ONE Record — first leg's
-    slave_ticket, summed slave_open_volume; MV/magic are identical across
+    slave_ticket, summed slave_open_volume. A record whose slave_ticket was
+    already merged into that master record (repeated ticket in one batch, or
+    the identical record twice) is skipped, so a within-batch duplicate
+    ticket cannot double-sum its leg's volume. MV/magic are identical across
     legs (the first record's wins). Master tickets already present in the
     table are skipped: production always calls reset_slave before re-seeding,
     so a pre-existing ticket means the same batch is being re-applied and
     must not double-count. Returns the number of master tickets added."""
     merged: dict[int, Record] = {}
+    seen_tickets: set[tuple[int, int]] = set()  # (master_ticket, slave_ticket)
     for r in records:
+        if (r.master_ticket, r.slave_ticket) in seen_tickets:
+            continue  # within-batch duplicate ticket: already merged
+        seen_tickets.add((r.master_ticket, r.slave_ticket))
         m = merged.get(r.master_ticket)
         if m is None:
             merged[r.master_ticket] = Record(
