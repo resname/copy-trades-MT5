@@ -6,10 +6,11 @@ import traceback
 
 from manager.engine.models import Position, Record, BUY, SELL
 from manager.engine.linkage import (
-    magic_for, decode_comment, MAGIC_BASE, MAGIC_MOD,
+    magic_for, decode_comment, encode_comment, MAGIC_BASE, MAGIC_MOD,
 )
 from manager.engine.transform import (
     normalize_sltp as _normalize_sltp, round_to_tick, parse_symbol_map,
+    split_volume,
 )
 from manager.ipc.messages import (
     AckMsg, ErrorMsg, SnapshotMsg, StatusMsg, SymbolInfoMsg, RecoveryMsg,
@@ -129,10 +130,17 @@ def _round_sltp(sl: float, tp: float, tick_size: float, digits: int):
 
 
 def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
-                    retry_delay_ms: int) -> AckMsg:
+                    retry_delay_ms: int, heartbeat=None) -> AckMsg:
     """Execute one CommandMsg against the terminal. The slave normalizes SL/TP
     to its live/fill price and computes partial-close volume from its live
-    current position (EA-faithful). Returns an AckMsg."""
+    current position (EA-faithful). Returns an AckMsg.
+
+    For an OPEN whose volume exceeds the slave symbol's volume_max, the order
+    is split into volume_max chunks (split_volume) with a per-leg comment
+    sharing the master ticket + MV; each chunk is sent in sequence, stopping at
+    the first rejected chunk and counting only actual fills. `heartbeat` (the
+    _slave_loop's status-emitting closure) is called before each chunk after
+    the first so the supervisor's stale timer never fires mid-split."""
     def _fail(retcode: int, err: str) -> AckMsg:
         return AckMsg(slave_id=cmd.slave_id, action=cmd.action,
                       master_ticket=cmd.master_ticket, ok=False, retcode=retcode,
@@ -162,14 +170,55 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                "deviation": 10, "magic": cmd.magic, "comment": cmd.comment,
                "type_time": ORDER_TIME_GTC,
                "type_filling": select_filling_mode(info.filling_mode)}
-        res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
-        if res.get("retcode") != TRADE_RETCODE_DONE:
+        parts: list[float] | None = None
+        mv: float | None = None
+        if cmd.volume > info.volume_max + 1e-9:
+            decoded = decode_comment(cmd.comment)
+            mv = decoded[1] if decoded else None
+            if mv is None:
+                return _fail(-1, "cannot split: comment MV/SV undecodable")
+            parts = split_volume(cmd.volume, info.volume_max, info.volume_step,
+                                 info.volume_min)
+            if len(parts) <= 1:
+                parts = None  # unusable volume_max/step -> legacy single order
+        if parts is None:
+            res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
+            if res.get("retcode") != TRADE_RETCODE_DONE:
+                return _fail(res.get("retcode", -1), str(adapter.last_error()))
+            return AckMsg(slave_id=cmd.slave_id, action="OPEN",
+                          master_ticket=cmd.master_ticket, ok=True,
+                          slave_ticket=res["order"], fill_price=res["price"],
+                          fill_volume=res["volume"], remaining_volume=res["volume"],
+                          retcode=TRADE_RETCODE_DONE)
+        # Split path: one request per chunk, sharing the template. Each leg
+        # carries its own SV in the comment; MV is the master's volume so
+        # recovery/partial-close math stays whole-position.
+        filled = 0.0
+        first_ticket = 0
+        filled_chunks = 0
+        for i, part in enumerate(parts):
+            if i > 0 and heartbeat is not None:
+                heartbeat()  # status heartbeat so the supervisor's stale timer never fires mid-split
+            req_part = dict(req, volume=part,
+                            comment=encode_comment(cmd.master_ticket, mv, part))
+            res = _order_send_with_retry(adapter, req_part, retry_count,
+                                         retry_delay_ms)
+            if res.get("retcode") != TRADE_RETCODE_DONE:
+                break  # stop at first failing chunk; keep already-filled legs
+            filled += res.get("volume") or part  # actual fill, not the request
+            if first_ticket == 0:
+                first_ticket = res["order"]
+            filled_chunks += 1
+        if filled <= 0.0:
             return _fail(res.get("retcode", -1), str(adapter.last_error()))
+        note = f"split: {filled_chunks}/{len(parts)} ok"
+        if filled < cmd.volume - 1e-9:
+            note += f" (shortfall: requested {cmd.volume}, filled {filled})"
         return AckMsg(slave_id=cmd.slave_id, action="OPEN",
                       master_ticket=cmd.master_ticket, ok=True,
-                      slave_ticket=res["order"], fill_price=res["price"],
-                      fill_volume=res["volume"], remaining_volume=res["volume"],
-                      retcode=TRADE_RETCODE_DONE)
+                      slave_ticket=first_ticket, fill_price=res["price"],
+                      fill_volume=filled, remaining_volume=filled,
+                      retcode=TRADE_RETCODE_DONE, error=note)
 
     if cmd.action == "MODIFY":
         pos = adapter.position_by_ticket(cmd.slave_ticket)
@@ -293,6 +342,13 @@ def _slave_loop(pipe, adapter, config):
     status_interval = float(config.get("slave_status_interval_ms", 5000)) / 1000.0
     last_status = time.time()
     poll_timeout = min(1.0, status_interval)
+
+    def _heartbeat():
+        try:
+            send_msg(pipe, _status(adapter, slave_id, "slave", connected=True))
+        except (EOFError, OSError):
+            pass  # manager gone: the next real send exits the loop
+
     while True:
         try:
             has_cmd = pipe.poll(poll_timeout)
@@ -332,7 +388,8 @@ def _slave_loop(pipe, adapter, config):
                     return  # manager gone
                 last_status = time.time()
                 continue
-            ack = execute_command(adapter, cmd, normalize, retry_count, retry_delay)
+            ack = execute_command(adapter, cmd, normalize, retry_count, retry_delay,
+                                  heartbeat=_heartbeat)
             try:
                 send_msg(pipe, ack)
                 send_msg(pipe, _status(adapter, slave_id, "slave", connected=True))

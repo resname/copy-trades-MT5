@@ -446,3 +446,94 @@ def test_execute_close_uses_symbol_supported_filling_mode():
     ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
     assert ack.ok
     assert mt.last_request["type_filling"] == ORDER_FILLING_FOK
+
+
+# ---- execute_command: OPEN split (oversized volumes) ----
+from dataclasses import replace
+from manager.ipc.messages import CommandMsg
+
+SI_MAX05 = replace(SI, volume_max=0.5)   # same step/min (0.01), tiny per-order max
+
+def _split_adapter(**kw):
+    return FakeMt5(
+        symbol_infos={"EURUSD": SI_MAX05},
+        account={"login": 123, "balance": 1000.0, "equity": 1000.0,
+                 "currency": "USD", "server": "Demo"},
+        ticks={"EURUSD": (1.10000, 1.10010)},
+        **kw)
+
+def _open_cmd(volume, comment=None):
+    return CommandMsg(slave_id="s1", action="OPEN", master_ticket=42,
+                      symbol="EURUSD", volume=volume, sl=0.0, tp=0.0,
+                      master_open_price=1.10000, side=BUY, magic=magic_for(42),
+                      comment=comment if comment is not None
+                      else encode_comment(42, 2.0, volume))
+
+def test_execute_open_splits_into_max_chunks_with_per_part_comments():
+    mt = _split_adapter()
+    ack = execute_command(mt, _open_cmd(1.2), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert ack.fill_volume == pytest.approx(1.2, abs=1e-9)
+    parts = [p for p in mt.positions_get() if p.comment.startswith("CPY#")]
+    assert [p.volume for p in parts] == [pytest.approx(0.5), pytest.approx(0.5),
+                                         pytest.approx(0.2)]
+    for p in parts:  # each leg its own SV, shared master ticket + magic + SL/TP
+        assert p.comment in ("CPY#42|MV2|SV0.5", "CPY#42|MV2|SV0.2")
+        assert p.magic == magic_for(42)
+    assert ack.slave_ticket == parts[0].ticket
+
+def test_execute_open_single_order_unchanged_when_under_symbol_max():
+    mt = _split_adapter()
+    comment = encode_comment(42, 0.5, 0.1)
+    ack = execute_command(mt, _open_cmd(0.1, comment), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok and len([p for p in mt.positions_get()
+                           if p.comment.startswith("CPY#")]) == 1
+    assert mt.positions_get()[-1].comment == comment  # byte-identical legacy path
+
+def test_execute_open_split_partial_failure_keeps_filled_parts():
+    from manager.worker.mt5_constants import TRADE_RETCODE_DONE
+    mt = _split_adapter(order_results=[
+        {"retcode": TRADE_RETCODE_DONE, "order": 777, "deal": 777,
+         "price": 1.10010, "volume": 0.5},
+        {"retcode": 10004, "order": 0, "deal": 0, "price": 0.0, "volume": 0.0},
+    ])
+    ack = execute_command(mt, _open_cmd(1.2), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok and ack.fill_volume == pytest.approx(0.5)
+    assert ack.slave_ticket == 777
+    assert "shortfall" in (ack.error or "")
+    assert "split" in (ack.error or "")
+
+def test_execute_open_split_total_failure_fails_like_today():
+    mt = _split_adapter(order_results=[
+        {"retcode": 10004, "order": 0, "deal": 0, "price": 0.0, "volume": 0.0},
+        {"retcode": 10004, "order": 0, "deal": 0, "price": 0.0, "volume": 0.0},
+    ])
+    ack = execute_command(mt, _open_cmd(1.2), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok is False and ack.retcode == 10004
+
+def test_execute_open_split_undecodable_comment_fails():
+    mt = _split_adapter()
+    ack = execute_command(mt, _open_cmd(1.2, comment="unrelated"),
+                          normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok is False and "split" in ack.error and "undecodable" in ack.error
+
+def test_execute_open_split_heartbeats_between_chunks():
+    mt = _split_adapter()
+    beats = []
+    ack = execute_command(mt, _open_cmd(1.2), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0,
+                          heartbeat=lambda: beats.append(1))
+    assert ack.ok and len(beats) == 2  # 3 chunks -> 2 inter-chunk heartbeats
+
+def test_execute_open_split_zero_parts_requested_volume_fully_single():
+    # volume exactly == volume_max -> single order, legacy path (no split)
+    mt = _split_adapter()
+    comment = encode_comment(42, 0.5, 0.5)
+    ack = execute_command(mt, _open_cmd(0.5, comment), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok and len([p for p in mt.positions_get()
+                           if p.comment.startswith("CPY#")]) == 1
