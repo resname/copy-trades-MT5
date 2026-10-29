@@ -16,12 +16,28 @@ def is_too_old(open_time: int, now: int, max_age_minutes: int) -> bool:
 
 def seed_from_recovery(table: RecordTable, records: Iterable[Record]) -> int:
     """Populate a RecordTable from records recovered by a slave worker on
-    (re)start. Skips master tickets already present (no overwrite). Returns the
-    number of records added."""
-    added = 0
+    (re)start. Records are grouped by master ticket first: a split order's
+    legs (N records, one per slave leg) merge into ONE Record — first leg's
+    slave_ticket, summed slave_open_volume; MV/magic are identical across
+    legs (the first record's wins). Master tickets already present in the
+    table are skipped: production always calls reset_slave before re-seeding,
+    so a pre-existing ticket means the same batch is being re-applied and
+    must not double-count. Returns the number of master tickets added."""
+    merged: dict[int, Record] = {}
     for r in records:
-        if table.has(r.master_ticket):
+        m = merged.get(r.master_ticket)
+        if m is None:
+            merged[r.master_ticket] = Record(
+                master_ticket=r.master_ticket, magic=r.magic,
+                slave_ticket=r.slave_ticket,
+                master_open_volume=r.master_open_volume,
+                slave_open_volume=r.slave_open_volume)
+        else:
+            m.slave_open_volume += r.slave_open_volume
+    added = 0
+    for rec in merged.values():
+        if table.has(rec.master_ticket):
             continue
-        table.add(r)
+        table.add(rec)
         added += 1
     return added

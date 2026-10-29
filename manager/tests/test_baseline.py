@@ -1,3 +1,5 @@
+import pytest
+
 from manager.engine.models import Record
 from manager.engine.record_table import RecordTable
 from manager.engine.baseline import is_too_old, seed_from_recovery
@@ -42,3 +44,27 @@ def test_seed_from_recovery_skips_duplicates():
     added = seed_from_recovery(table, [rec])
     assert added == 0
     assert len(table) == 1
+
+
+def test_seed_from_recovery_merges_split_legs():
+    magic = 1077
+    table = RecordTable()
+    legs = [Record(1, magic, 100, 1.0, 0.5), Record(1, magic, 101, 1.0, 0.5),
+            Record(2, 1078, 102, 0.5, 0.3)]
+    added = seed_from_recovery(table, legs)
+    assert added == 2
+    rec = table.get(1)
+    assert rec is not None
+    assert rec.slave_ticket == 100            # first leg's ticket is the record's
+    assert rec.slave_open_volume == pytest.approx(1.0)   # legs summed
+    assert rec.master_open_volume == pytest.approx(1.0)
+    assert table.get(2).slave_open_volume == pytest.approx(0.3)
+
+def test_seed_from_recovery_reapply_without_reset_is_noop():
+    # second RecoveryMsg without a table reset (no reset_slave in between):
+    # must not double-count or overwrite (pinned behavior preserved)
+    table = RecordTable()
+    legs = [Record(1, 1077, 100, 1.0, 0.5), Record(1, 1077, 101, 1.0, 0.5)]
+    assert seed_from_recovery(table, legs) == 1
+    assert seed_from_recovery(table, legs) == 0
+    assert table.get(1).slave_open_volume == pytest.approx(1.0)
