@@ -2,14 +2,20 @@
 NEW -> MODIFY -> PARTIAL -> CLOSE lifecycle. Uses a test-local helper that
 calls the modules in sequence (the production copy-loop arrives in Plan 2)."""
 
-from manager.engine.models import Position, Snapshot, BUY, Record
+import pytest
+
+from manager.engine.models import Position, Snapshot, BUY, Record, SymbolInfo
 from manager.engine.linkage import magic_for, encode_comment
 from manager.engine.transform import (
     SymbolMapper, calculate_lots, normalize_sltp, round_to_tick,
+    SIZING_COPY_MASTER,
 )
 from manager.engine.snapshot_diff import diff
 from manager.engine.record_table import RecordTable
 from manager.engine.baseline import is_too_old, seed_from_recovery
+from manager.engine.copy_loop import CopyEngine, SlaveConfig
+from manager.worker.mt5_worker import execute_command, build_recovery_records
+from manager.worker.mt5_adapter import FakeMt5
 
 NOW = 1700000000
 
@@ -138,3 +144,50 @@ def test_close_removes_record():
     # the production copy-loop would call table.remove(12345) after a successful close
     table.remove(12345)
     assert not table.has(12345)
+
+
+def test_split_oversized_order_end_to_end():
+    # slave symbol max 0.5; master opens 1.0 with copy_master sizing (max_lot 10)
+    si = SymbolInfo(point=0.00001, digits=5, tick_size=0.00001,
+                    volume_step=0.01, volume_min=0.01, volume_max=0.5)
+    mt = FakeMt5(symbol_infos={"EURUSD": si},
+                 account={"login": 1, "balance": 100.0, "equity": 100.0,
+                          "currency": "USD", "server": "Demo"},
+                 ticks={"EURUSD": (1.10000, 1.10010)})
+    engine = CopyEngine()
+    engine.add_slave(SlaveConfig(
+        slave_id="s1", symbol_map_csv="EURUSD=EURUSD", step_amount=100.0,
+        step_size=0.01, max_lot=10.0, max_trade_age_minutes=60,
+        normalize_sltp=True, sizing_mode=SIZING_COPY_MASTER,
+        master_base_lot=0.0, fixed_lot=0.01))
+    engine.apply_symbol_info("s1", {"EURUSD": si}, requested=["EURUSD"])
+    position = Position(42, "EURUSD", BUY, 1.10000, 1.0, 0, 0, 0, 0.00001)
+    cmds = engine.ingest_snapshot(Snapshot(timestamp=1000, heartbeat=0,
+                                           positions=(position,)), now=1000)
+    (cmd,) = cmds["s1"]
+    assert cmd.action == "OPEN" and cmd.volume == pytest.approx(1.0)
+    # worker splits: two legs of 0.5
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok and ack.fill_volume == pytest.approx(1.0)
+    legs = [p for p in mt.positions_get() if p.comment.startswith("CPY#")]
+    assert len(legs) == 2
+    engine.apply_ack("s1", ack)   # book the aggregate into the record
+    # restart path: worker rebuilds one record per leg; engine merges to one
+    records = build_recovery_records(mt)
+    assert len(records) == 2
+    engine.reset_slave("s1")
+    assert engine.apply_recovery("s1", records) == 1
+    # master CLOSES -> fan-out CLOSE reaches BOTH legs, ack ok
+    cmds = engine.ingest_snapshot(Snapshot(timestamp=2000, heartbeat=1,
+                                           positions=()), now=2000)
+    (close_cmd,) = cmds["s1"]
+    assert close_cmd.action == "CLOSE"
+    close_ack = execute_command(mt, close_cmd, normalize_sltp=True,
+                                retry_count=1, retry_delay_ms=0)
+    assert close_ack.ok
+    assert not any(p.comment.startswith("CPY#") for p in mt.positions_get())
+    assert engine.apply_ack("s1", close_ack) == []
+    # no re-NEW: the master is gone and the record was removed
+    assert all(c.action != "OPEN" for c in
+               engine.ingest_snapshot(Snapshot(timestamp=2200, heartbeat=3,
+                                               positions=()), now=2200)["s1"])
