@@ -159,8 +159,9 @@ def calculate_slave_lot(mode: str, master_volume: float, balance: float,
 def calculate_lots(balance: float, step_amount: float, step_size: float,
                    max_lot: float, lot_step: float, min_lot: float) -> float:
     """Balance-step lot sizing (legacy). Thin wrapper over
-    calculate_slave_lot(balance_step, master_base_lot=0.0) so existing callers
-    and tests keep working unchanged. Ported from CLotSizer::CalculateLots."""
+    calculate_slave_lot(balance_step, master_base_lot=0.0). The symbol-max
+    parameter (max_lot_symbol) was removed in v0.1.x: oversized volume is
+    split worker-side. Ported from CLotSizer::CalculateLots."""
     return calculate_slave_lot(
         SIZING_BALANCE_STEP, 0.0, balance, step_amount, step_size,
         0.0, 0.0, max_lot, lot_step, min_lot)

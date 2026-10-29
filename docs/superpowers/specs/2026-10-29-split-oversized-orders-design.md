@@ -139,6 +139,10 @@ already exists (`build_recovery_records`, `manager/worker/mt5_worker.py:45-58`).
   same fan-out path — the scan finds exactly one leg and behavior
   matches today's per-ticket math. Verify in tests that single-order
   CLOSE/PARTIAL/MODIFY results are unchanged.
+- Limitation: if a broker rewrites a leg's comment, that leg is still
+  reached via the recorded slave ticket; a leg whose comment is
+  rewritten AND unknown to the record is beyond linkage and must be
+  closed manually.
 
 **4. Recovery merge** (`manager/engine/baseline.py`):
 - The worker's `build_recovery_records` already emits one record per leg

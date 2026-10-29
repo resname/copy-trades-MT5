@@ -92,7 +92,10 @@ source:
     e.g. 150 lots at a 100-lot max opens 100 + 50 — each leg carrying its own
     linkage comment; partial closes shrink every leg pro-rata and full closes
     close them all. (Netting-mode slave accounts merge same-symbol positions,
-    so splitting targets hedging accounts.) The per-slave **max lot** still
+    so splitting targets hedging accounts.) (If a broker rewrites a leg's
+    comment, that leg is still reached via the recorded slave ticket; a
+    leg whose comment is rewritten AND unknown to the record is beyond
+    linkage and must be closed manually.) The per-slave **max lot** still
     caps the copied total.
 - **Auto-find MT5 instances** — discovers installed terminals via `origin.txt`
   and the default Program Files locations.

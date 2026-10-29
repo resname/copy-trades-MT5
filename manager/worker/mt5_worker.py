@@ -225,13 +225,18 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                                          retry_delay_ms)
             if res.get("retcode") != TRADE_RETCODE_DONE:
                 break  # stop at first failing chunk; keep already-filled legs
-            filled += res.get("volume") or part  # actual fill, not the request
+            filled += res.get("volume") or 0.0  # actual fill only, not the request
             if first_ticket == 0:
                 first_ticket = res["order"]
             filled_chunks += 1
         if filled <= 0.0:
-            return _fail(res.get("retcode", -1), str(adapter.last_error()))
+            retcode = res.get("retcode", -1)
+            if retcode == TRADE_RETCODE_DONE:
+                retcode = -1  # ok=False must never carry a DONE retcode
+            return _fail(retcode, str(adapter.last_error()))
         note = f"split: {filled_chunks}/{len(parts)} ok"
+        if len(parts) > 20:
+            note += f" (warning: huge split: {len(parts)} legs)"
         if filled < cmd.volume - 1e-9:
             note += f" (shortfall: requested {cmd.volume}, filled {filled})"
         return AckMsg(slave_id=cmd.slave_id, action="OPEN",
