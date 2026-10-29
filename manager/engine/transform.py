@@ -107,9 +107,10 @@ SIZING_FIXED_LOT = "fixed_lot"
 
 
 def _snap_clamp(lots: float, lot_step: float, min_lot: float,
-                max_lot: float, max_lot_symbol: float) -> float:
-    """Snap `lots` DOWN to the lot-step grid, clamp UP to min_lot, cap at
-    min(max_lot_symbol, max_lot), normalize to the lot-step's digit count.
+                max_lot: float) -> float:
+    """Snap `lots` DOWN to the lot-step grid, clamp UP to min_lot, cap at the
+    per-slave `max_lot` config, normalize to the lot-step's digit count.
+    Oversized volume is split worker-side (split_volume), not capped here.
     Returns 0.0 if lot_step <= 0 (cannot snap). Shared tail for every mode."""
     if lot_step <= 0.0:
         return 0.0
@@ -117,7 +118,6 @@ def _snap_clamp(lots: float, lot_step: float, min_lot: float,
     # 28.999999999999996 in IEEE-754) is on the grid, not a step below it.
     lots = math.floor(lots / lot_step + 1e-9) * lot_step
     lots = max(lots, min_lot)
-    lots = min(lots, max_lot_symbol)
     lots = min(lots, max_lot)
     lot_digits = max(0, int(round(-math.log10(lot_step))))
     return round(lots, lot_digits)
@@ -126,11 +126,11 @@ def _snap_clamp(lots: float, lot_step: float, min_lot: float,
 def calculate_slave_lot(mode: str, master_volume: float, balance: float,
                         step_amount: float, step_size: float,
                         master_base_lot: float, fixed_lot: float,
-                        max_lot: float, lot_step: float, min_lot: float,
-                        max_lot_symbol: float) -> float:
+                        max_lot: float, lot_step: float, min_lot: float) -> float:
     """Per-slave lot sizing across three modes. Each mode yields a raw lot;
-    _snap_clamp then snaps/clamps/caps/rounds it. Returns 0.0 on invalid
-    config (the engine skips the trade).
+    _snap_clamp then snaps/clamps/caps/rounds it. max_lot is the per-slave
+    MaxLots config cap (the worker splits oversized volume instead).
+    Returns 0.0 on invalid config (the engine skips the trade).
 
     - balance_step: raw = floor(balance/step_amount)*step_size; if
       master_base_lot > 0 and master_volume < master_base_lot, scale DOWN:
@@ -146,26 +146,24 @@ def calculate_slave_lot(mode: str, master_volume: float, balance: float,
         raw = math.floor(balance / step_amount + 1e-9) * step_size
         if master_base_lot > 0.0 and master_volume < master_base_lot:
             raw *= master_volume / master_base_lot
-        return _snap_clamp(raw, lot_step, min_lot, max_lot, max_lot_symbol)
+        return _snap_clamp(raw, lot_step, min_lot, max_lot)
     if mode == SIZING_COPY_MASTER:
-        return _snap_clamp(master_volume, lot_step, min_lot, max_lot,
-                           max_lot_symbol)
+        return _snap_clamp(master_volume, lot_step, min_lot, max_lot)
     if mode == SIZING_FIXED_LOT:
         if fixed_lot <= 0.0:
             return 0.0
-        return _snap_clamp(fixed_lot, lot_step, min_lot, max_lot, max_lot_symbol)
+        return _snap_clamp(fixed_lot, lot_step, min_lot, max_lot)
     return 0.0
 
 
 def calculate_lots(balance: float, step_amount: float, step_size: float,
-                   max_lot: float, lot_step: float, min_lot: float,
-                   max_lot_symbol: float) -> float:
+                   max_lot: float, lot_step: float, min_lot: float) -> float:
     """Balance-step lot sizing (legacy). Thin wrapper over
     calculate_slave_lot(balance_step, master_base_lot=0.0) so existing callers
     and tests keep working unchanged. Ported from CLotSizer::CalculateLots."""
     return calculate_slave_lot(
         SIZING_BALANCE_STEP, 0.0, balance, step_amount, step_size,
-        0.0, 0.0, max_lot, lot_step, min_lot, max_lot_symbol)
+        0.0, 0.0, max_lot, lot_step, min_lot)
 
 
 def normalize_sltp(

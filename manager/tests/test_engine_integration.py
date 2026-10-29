@@ -39,7 +39,7 @@ def _handle_new(event, table, mapper):
     lots = calculate_lots(
         SLAVE_CFG["balance"], SLAVE_CFG["step_amount"], SLAVE_CFG["step_size"],
         SLAVE_CFG["max_lot"], SLAVE_SYMBOL_INFO["lot_step"],
-        SLAVE_SYMBOL_INFO["min_lot"], SLAVE_SYMBOL_INFO["max_lot"],
+        SLAVE_SYMBOL_INFO["min_lot"],
     )
     assert lots > 0.0
     if SLAVE_CFG["normalize_sltp"]:

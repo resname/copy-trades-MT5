@@ -72,7 +72,7 @@ def derive_command(state: SlaveState, event: Event, now: int) -> CommandMsg | _A
                                    cfg.step_amount, cfg.step_size,
                                    cfg.master_base_lot, cfg.fixed_lot,
                                    cfg.max_lot, info.volume_step,
-                                   info.volume_min, info.volume_max)
+                                   info.volume_min)
         if lots <= 0.0:
             return None
         return CommandMsg(slave_id=cfg.slave_id, action="OPEN", master_ticket=ticket,
