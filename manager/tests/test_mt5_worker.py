@@ -706,7 +706,7 @@ def test_execute_close_union_includes_mangled_leg_even_when_scan_is_nonempty():
     assert ack.ok
     assert mt.position_by_ticket(777) is None and mt.position_by_ticket(778) is None
 
-def test_execute_partial_close_union_includes_mangled_leg():
+def test_execute_partial_close_estimates_mangled_leg_sv_from_remaining_legs():
     mt = _adapter(positions=_two_legs_one_mangled())
     cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
                      slave_ticket=778, new_master_volume=0.5,
@@ -715,6 +715,7 @@ def test_execute_partial_close_union_includes_mangled_leg():
     assert ack.ok
     # leg 777 by its own SV: target 0.6*0.5 = 0.3, close 0.3
     assert mt.position_by_ticket(777).volume == pytest.approx(0.3, abs=1e-8)
-    # leg 778 has NO decodable SV -> cmd.slave_open_volume (1.0) is its SV
-    # fallback -> target 0.5 -> 0.4 < 0.5: nothing to close
-    assert mt.position_by_ticket(778).volume == pytest.approx(0.4, abs=1e-8)
+    # leg 778 has NO decodable SV: estimated as cmd.slave_open_volume (1.0)
+    # minus the other legs' decoded SVs (0.6) = 0.4 -> target 0.2 -> 778
+    # closes 0.2 (the CORRECT pro-rata, not the aggregate-driven 0.5)
+    assert mt.position_by_ticket(778).volume == pytest.approx(0.2, abs=1e-8)

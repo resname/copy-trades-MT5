@@ -289,17 +289,29 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
         if cmd.master_open_volume <= 0.0:
             return _fail(-1, "cannot compute partial fraction")
         fraction = cmd.new_master_volume / cmd.master_open_volume
-        fill_total = 0.0
+        # per-leg pro-rata: each leg targets its OWN SV * fraction. A leg whose
+        # comment the broker mangled (no decodable SV) is ESTIMATED as the
+        # record aggregate minus the other legs' decoded SVs; that estimate is
+        # the record aggregate for a legacy single-leg record (no others), so
+        # legacy behavior is byte-identical.
+        leg_svs: list[float | None] = []
         for pos in legs:
+            d = decode_comment(pos.comment)
+            leg_svs.append(d[2] if (d is not None and d[2] is not None) else None)
+        fill_total = 0.0
+        for pos, sv in zip(legs, leg_svs):
             info = adapter.symbol_info(pos.symbol)
             if info is None:
                 return _fail(-1, "cannot compute partial fraction")
             current = pos.volume
-            decoded = decode_comment(pos.comment)
-            # per-leg pro-rata: each leg targets its OWN SV * fraction; the
-            # record aggregate is only the fallback for an undecodable legacy leg
-            sv = decoded[2] if (decoded is not None and decoded[2] is not None) \
-                else cmd.slave_open_volume
+            if sv is None:
+                sv = cmd.slave_open_volume - sum(s for s, other in
+                                                 zip(leg_svs, legs)
+                                                 if other is not pos and s is not None)
+                if sv <= 0.0:
+                    # the leg's target cannot be trusted: skip (close nothing
+                    # from it) rather than risk an accidental full close
+                    continue
             target = sv * fraction
             # +1e-9: float-epsilon guard (same as _snap_clamp) -- a delta sitting
             # epsilon below N steps is N steps; naive floor short-closes or skips
