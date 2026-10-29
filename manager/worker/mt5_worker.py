@@ -20,7 +20,8 @@ from manager.ipc.pipe_framing import send_msg, recv_msg
 from manager.worker.mt5_adapter import FakeMt5, RealMt5
 from manager.worker.mt5_constants import (
     TRADE_ACTION_DEAL, TRADE_ACTION_SLTP, ORDER_TYPE_BUY, ORDER_TYPE_SELL,
-    ORDER_TIME_GTC, TRADE_RETCODE_DONE, select_filling_mode,
+    ORDER_TIME_GTC, TRADE_RETCODE_DONE, TRADE_RETCODE_DONE_PARTIAL,
+    select_filling_mode,
 )
 
 
@@ -110,11 +111,16 @@ def slave_init(adapter, config: dict):
 
 
 def _order_send_with_retry(adapter, request: dict, retry_count: int,
-                           retry_delay_ms: int) -> dict:
+                           retry_delay_ms: int,
+                           ok_codes: tuple[int, ...] = (TRADE_RETCODE_DONE,)) -> dict:
+    """Send and retry up to retry_count attempts until the result's retcode is
+    an accepted-success code (ok_codes; the default is exactly DONE so the
+    single-order path is unchanged). The split path adds DONE_PARTIAL: a
+    partially filled chunk IS a fill and must not be re-sent on retry."""
     result: dict = {"retcode": -1, "order": 0, "deal": 0, "price": 0.0, "volume": 0.0}
     for attempt in range(max(1, retry_count)):
         result = adapter.order_send(request)
-        if result.get("retcode") == TRADE_RETCODE_DONE:
+        if result.get("retcode") in ok_codes:
             return result
         if attempt < retry_count - 1 and retry_delay_ms > 0:
             time.sleep(retry_delay_ms / 1000.0)
@@ -229,6 +235,7 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
         filled = 0.0
         first_ticket = 0
         filled_chunks = 0
+        first_res = None
         for i, part in enumerate(parts):
             if i > 0 and heartbeat is not None:
                 heartbeat()  # status heartbeat so the supervisor's stale timer never fires mid-split
@@ -249,12 +256,17 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
             req_part = dict(req, volume=part, price=slave_open, sl=sl, tp=tp,
                             comment=encode_comment(cmd.master_ticket, mv, part))
             res = _order_send_with_retry(adapter, req_part, retry_count,
-                                         retry_delay_ms)
-            if res.get("retcode") != TRADE_RETCODE_DONE:
+                                         retry_delay_ms,
+                                         ok_codes=(TRADE_RETCODE_DONE,
+                                                   TRADE_RETCODE_DONE_PARTIAL))
+            if res.get("retcode") not in (TRADE_RETCODE_DONE,
+                                          TRADE_RETCODE_DONE_PARTIAL):
                 break  # stop at first failing chunk; keep already-filled legs
             filled += res.get("volume") or 0.0  # actual fill only, not the request
             if first_ticket == 0:
                 first_ticket = res["order"]
+            if first_res is None:
+                first_res = res  # the ack prices the FIRST successful chunk
             filled_chunks += 1
         if filled <= 0.0:
             retcode = res.get("retcode", -1)
@@ -268,7 +280,7 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
             note += f" (shortfall: requested {cmd.volume}, filled {filled})"
         return AckMsg(slave_id=cmd.slave_id, action="OPEN",
                       master_ticket=cmd.master_ticket, ok=True,
-                      slave_ticket=first_ticket, fill_price=res["price"],
+                      slave_ticket=first_ticket, fill_price=first_res["price"],
                       fill_volume=filled, remaining_volume=filled,
                       retcode=TRADE_RETCODE_DONE, error=note)
 

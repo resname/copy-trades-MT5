@@ -7,7 +7,8 @@ from manager.worker.mt5_adapter import FakeMt5
 from manager.worker.mt5_constants import (
     ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN, select_filling_mode,
     TRADE_ACTION_DEAL, TRADE_ACTION_SLTP, ORDER_TYPE_BUY, ORDER_TYPE_SELL,
-    ORDER_TIME_GTC, TRADE_RETCODE_DONE, TRADE_RETCODE_PLACED,
+    ORDER_TIME_GTC, TRADE_RETCODE_DONE, TRADE_RETCODE_DONE_PARTIAL,
+    TRADE_RETCODE_PLACED,
 )
 from manager.worker.mt5_worker import (
     build_snapshot, build_recovery_records, build_symbol_info_msg, slave_init,
@@ -62,6 +63,7 @@ def test_trade_constants_match_metatrader5_package():
     assert ORDER_FILLING_RETURN == mt5.ORDER_FILLING_RETURN
     assert TRADE_RETCODE_DONE == mt5.TRADE_RETCODE_DONE
     assert TRADE_RETCODE_PLACED == mt5.TRADE_RETCODE_PLACED
+    assert TRADE_RETCODE_DONE_PARTIAL == mt5.TRADE_RETCODE_DONE_PARTIAL
 
 
 # ---- build_snapshot ----
@@ -505,6 +507,27 @@ def test_execute_open_split_partial_failure_keeps_filled_parts():
     assert ack.slave_ticket == 777
     assert "shortfall" in (ack.error or "")
     assert "split" in (ack.error or "")
+    # the ack prices the FIRST successful chunk, not the last attempted one
+    assert ack.fill_price == pytest.approx(1.10010)
+
+
+def test_execute_open_split_partial_fill_counts_actual_volume():
+    # retcode 10010 (DONE_PARTIAL) counts as a filled chunk with its ACTUAL
+    # volume (the request was 0.5, the fill 0.25); the clean "2/2 ok" note
+    # gains a shortfall clause
+    mt = _split_adapter(order_results=[
+        {"retcode": TRADE_RETCODE_DONE_PARTIAL, "order": 771, "deal": 771,
+         "price": 1.10010, "volume": 0.25},
+        {"retcode": TRADE_RETCODE_DONE, "order": 772, "deal": 772,
+         "price": 1.10010, "volume": 0.5},
+    ])
+    ack = execute_command(mt, _open_cmd(1.0), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert ack.fill_volume == pytest.approx(0.75)
+    assert ack.fill_price == pytest.approx(1.10010)  # first successful chunk
+    assert "split: 2/2 ok" in (ack.error or "")
+    assert "shortfall: requested 1.0, filled 0.75" in (ack.error or "")
 
 def test_execute_open_split_total_failure_fails_like_today():
     mt = _split_adapter(order_results=[

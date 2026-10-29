@@ -15,6 +15,7 @@ ORDER_FILLING_FOK = 0       # Fill or Kill
 ORDER_FILLING_IOC = 1       # Immediate or Cancel
 ORDER_FILLING_RETURN = 2   # Return (wait for quote; the legacy default)
 TRADE_RETCODE_DONE = 10009
+TRADE_RETCODE_DONE_PARTIAL = 10010  # request completed partially
 TRADE_RETCODE_PLACED = 10008
 
 # SYMBOL_FILLING_* bitmap bits reported by symbol_info.filling_mode:
