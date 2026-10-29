@@ -186,3 +186,39 @@ already exists (`build_recovery_records`, `manager/worker/mt5_worker.py:45-58`).
   table; failed-open CLOSE cleanup (`copy_loop.py:238-240`) unchanged.
 - Ack contract: exactly one AckMsg per command over the wire (messages
   decode requires all fields — no AckMsg changes planned).
+
+## Builder-check decisions (2026-10-29; owner delegated — settled as calls)
+
+The builder check surfaced six open points; all settled as follows (no
+owner round needed). None changes what gets built.
+
+1. **Zero decoded legs on fan-out (MODIFY/PARTIAL/CLOSE):** fall back to
+   today's exact single-ticket path — the scanned legs are the union with
+   `position_by_ticket(cmd.slave_ticket)`; when the comment scan returns
+   nothing (e.g. broker rewrote/truncated the comment), the legacy
+   per-ticket routing runs. NEVER "vacuous success" on an empty set:
+   CLOSE/ MODIFY on zero legs (legacy path position also missing) keeps
+   today's behavior (CLOSE: vanished-position ack ok; MODIFY: fail).
+2. **Chunk failure stops the loop** at the first non-DONE chunk (after
+   its retries); remaining chunks are NOT attempted. Each chunk's
+   contribution to `fill_volume` is the result's ACTUAL `volume`
+   (IOC partial fills count as achieved, planned value only feeds the
+   comment SV written at order time — same inherited caveat as today's
+   single order).
+3. **Long splits vs the supervisor's 30s stale restart:** after each
+   chunk beyond the first, the worker emits one StatusMsg (heartbeat)
+   before sending the next chunk, so the supervisor's staleness timer
+   (`manager/supervisor.py:48,335-358`) never fires mid-split. No leg
+   count cap (heartbeats make duration safe); pathological leg counts
+   (>20) get a warning-only note in the ack error text.
+4. **Failed MODIFY/CLOSE legs keep today's no-retry semantics** (engine
+   diff is transition-driven; a failed ack is never re-sent today either).
+   The anti-goal note stands; a retry/retry-on-next-diff policy is a
+   separate feature, not this one.
+5. **Oversized OPEN with undecodable MV:** fail the command with a clear
+   error (`"cannot split: comment MV/SV undecodable"`) rather than
+   opening legs whose pro-rata math cannot be reconstructed later.
+   Non-oversized orders are unaffected (comment used as-is, unchanged).
+6. **Shortfall/partial-failure notes** in `ack.error` with `ok=True` are
+   informational (logs/tests); the supervisor surfaces errors only on
+   `ok=False`, and the no-new-GUI-surface non-goal keeps it that way.
