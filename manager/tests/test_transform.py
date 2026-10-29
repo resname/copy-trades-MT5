@@ -1,4 +1,6 @@
-from manager.engine.transform import parse_symbol_map, SymbolMapper
+from manager.engine.transform import (
+    parse_symbol_map, SymbolMapper, split_volume,
+)
 
 
 def test_parse_symbol_map_basic():
@@ -286,3 +288,28 @@ def test_round_to_tick_zero_price_unchanged():
 
 def test_round_to_tick_invalid_tick_size_returns_none():
     assert round_to_tick(1.19457, 0.0, 5) is None
+
+
+# ---- split_volume: chunk sizes for oversized slave orders ----
+
+def test_split_volume_below_max_is_single_part():
+    assert split_volume(50.0, 100.0, 0.01, 0.01) == [50.0]
+
+def test_split_volume_user_example_150_at_max_100():
+    assert split_volume(150.0, 100.0, 0.01, 0.01) == [100.0, 50.0]
+
+def test_split_volume_multiple_full_chunks():
+    assert split_volume(250.0, 100.0, 0.01, 0.01) == [100.0, 100.0, 50.0]
+
+def test_split_volume_snaps_max_chunk_to_step_grid():
+    # volume_max 100.5 is off the 1.0 step grid -> every chunk snapped down
+    assert split_volume(150.0, 100.5, 1.0, 1.0) == [100.0, 50.0]
+
+def test_split_volume_remainder_below_min_rebalances_equal_parts():
+    # greedy: 100 + 0.5, but 0.5 < volume_min 1.0 -> equal 2-part split
+    assert split_volume(100.5, 100.0, 0.5, 1.0) == [50.5, 50.0]
+
+def test_split_volume_degenerate_inputs_single_part():
+    assert split_volume(0.0, 100.0, 0.01, 0.01) == [0.0]
+    assert split_volume(5.0, 0.0, 0.01, 0.01) == [5.0]   # unusable volume_max -> legacy single order
+    assert split_volume(5.0, 100.0, 0.0, 0.01) == [5.0]  # unusable volume_step -> legacy single order

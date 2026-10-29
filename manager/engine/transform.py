@@ -203,3 +203,39 @@ def round_to_tick(price: float, tick_size: float, digits: int) -> float | None:
         return None
     rounded = round(price / tick_size) * tick_size
     return round(rounded, digits)
+
+
+def split_volume(total: float, volume_max: float, volume_step: float,
+                 volume_min: float) -> list[float]:
+    """Split an oversized order volume into grid-aligned chunks each at most
+    volume_max, for the worker's multi-order OPEN. Greedy: as many full
+    volume_max chunks as fit (snapped DOWN to volume_step), remainder last.
+    A remainder below volume_min (only possible when volume_max is not a
+    volume_step multiple) rebalances into equal parts. Returns [total] when
+    splitting is unnecessary or impossible (total <= 0, volume_step <= 0,
+    volume_max <= 0, or total <= volume_max) — the caller then opens one
+    order exactly as before."""
+    if total <= 0.0 or volume_step <= 0.0 or volume_max <= 0.0:
+        return [total]
+    max_steps = math.floor(volume_max / volume_step + 1e-9)
+    total_steps = math.floor(total / volume_step + 1e-9)
+    if max_steps < 1 or total <= volume_max + 1e-9:
+        return [total]
+    # ceil (with the +1e-9 grid-guard idiom), not round: -log10(0.5) = 0.301
+    # must be 1 digit — round() would give 0 and collapse 50.5 onto 50.0.
+    lot_digits = max(0, int(math.ceil(-math.log10(volume_step) - 1e-9)))
+    n_fill = total_steps // max_steps          # full max chunks
+    rem_steps = total_steps - n_fill * max_steps
+    if rem_steps == 0:
+        return [round(max_steps * volume_step, lot_digits)] * n_fill
+    if rem_steps * volume_step >= volume_min - 1e-9:
+        return [round(max_steps * volume_step, lot_digits)] * n_fill \
+            + [round(rem_steps * volume_step, lot_digits)]
+    # remainder below volume_min: equal split over n_fill + 1 parts; every
+    # part is step-aligned and <= volume_max (total_steps < (n_fill+1)*max_steps
+    # is guaranteed because rem_steps < volume_min/volume_step <= max_steps).
+    n = n_fill + 1
+    base = total_steps // n
+    extra = total_steps - base * n
+    return [round((base + (1 if i < extra else 0)) * volume_step, lot_digits)
+            for i in range(n)]
