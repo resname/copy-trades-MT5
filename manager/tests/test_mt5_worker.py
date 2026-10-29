@@ -678,6 +678,47 @@ def test_execute_close_fanout_fails_ack_on_failing_leg():
     assert ack.ok is False and ack.retcode == 10004
 
 
+class _EffectFake(FakeMt5):
+    """FakeMt5 applies canned results WITHOUT the trade effect (simulation is
+    skipped when a canned result is consumed). This subclass applies the SLTP
+    effect for a canned DONE SLTP result so fan-out tests can assert each
+    leg's post-order state."""
+
+    def order_send(self, request):
+        res = super().order_send(request)
+        if (request["action"] == TRADE_ACTION_SLTP
+                and res.get("retcode") == TRADE_RETCODE_DONE):
+            for i, p in enumerate(self.positions):
+                if p.ticket == request["position"]:
+                    self.positions[i] = replace(
+                        p, sl=request.get("sl", 0.0), tp=request.get("tp", 0.0))
+        return res
+
+
+def test_execute_modify_continues_to_other_legs_after_a_failure():
+    # a first failing leg must NOT abort the fan-out: every leg is attempted,
+    # the FAILURE is reported at the end (first failure's retcode + error), so
+    # legs after it don't keep stale SL/TP while the master has already moved
+    mt = _EffectFake(positions=[_leg(777, 0.6), _leg(778, 0.4)],
+                     symbol_infos={"EURUSD": SI, "GBPUSD": SI},
+                     account={"login": 123, "balance": 1000.0, "equity": 1000.0,
+                              "currency": "USD", "server": "Demo"},
+                     ticks={"EURUSD": (1.10000, 1.10010)},
+                     order_results=[
+                         {"retcode": 10004, "order": 0, "deal": 0,
+                          "price": 0.0, "volume": 0.0},
+                         {"retcode": TRADE_RETCODE_DONE, "order": 778,
+                          "deal": 0, "price": 0.0, "volume": 0.0}])
+    cmd = CommandMsg(slave_id="s1", action="MODIFY", master_ticket=1,
+                     slave_ticket=777, sl=1.09400, tp=0.0,
+                     master_open_price=1.10000, side=BUY)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok is False and ack.retcode == 10004
+    # BOTH legs attempted: 777's SLTP was rejected (unchanged), 778 still updated
+    assert mt.position_by_ticket(777).sl == 0
+    assert mt.position_by_ticket(778).sl == pytest.approx(1.09410, abs=1e-8)
+
+
 # ---- _find_legs union semantics (spec decision #1): slave_ticket is a leg
 # even when the comment scan is non-empty (one mangled leg must not drop out) ----
 

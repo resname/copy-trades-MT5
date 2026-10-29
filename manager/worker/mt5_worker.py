@@ -259,10 +259,13 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
         legs = _find_legs(adapter, cmd)
         if not legs:
             return _fail(-1, f"position #{cmd.slave_ticket} gone")
+        first_failure: tuple[int, str] | None = None
         for pos in legs:  # same normalize + tick-round sequence per leg
             info = adapter.symbol_info(pos.symbol)
             if info is None:
-                return _fail(-1, f"no symbol info for {pos.symbol}")
+                if first_failure is None:
+                    first_failure = (-1, f"no symbol info for {pos.symbol}")
+                continue
             slave_open = pos.open_price
             if normalize_sltp:
                 sl, tp = _normalize_sltp(cmd.master_open_price, cmd.sl, cmd.tp,
@@ -271,13 +274,20 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                 sl, tp = cmd.sl, cmd.tp
             rounded = _round_sltp(sl, tp, info.tick_size, info.digits)
             if rounded is None:
-                return _fail(-1, "SL/TP tick rounding failed")
+                if first_failure is None:
+                    first_failure = (-1, "SL/TP tick rounding failed")
+                continue
             sl, tp = rounded
             req = {"action": TRADE_ACTION_SLTP, "symbol": pos.symbol,
                    "position": pos.ticket, "sl": sl, "tp": tp}
             res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
             if res.get("retcode") != TRADE_RETCODE_DONE:
-                return _fail(res.get("retcode", -1), str(adapter.last_error()))
+                if first_failure is None:
+                    first_failure = (res.get("retcode", -1),
+                                     str(adapter.last_error()))
+                continue  # keep the FAILURE; legs after it are still attempted
+        if first_failure is not None:
+            return _fail(first_failure[0], first_failure[1])
         return AckMsg(slave_id=cmd.slave_id, action="MODIFY",
                       master_ticket=cmd.master_ticket, ok=True,
                       slave_ticket=cmd.slave_ticket, retcode=TRADE_RETCODE_DONE)
@@ -299,10 +309,13 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
             d = decode_comment(pos.comment)
             leg_svs.append(d[2] if (d is not None and d[2] is not None) else None)
         fill_total = 0.0
+        first_failure = None
         for pos, sv in zip(legs, leg_svs):
             info = adapter.symbol_info(pos.symbol)
             if info is None:
-                return _fail(-1, "cannot compute partial fraction")
+                if first_failure is None:
+                    first_failure = (-1, "cannot compute partial fraction")
+                continue
             current = pos.volume
             if sv is None:
                 sv = cmd.slave_open_volume - sum(s for s, other in
@@ -321,7 +334,9 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                 continue  # already at (or below) its target: nothing to close
             tick = adapter.symbol_info_tick(pos.symbol)
             if tick is None:
-                return _fail(-1, f"no tick for {pos.symbol}")
+                if first_failure is None:
+                    first_failure = (-1, f"no tick for {pos.symbol}")
+                continue
             bid, ask = tick
             opposite = ORDER_TYPE_SELL if pos.side == BUY else ORDER_TYPE_BUY
             price = bid if pos.side == BUY else ask
@@ -333,8 +348,13 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                    "type_filling": select_filling_mode(info.filling_mode)}
             res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
             if res.get("retcode") != TRADE_RETCODE_DONE:
-                return _fail(res.get("retcode", -1), str(adapter.last_error()))
+                if first_failure is None:
+                    first_failure = (res.get("retcode", -1),
+                                     str(adapter.last_error()))
+                continue  # keep the FAILURE; legs after it are still attempted
             fill_total += vol_to_close
+        if first_failure is not None:
+            return _fail(first_failure[0], first_failure[1])
         remaining = 0.0  # sum of each leg's live volume (gone -> 0.0)
         for pos in legs:
             live = adapter.position_by_ticket(pos.ticket)
@@ -351,6 +371,7 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
             return AckMsg(slave_id=cmd.slave_id, action="CLOSE",
                           master_ticket=cmd.master_ticket, ok=True,
                           slave_ticket=cmd.slave_ticket, retcode=TRADE_RETCODE_DONE)
+        first_failure = None
         for pos in legs:
             live = adapter.position_by_ticket(pos.ticket)
             if live is None:
@@ -358,7 +379,9 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
             pos = live  # current snapshot, as today's single-position fetch
             tick = adapter.symbol_info_tick(pos.symbol)
             if tick is None:
-                return _fail(-1, f"no tick for {pos.symbol}")
+                if first_failure is None:
+                    first_failure = (-1, f"no tick for {pos.symbol}")
+                continue
             bid, ask = tick
             opposite = ORDER_TYPE_SELL if pos.side == BUY else ORDER_TYPE_BUY
             price = bid if pos.side == BUY else ask
@@ -371,7 +394,12 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                    "type_time": ORDER_TIME_GTC, "type_filling": filling}
             res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
             if res.get("retcode") != TRADE_RETCODE_DONE:
-                return _fail(res.get("retcode", -1), str(adapter.last_error()))
+                if first_failure is None:
+                    first_failure = (res.get("retcode", -1),
+                                     str(adapter.last_error()))
+                continue  # keep the FAILURE; legs after it are still attempted
+        if first_failure is not None:
+            return _fail(first_failure[0], first_failure[1])
         return AckMsg(slave_id=cmd.slave_id, action="CLOSE",
                       master_ticket=cmd.master_ticket, ok=True,
                       slave_ticket=cmd.slave_ticket, retcode=TRADE_RETCODE_DONE)
