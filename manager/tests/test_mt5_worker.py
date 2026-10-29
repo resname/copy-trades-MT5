@@ -636,3 +636,45 @@ def test_execute_close_fanout_fails_ack_on_failing_leg():
     cmd = CommandMsg(slave_id="s1", action="CLOSE", master_ticket=1, slave_ticket=777)
     ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
     assert ack.ok is False and ack.retcode == 10004
+
+
+# ---- _find_legs union semantics (spec decision #1): slave_ticket is a leg
+# even when the comment scan is non-empty (one mangled leg must not drop out) ----
+
+def _two_legs_one_mangled():
+    return [Position(777, "EURUSD", BUY, 1.10010, 0.6, 0, 0, 0, 0.00001,
+                     comment=encode_comment(1, 1.0, 0.6)),
+            Position(778, "EURUSD", BUY, 1.10005, 0.4, 0, 0, 0, 0.00001,
+                     comment="broker-rewritten")]
+
+def test_execute_modify_union_includes_mangled_leg_even_when_scan_is_nonempty():
+    mt = _adapter(positions=_two_legs_one_mangled())
+    cmd = CommandMsg(slave_id="s1", action="MODIFY", master_ticket=1,
+                     slave_ticket=778, sl=1.09400, tp=0.0,
+                     master_open_price=1.10000, side=BUY)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.position_by_ticket(777).sl == pytest.approx(1.09410, abs=1e-8)
+    # 778's comment is mangled: reached via the slave_ticket union, normalized
+    # off ITS OWN open price 1.10005
+    assert mt.position_by_ticket(778).sl == pytest.approx(1.09405, abs=1e-8)
+
+def test_execute_close_union_includes_mangled_leg_even_when_scan_is_nonempty():
+    mt = _adapter(positions=_two_legs_one_mangled())
+    cmd = CommandMsg(slave_id="s1", action="CLOSE", master_ticket=1, slave_ticket=778)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.position_by_ticket(777) is None and mt.position_by_ticket(778) is None
+
+def test_execute_partial_close_union_includes_mangled_leg():
+    mt = _adapter(positions=_two_legs_one_mangled())
+    cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
+                     slave_ticket=778, new_master_volume=0.5,
+                     master_open_volume=1.0, slave_open_volume=1.0)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    # leg 777 by its own SV: target 0.6*0.5 = 0.3, close 0.3
+    assert mt.position_by_ticket(777).volume == pytest.approx(0.3, abs=1e-8)
+    # leg 778 has NO decodable SV -> cmd.slave_open_volume (1.0) is its SV
+    # fallback -> target 0.5 -> 0.4 < 0.5: nothing to close
+    assert mt.position_by_ticket(778).volume == pytest.approx(0.4, abs=1e-8)

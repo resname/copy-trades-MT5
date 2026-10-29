@@ -130,17 +130,23 @@ def _round_sltp(sl: float, tp: float, tick_size: float, digits: int):
 
 
 def _find_legs(adapter, cmd) -> list[Position]:
-    """Slave legs of one master trade: positions whose decoded CPY comment
-    names this master ticket (the split-OPEN writer's per-leg comments). If
-    the scan finds nothing -- e.g. a broker rewrote the comment -- fall back
-    to today's exact per-ticket routing so a position is never lost."""
-    legs = [p for p in adapter.positions_get()
-            if (d := decode_comment(p.comment)) and d[0] == cmd.master_ticket]
-    if not legs:
-        pos = adapter.position_by_ticket(cmd.slave_ticket)
-        if pos is not None:
-            legs = [pos]
-    return legs
+    """Slave legs of one master trade: the UNION of (a) positions whose
+    decoded CPY comment names this master ticket (the split-OPEN writer's
+    per-leg comments) and (b) today's exact per-ticket position
+    `cmd.slave_ticket`. The union means a leg whose comment the broker
+    mangled is still reached when the record's slave_ticket names it (spec
+    builder-check decision #1): in every single-leg case (b) is already the
+    scan's result, and in fan-out the record linkage guarantees
+    slave_ticket belongs to this master."""
+    legs: dict[int, Position] = {}
+    for p in adapter.positions_get():
+        d = decode_comment(p.comment)
+        if d and d[0] == cmd.master_ticket:
+            legs[p.ticket] = p
+    pos = adapter.position_by_ticket(cmd.slave_ticket)
+    if pos is not None:
+        legs[pos.ticket] = pos  # union; dedup keeps one object per ticket
+    return list(legs.values())
 
 
 def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
