@@ -539,6 +539,46 @@ def test_execute_open_split_zero_parts_requested_volume_fully_single():
                            if p.comment.startswith("CPY#")]) == 1
 
 
+# ---- netting/unknown margin accounts must NOT split (clamp instead) ----
+
+def _netting_adapter(margin_mode):
+    return FakeMt5(
+        symbol_infos={"EURUSD": SI_MAX05},
+        account={"login": 123, "balance": 1000.0, "equity": 1000.0,
+                 "currency": "USD", "server": "Demo", "margin_mode": margin_mode},
+        ticks={"EURUSD": (1.10000, 1.10010)})
+
+def test_execute_open_netting_clamps_instead_of_splitting():
+    # netting account (margin_mode 0): the terminal merges same-symbol orders
+    # into ONE position and the position comment becomes the LAST deal's, so
+    # per-leg SV linkage would be corrupted -> clamp, never split
+    mt = _netting_adapter(0)
+    comment = encode_comment(42, 2.0, 1.2)
+    ack = execute_command(mt, _open_cmd(1.2, comment), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    cpy = [p for p in mt.positions_get() if p.comment.startswith("CPY#")]
+    assert len(cpy) == 1  # exactly ONE order, no split loop
+    assert cpy[0].volume == pytest.approx(0.5)  # clamped to volume_max
+    assert cpy[0].comment == comment  # cmd.comment used AS-IS (no re-encode)
+    assert ack.fill_volume == pytest.approx(0.5)
+
+
+def test_execute_open_missing_margin_mode_key_clamps_instead_of_splitting():
+    # unknown/missing margin_mode must also clamp (never split): FakeMt5 with
+    # account={"margin_mode": None}
+    mt = _netting_adapter(None)
+    comment = encode_comment(42, 2.0, 1.2)
+    ack = execute_command(mt, _open_cmd(1.2, comment), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    cpy = [p for p in mt.positions_get() if p.comment.startswith("CPY#")]
+    assert len(cpy) == 1
+    assert cpy[0].volume == pytest.approx(0.5)
+    assert cpy[0].comment == comment
+    assert ack.fill_volume == pytest.approx(0.5)
+
+
 # ---- execute_command: fan-out over split legs ----
 
 def _leg(ticket, volume, master=1, open_price=1.10010):

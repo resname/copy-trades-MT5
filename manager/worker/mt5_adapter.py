@@ -35,7 +35,10 @@ class FakeMt5:
                  ticks=None, order_results=None, terminal_info=None):
         self.positions: list[Position] = list(positions or [])
         self.symbol_infos: dict[str, SymbolInfo] = dict(symbol_infos or {})
-        self.account: dict = dict(account or {})
+        # Default to a hedging account (margin_mode 2, the package's
+        # ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) so all existing tests keep
+        # splitting; an explicit test value overrides.
+        self.account: dict = {"margin_mode": 2, **dict(account or {})}
         self.ticks: dict[str, tuple[float, float]] = dict(ticks or {})
         self._canned = list(order_results or [])
         self._order_seq = 500000
@@ -215,7 +218,10 @@ class RealMt5:
         if a is None:
             return {}
         return {"login": a.login, "balance": a.balance, "equity": a.equity,
-                "currency": a.currency, "server": a.server}
+                "currency": a.currency, "server": a.server,
+                # ACCOUNT_MARGIN_MODE_RETAIL_HEDGING == 2 in the package;
+                # any other value (netting/unknown) forbids splitting
+                "margin_mode": int(getattr(a, "margin_mode", 0) or 0)}
 
     def terminal_info(self):
         mt5 = self._mod()

@@ -192,15 +192,25 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                "type_filling": select_filling_mode(info.filling_mode)}
         parts: list[float] | None = None
         mv: float | None = None
+        # Split ONLY on hedging accounts (margin_mode 2, the package's
+        # ACCOUNT_MARGIN_MODE_RETAIL_HEDGING). On netting (or unknown)
+        # accounts the terminal merges same-symbol orders into ONE position
+        # and the position comment becomes the LAST deal's -- per-leg SV
+        # linkage would be corrupted -- so fall back to the pre-feature
+        # single order clamped to volume_max, cmd.comment as-is.
+        hedging = int((adapter.account_info() or {}).get("margin_mode", 0) or 0) == 2
         if cmd.volume > info.volume_max + 1e-9:
-            decoded = decode_comment(cmd.comment)
-            mv = decoded[1] if decoded else None
-            if mv is None:
-                return _fail(-1, "cannot split: comment MV/SV undecodable")
-            parts = split_volume(cmd.volume, info.volume_max, info.volume_step,
-                                 info.volume_min)
-            if len(parts) <= 1:
-                parts = None  # unusable volume_max/step -> legacy single order
+            if not hedging:
+                req = dict(req, volume=min(cmd.volume, info.volume_max))
+            else:
+                decoded = decode_comment(cmd.comment)
+                mv = decoded[1] if decoded else None
+                if mv is None:
+                    return _fail(-1, "cannot split: comment MV/SV undecodable")
+                parts = split_volume(cmd.volume, info.volume_max, info.volume_step,
+                                     info.volume_min)
+                if len(parts) <= 1:
+                    parts = None  # unusable volume_max/step -> legacy single order
         if parts is None:
             res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
             if res.get("retcode") != TRADE_RETCODE_DONE:
