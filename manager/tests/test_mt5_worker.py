@@ -539,6 +539,66 @@ def test_execute_open_split_zero_parts_requested_volume_fully_single():
                            if p.comment.startswith("CPY#")]) == 1
 
 
+def test_execute_open_split_refetches_tick_and_renormalizes_per_chunk():
+    # a mid-split tick move must be reflected in each chunk's price + SL/TP
+    # (all chunks were previously sent off the pre-loop tick/SL/TP)
+    class MovingTickFake(FakeMt5):
+        def symbol_info_tick(self, symbol):
+            # drifts UP on each call, so each chunk must see a fresh price
+            base = self.ticks.get(symbol)
+            if base is None:
+                return None
+            bid, ask = base
+            self.ticks[symbol] = (bid, round(ask + 0.00010, 5))
+            return (bid, round(ask, 5))
+    mt = MovingTickFake(symbol_infos={"EURUSD": SI_MAX05},
+                        account={"login": 123, "balance": 1000.0,
+                                 "equity": 1000.0, "currency": "USD",
+                                 "server": "Demo"},
+                        ticks={"EURUSD": (1.10000, 1.10010)})
+    cmd = CommandMsg(slave_id="s1", action="OPEN", master_ticket=42,
+                     symbol="EURUSD", volume=1.0, sl=1.09500, tp=0.0,
+                     master_open_price=1.10000, side=BUY, magic=magic_for(42),
+                     comment=encode_comment(42, 1.0, 1.0))
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1,
+                          retry_delay_ms=0)
+    assert ack.ok
+    parts = [p for p in mt.positions_get() if p.comment.startswith("CPY#")]
+    assert [p.volume for p in parts] == [pytest.approx(0.5), pytest.approx(0.5)]
+    # every chunk priced at its OWN fresh tick (each fetch drifts +0.00010):
+    # chunk 0 at 1.10020, chunk 1 at 1.10030 (old code sent both off the
+    # pre-loop tick 1.10010)
+    assert parts[0].open_price == pytest.approx(1.10020, abs=1e-8)
+    assert parts[1].open_price == pytest.approx(1.10030, abs=1e-8)
+    # each chunk's SL re-normalized off its OWN fill price (distance 0.00500)
+    assert parts[0].sl == pytest.approx(1.09520, abs=1e-8)
+    assert parts[1].sl == pytest.approx(1.09530, abs=1e-8)
+
+
+def test_execute_open_split_mid_tick_gone_fails_but_keeps_filled_parts():
+    class _TickVanishesAfterTwo(FakeMt5):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._tick_calls = 0
+        def symbol_info_tick(self, symbol):
+            self._tick_calls += 1
+            if self._tick_calls > 2:  # pre-loop + chunk 0 OK, then gone
+                return None
+            return self.ticks.get(symbol)
+    mt = _TickVanishesAfterTwo(symbol_infos={"EURUSD": SI_MAX05},
+                               account={"login": 123, "balance": 1000.0,
+                                        "equity": 1000.0, "currency": "USD",
+                                        "server": "Demo"},
+                               ticks={"EURUSD": (1.10000, 1.10010)})
+    ack = execute_command(mt, _open_cmd(1.0), normalize_sltp=True,
+                          retry_count=1, retry_delay_ms=0)
+    assert ack.ok is False and ack.retcode == -1
+    assert "no tick" in ack.error
+    # parts already filled stay
+    parts = [p for p in mt.positions_get() if p.comment.startswith("CPY#")]
+    assert [p.volume for p in parts] == [pytest.approx(0.5)]
+
+
 # ---- netting/unknown margin accounts must NOT split (clamp instead) ----
 
 def _netting_adapter(margin_mode):

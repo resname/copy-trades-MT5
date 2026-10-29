@@ -220,7 +220,10 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                           slave_ticket=res["order"], fill_price=res["price"],
                           fill_volume=res["volume"], remaining_volume=res["volume"],
                           retcode=TRADE_RETCODE_DONE)
-        # Split path: one request per chunk, sharing the template. Each leg
+        # Split path: one request per chunk. A FRESH tick is fetched before
+        # EACH chunk and that chunk's price/SL/TP re-normalized off it (a
+        # mid-split quote move must not stale-price the later legs); the
+        # single-order path above keeps today's one-tick behavior. Each leg
         # carries its own SV in the comment; MV is the master's volume so
         # recovery/partial-close math stays whole-position.
         filled = 0.0
@@ -229,7 +232,21 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
         for i, part in enumerate(parts):
             if i > 0 and heartbeat is not None:
                 heartbeat()  # status heartbeat so the supervisor's stale timer never fires mid-split
-            req_part = dict(req, volume=part,
+            tick = adapter.symbol_info_tick(cmd.symbol)
+            if tick is None:
+                return _fail(-1, f"no tick for {cmd.symbol}")  # parts already filled stay
+            bid, ask = tick
+            slave_open = ask if cmd.side == BUY else bid
+            if normalize_sltp:
+                sl, tp = _normalize_sltp(cmd.master_open_price, cmd.sl, cmd.tp,
+                                       slave_open, cmd.side)
+            else:
+                sl, tp = cmd.sl, cmd.tp
+            rounded = _round_sltp(sl, tp, info.tick_size, info.digits)
+            if rounded is None:
+                return _fail(-1, "SL/TP tick rounding failed")
+            sl, tp = rounded
+            req_part = dict(req, volume=part, price=slave_open, sl=sl, tp=tp,
                             comment=encode_comment(cmd.master_ticket, mv, part))
             res = _order_send_with_retry(adapter, req_part, retry_count,
                                          retry_delay_ms)
