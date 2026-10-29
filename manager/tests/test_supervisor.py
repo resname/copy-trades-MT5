@@ -322,6 +322,55 @@ def test_failed_open_ack_surfaces_error():
     assert "comment" in errors[-1][1], errors[-1][1]
 
 
+def _ack_dispatch_sup(errors):
+    eng = _engine()
+    sup = Supervisor(eng, time_fn=lambda: 0.0, poll_timeout=0.0)
+    sup.on_error = lambda name, msg: errors.append((name, msg))
+    sup._handles["s1"] = WorkerHandle(
+        name="s1", role="slave", proc=_StubProc(), pipe=None,
+        config={"terminal_path": "C:/t/s.exe"}, adapter_kind="fake",
+        fake_state=None, last_msg_ts=0.0)
+    return sup
+
+
+def test_ok_ack_shortfall_note_surfaces_error():
+    """A successful split ack carrying a shortfall note (ok=True, error filled)
+    must surface through the existing error channel; the user must see that a
+    split only partially filled instead of nothing being said."""
+    errors = []
+    sup = _ack_dispatch_sup(errors)
+    sup._dispatch_slave("s1", AckMsg(slave_id="s1", action="OPEN",
+            master_ticket=42, ok=True, slave_ticket=777, fill_price=1.1,
+            fill_volume=100.0, remaining_volume=100.0, retcode=10009,
+            error="split: 2/3 ok (shortfall: requested 150.0, filled 100.0)"))
+    assert errors, "shortfall note must surface via on_error"
+    assert "s1: OPEN #42" in errors[-1][1]
+    assert "shortfall: requested 150.0, filled 100.0" in errors[-1][1]
+
+
+def test_ok_ack_huge_split_warning_surfaces_error():
+    errors = []
+    sup = _ack_dispatch_sup(errors)
+    sup._dispatch_slave("s1", AckMsg(slave_id="s1", action="OPEN",
+            master_ticket=42, ok=True, slave_ticket=777, fill_price=1.1,
+            fill_volume=30.0, remaining_volume=30.0, retcode=10009,
+            error="split: 30/30 ok (warning: huge split: 30 legs)"))
+    assert errors, "huge-split warning must surface via on_error"
+    assert "warning" in errors[-1][1]
+
+
+def test_ok_ack_clean_split_note_stays_silent():
+    """A clean 'split: 2/2 ok' ack (no shortfall, no warning) must NOT surface
+    an error -- it is not a problem the user has to act on."""
+    errors = []
+    sup = _ack_dispatch_sup(errors)
+    sup._dispatch_slave("s1", AckMsg(slave_id="s1", action="OPEN",
+            master_ticket=42, ok=True, slave_ticket=777, fill_price=1.1,
+            fill_volume=1.2, remaining_volume=1.2, retcode=10009,
+            error="split: 2/2 ok"))
+    assert errors == []
+
+
 def test_reconfigure_slave_sends_message_and_updates_config():
     from manager.ipc.messages import ReconfigureMsg
     from manager.ipc.pipe_framing import recv_msg

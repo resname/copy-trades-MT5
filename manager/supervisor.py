@@ -203,6 +203,13 @@ class Supervisor:
                     slave_id,
                     f"{slave_id}: {msg.action} #{msg.master_ticket} failed "
                     f"(retcode {msg.retcode}): {msg.error}")
+            elif msg.ok and msg.error and ("shortfall" in msg.error
+                                           or "warning:" in msg.error):
+                # A successful-but-shortfall split (or the huge-split warning)
+                # reaches the user through the existing error channel; a clean
+                # "split: N/N ok" note stays silent.
+                self._surface_error(slave_id,
+                    f"{slave_id}: {msg.action} #{msg.master_ticket} {msg.error}")
             for cmd in self._engine.apply_ack(slave_id, msg):
                 self._send(slave_id, cmd)
         elif isinstance(msg, StatusMsg):
