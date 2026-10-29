@@ -129,6 +129,20 @@ def _round_sltp(sl: float, tp: float, tick_size: float, digits: int):
     return rsl, rtp
 
 
+def _find_legs(adapter, cmd) -> list[Position]:
+    """Slave legs of one master trade: positions whose decoded CPY comment
+    names this master ticket (the split-OPEN writer's per-leg comments). If
+    the scan finds nothing -- e.g. a broker rewrote the comment -- fall back
+    to today's exact per-ticket routing so a position is never lost."""
+    legs = [p for p in adapter.positions_get()
+            if (d := decode_comment(p.comment)) and d[0] == cmd.master_ticket]
+    if not legs:
+        pos = adapter.position_by_ticket(cmd.slave_ticket)
+        if pos is not None:
+            legs = [pos]
+    return legs
+
+
 def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                     retry_delay_ms: int, heartbeat=None) -> AckMsg:
     """Execute one CommandMsg against the terminal. The slave normalizes SL/TP
@@ -221,93 +235,110 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
                       retcode=TRADE_RETCODE_DONE, error=note)
 
     if cmd.action == "MODIFY":
-        pos = adapter.position_by_ticket(cmd.slave_ticket)
-        if pos is None:
+        legs = _find_legs(adapter, cmd)
+        if not legs:
             return _fail(-1, f"position #{cmd.slave_ticket} gone")
-        info = adapter.symbol_info(pos.symbol)
-        if info is None:
-            return _fail(-1, f"no symbol info for {pos.symbol}")
-        slave_open = pos.open_price
-        if normalize_sltp:
-            sl, tp = _normalize_sltp(cmd.master_open_price, cmd.sl, cmd.tp,
-                                   slave_open, cmd.side)
-        else:
-            sl, tp = cmd.sl, cmd.tp
-        rounded = _round_sltp(sl, tp, info.tick_size, info.digits)
-        if rounded is None:
-            return _fail(-1, "SL/TP tick rounding failed")
-        sl, tp = rounded
-        req = {"action": TRADE_ACTION_SLTP, "symbol": pos.symbol,
-               "position": cmd.slave_ticket, "sl": sl, "tp": tp}
-        res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
-        if res.get("retcode") != TRADE_RETCODE_DONE:
-            return _fail(res.get("retcode", -1), str(adapter.last_error()))
+        for pos in legs:  # same normalize + tick-round sequence per leg
+            info = adapter.symbol_info(pos.symbol)
+            if info is None:
+                return _fail(-1, f"no symbol info for {pos.symbol}")
+            slave_open = pos.open_price
+            if normalize_sltp:
+                sl, tp = _normalize_sltp(cmd.master_open_price, cmd.sl, cmd.tp,
+                                       slave_open, cmd.side)
+            else:
+                sl, tp = cmd.sl, cmd.tp
+            rounded = _round_sltp(sl, tp, info.tick_size, info.digits)
+            if rounded is None:
+                return _fail(-1, "SL/TP tick rounding failed")
+            sl, tp = rounded
+            req = {"action": TRADE_ACTION_SLTP, "symbol": pos.symbol,
+                   "position": pos.ticket, "sl": sl, "tp": tp}
+            res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
+            if res.get("retcode") != TRADE_RETCODE_DONE:
+                return _fail(res.get("retcode", -1), str(adapter.last_error()))
         return AckMsg(slave_id=cmd.slave_id, action="MODIFY",
                       master_ticket=cmd.master_ticket, ok=True,
                       slave_ticket=cmd.slave_ticket, retcode=TRADE_RETCODE_DONE)
 
     if cmd.action == "PARTIAL_CLOSE":
-        pos = adapter.position_by_ticket(cmd.slave_ticket)
-        if pos is None:
+        legs = _find_legs(adapter, cmd)
+        if not legs:
             return _fail(-1, f"position #{cmd.slave_ticket} gone")
-        info = adapter.symbol_info(pos.symbol)
-        if info is None or cmd.master_open_volume <= 0.0:
+        if cmd.master_open_volume <= 0.0:
             return _fail(-1, "cannot compute partial fraction")
-        current = pos.volume
         fraction = cmd.new_master_volume / cmd.master_open_volume
-        target = cmd.slave_open_volume * fraction
-        # +1e-9: float-epsilon guard (same as _snap_clamp) -- a delta sitting
-        # epsilon below N steps is N steps; naive floor short-closes or skips
-        vol_to_close = math.floor((current - target) / info.volume_step + 1e-9) * info.volume_step
-        vol_to_close = min(vol_to_close, current)
-        if vol_to_close <= 0.0:
-            return AckMsg(slave_id=cmd.slave_id, action="PARTIAL_CLOSE",
-                          master_ticket=cmd.master_ticket, ok=True,
-                          slave_ticket=cmd.slave_ticket, remaining_volume=current,
-                          retcode=TRADE_RETCODE_DONE)
-        tick = adapter.symbol_info_tick(pos.symbol)
-        if tick is None:
-            return _fail(-1, f"no tick for {pos.symbol}")
-        bid, ask = tick
-        opposite = ORDER_TYPE_SELL if pos.side == BUY else ORDER_TYPE_BUY
-        price = bid if pos.side == BUY else ask
-        req = {"action": TRADE_ACTION_DEAL, "symbol": pos.symbol, "type": opposite,
-               "volume": vol_to_close, "position": cmd.slave_ticket, "price": price,
-               "deviation": 10, "magic": pos.magic, "comment": "partial",
-               "type_time": ORDER_TIME_GTC,
-               "type_filling": select_filling_mode(info.filling_mode)}
-        res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
-        if res.get("retcode") != TRADE_RETCODE_DONE:
-            return _fail(res.get("retcode", -1), str(adapter.last_error()))
-        remaining = adapter.position_by_ticket(cmd.slave_ticket)
-        rem_vol = remaining.volume if remaining is not None else 0.0
+        fill_total = 0.0
+        for pos in legs:
+            info = adapter.symbol_info(pos.symbol)
+            if info is None:
+                return _fail(-1, "cannot compute partial fraction")
+            current = pos.volume
+            decoded = decode_comment(pos.comment)
+            # per-leg pro-rata: each leg targets its OWN SV * fraction; the
+            # record aggregate is only the fallback for an undecodable legacy leg
+            sv = decoded[2] if (decoded is not None and decoded[2] is not None) \
+                else cmd.slave_open_volume
+            target = sv * fraction
+            # +1e-9: float-epsilon guard (same as _snap_clamp) -- a delta sitting
+            # epsilon below N steps is N steps; naive floor short-closes or skips
+            vol_to_close = math.floor((current - target) / info.volume_step + 1e-9) * info.volume_step
+            vol_to_close = min(vol_to_close, current)
+            if vol_to_close <= 0.0:
+                continue  # already at (or below) its target: nothing to close
+            tick = adapter.symbol_info_tick(pos.symbol)
+            if tick is None:
+                return _fail(-1, f"no tick for {pos.symbol}")
+            bid, ask = tick
+            opposite = ORDER_TYPE_SELL if pos.side == BUY else ORDER_TYPE_BUY
+            price = bid if pos.side == BUY else ask
+            req = {"action": TRADE_ACTION_DEAL, "symbol": pos.symbol,
+                   "type": opposite, "volume": vol_to_close,
+                   "position": pos.ticket, "price": price,
+                   "deviation": 10, "magic": pos.magic, "comment": "partial",
+                   "type_time": ORDER_TIME_GTC,
+                   "type_filling": select_filling_mode(info.filling_mode)}
+            res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
+            if res.get("retcode") != TRADE_RETCODE_DONE:
+                return _fail(res.get("retcode", -1), str(adapter.last_error()))
+            fill_total += vol_to_close
+        remaining = 0.0  # sum of each leg's live volume (gone -> 0.0)
+        for pos in legs:
+            live = adapter.position_by_ticket(pos.ticket)
+            remaining += live.volume if live is not None else 0.0
         return AckMsg(slave_id=cmd.slave_id, action="PARTIAL_CLOSE",
                       master_ticket=cmd.master_ticket, ok=True,
-                      slave_ticket=cmd.slave_ticket, fill_volume=vol_to_close,
-                      remaining_volume=rem_vol, retcode=TRADE_RETCODE_DONE)
+                      slave_ticket=cmd.slave_ticket, fill_volume=fill_total,
+                      remaining_volume=remaining, retcode=TRADE_RETCODE_DONE)
 
     if cmd.action == "CLOSE":
-        pos = adapter.position_by_ticket(cmd.slave_ticket)
-        if pos is None:
+        legs = _find_legs(adapter, cmd)
+        if not legs:
+            # all legs gone upfront: today's vanished-position ok-ack
             return AckMsg(slave_id=cmd.slave_id, action="CLOSE",
                           master_ticket=cmd.master_ticket, ok=True,
                           slave_ticket=cmd.slave_ticket, retcode=TRADE_RETCODE_DONE)
-        tick = adapter.symbol_info_tick(pos.symbol)
-        if tick is None:
-            return _fail(-1, f"no tick for {pos.symbol}")
-        bid, ask = tick
-        opposite = ORDER_TYPE_SELL if pos.side == BUY else ORDER_TYPE_BUY
-        price = bid if pos.side == BUY else ask
-        info = adapter.symbol_info(pos.symbol)
-        filling = select_filling_mode(info.filling_mode) if info is not None \
-            else select_filling_mode(0)
-        req = {"action": TRADE_ACTION_DEAL, "symbol": pos.symbol, "type": opposite,
-               "volume": pos.volume, "position": cmd.slave_ticket, "price": price,
-               "deviation": 10, "magic": pos.magic, "comment": "close",
-               "type_time": ORDER_TIME_GTC, "type_filling": filling}
-        res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
-        if res.get("retcode") != TRADE_RETCODE_DONE:
-            return _fail(res.get("retcode", -1), str(adapter.last_error()))
+        for pos in legs:
+            live = adapter.position_by_ticket(pos.ticket)
+            if live is None:
+                continue  # vanished mid-fan-out (already closed): counts as closed
+            pos = live  # current snapshot, as today's single-position fetch
+            tick = adapter.symbol_info_tick(pos.symbol)
+            if tick is None:
+                return _fail(-1, f"no tick for {pos.symbol}")
+            bid, ask = tick
+            opposite = ORDER_TYPE_SELL if pos.side == BUY else ORDER_TYPE_BUY
+            price = bid if pos.side == BUY else ask
+            info = adapter.symbol_info(pos.symbol)
+            filling = select_filling_mode(info.filling_mode) if info is not None \
+                else select_filling_mode(0)
+            req = {"action": TRADE_ACTION_DEAL, "symbol": pos.symbol, "type": opposite,
+                   "volume": pos.volume, "position": pos.ticket, "price": price,
+                   "deviation": 10, "magic": pos.magic, "comment": "close",
+                   "type_time": ORDER_TIME_GTC, "type_filling": filling}
+            res = _order_send_with_retry(adapter, req, retry_count, retry_delay_ms)
+            if res.get("retcode") != TRADE_RETCODE_DONE:
+                return _fail(res.get("retcode", -1), str(adapter.last_error()))
         return AckMsg(slave_id=cmd.slave_id, action="CLOSE",
                       master_ticket=cmd.master_ticket, ok=True,
                       slave_ticket=cmd.slave_ticket, retcode=TRADE_RETCODE_DONE)

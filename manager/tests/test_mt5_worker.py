@@ -537,3 +537,102 @@ def test_execute_open_split_zero_parts_requested_volume_fully_single():
                           retry_count=1, retry_delay_ms=0)
     assert ack.ok and len([p for p in mt.positions_get()
                            if p.comment.startswith("CPY#")]) == 1
+
+
+# ---- execute_command: fan-out over split legs ----
+
+def _leg(ticket, volume, master=1, open_price=1.10010):
+    return Position(ticket, "EURUSD", BUY, open_price, volume, 0, 0, 0,
+                    0.00001, comment=encode_comment(master, 1.0, volume))
+
+def test_execute_modify_fans_out_over_split_legs_at_own_open_prices():
+    mt = _adapter(positions=[_leg(777, 0.6, open_price=1.10010),
+                             _leg(778, 0.4, open_price=1.10005)])
+    cmd = CommandMsg(slave_id="s1", action="MODIFY", master_ticket=1,
+                     slave_ticket=777, sl=1.09400, tp=1.10600,
+                     master_open_price=1.10000, side=BUY)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    # SL distance 0.00600 from each leg's own open price
+    assert mt.position_by_ticket(777).sl == pytest.approx(1.09410, abs=1e-8)
+    assert mt.position_by_ticket(778).sl == pytest.approx(1.09405, abs=1e-8)
+
+def test_execute_modify_falls_back_to_ticket_when_comment_mangled():
+    # broker rewrote the comment: CPY decode finds nothing -> legacy
+    # per-ticket routing must still reach the leg (Review Focus #1)
+    mt = _adapter(positions=[Position(777, "EURUSD", BUY, 1.10010, 0.6, 0, 0, 0,
+                                      0.00001, comment="broker-rewritten")])
+    cmd = CommandMsg(slave_id="s1", action="MODIFY", master_ticket=1,
+                     slave_ticket=777, sl=1.09400, tp=0.0,
+                     master_open_price=1.10000, side=BUY)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok and mt.position_by_ticket(777).sl == pytest.approx(1.09410, abs=1e-8)
+
+def test_execute_modify_no_legs_fails_like_today():
+    mt = _adapter()
+    cmd = CommandMsg(slave_id="s1", action="MODIFY", master_ticket=1,
+                     slave_ticket=777, sl=1.09, tp=0.0,
+                     master_open_price=1.1, side=BUY)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok is False and "gone" in ack.error
+
+def test_execute_partial_close_pro_rata_each_leg():
+    # master 1.0 split as 0.6 + 0.4; master halves (fraction 0.5) -> each leg
+    # keeps its OWN fraction: targets 0.3 / 0.2 (Review Focus #5)
+    mt = _adapter(positions=[_leg(777, 0.6), _leg(778, 0.4)])
+    cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
+                     slave_ticket=777, new_master_volume=0.5,
+                     master_open_volume=1.0, slave_open_volume=1.0)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.position_by_ticket(777).volume == pytest.approx(0.3, abs=1e-8)
+    assert mt.position_by_ticket(778).volume == pytest.approx(0.2, abs=1e-8)
+    assert ack.remaining_volume == pytest.approx(0.5, abs=1e-8)
+
+def test_execute_partial_close_pro_rata_full_chunk_close():
+    # master 1.0 split 0.6 + 0.4; master closes to 0.55 -> fraction 0.55:
+    # leg1 target 0.33 (close 0.27), leg2 target 0.22 (close 0.18)
+    mt = _adapter(positions=[_leg(777, 0.6), _leg(778, 0.4)])
+    cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
+                     slave_ticket=777, new_master_volume=0.55,
+                     master_open_volume=1.0, slave_open_volume=1.0)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.position_by_ticket(777).volume == pytest.approx(0.33, abs=1e-8)
+    assert mt.position_by_ticket(778).volume == pytest.approx(0.22, abs=1e-8)
+
+def test_execute_partial_close_skips_already_at_target_leg_and_closes_only_deficit_leg():
+    # mixed state: leg 777 already AT its target (closed manually down from its
+    # original SV 0.6 to 0.3; a manual close never rewrites the comment, so the
+    # comment keeps the ORIGINAL SV) and leg 778 exact; fraction 0.5 ->
+    # 777 target 0.6*0.5 = 0.3 (nothing to close), 778 target 0.2 (close 0.2)
+    legs = [_leg(777, 0.6), _leg(778, 0.4)]
+    legs[0] = replace(legs[0], volume=0.3)  # live volume shrunk, comment SV0.6 stays
+    mt = _adapter(positions=legs)
+    cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
+                     slave_ticket=777, new_master_volume=0.5,
+                     master_open_volume=1.0, slave_open_volume=0.6)
+    # NOTE cmd.slave_open_volume unused per leg: each leg's own SV comment governs
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.position_by_ticket(777).volume == pytest.approx(0.3, abs=1e-8)  # nothing to close
+    assert mt.position_by_ticket(778).volume == pytest.approx(0.2, abs=1e-8)
+
+def test_execute_close_closes_all_legs_of_split():
+    mt = _adapter(positions=[_leg(777, 0.6), _leg(778, 0.4)])
+    cmd = CommandMsg(slave_id="s1", action="CLOSE", master_ticket=1, slave_ticket=777)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.position_by_ticket(777) is None and mt.position_by_ticket(778) is None
+
+def test_execute_close_fanout_fails_ack_on_failing_leg():
+    from manager.worker.mt5_constants import TRADE_RETCODE_DONE
+    mt = _adapter(positions=[_leg(777, 0.6), _leg(778, 0.4)],
+                  order_results=[
+                      {"retcode": TRADE_RETCODE_DONE, "order": 777, "deal": 777,
+                       "price": 1.1, "volume": 0.6},
+                      {"retcode": 10004, "order": 0, "deal": 0, "price": 0.0,
+                       "volume": 0.0}])
+    cmd = CommandMsg(slave_id="s1", action="CLOSE", master_ticket=1, slave_ticket=777)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok is False and ack.retcode == 10004
