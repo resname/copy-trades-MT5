@@ -384,9 +384,13 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
             fill_total += vol_to_close
         if first_failure is not None:
             return _fail(first_failure[0], first_failure[1])
-        remaining = 0.0  # sum of each leg's live volume (gone -> 0.0)
+        # one fresh scan for the evidence (RealMt5.position_by_ticket does a
+        # FULL positions_get per call; a fan-out used to scan once per leg):
+        # remaining_volume identical to today (gone leg -> 0.0)
+        fresh = {p.ticket: p for p in adapter.positions_get()}
+        remaining = 0.0
         for pos in legs:
-            live = adapter.position_by_ticket(pos.ticket)
+            live = fresh.get(pos.ticket)
             remaining += live.volume if live is not None else 0.0
         return AckMsg(slave_id=cmd.slave_id, action="PARTIAL_CLOSE",
                       master_ticket=cmd.master_ticket, ok=True,
@@ -400,9 +404,13 @@ def execute_command(adapter, cmd, normalize_sltp: bool, retry_count: int,
             return AckMsg(slave_id=cmd.slave_id, action="CLOSE",
                           master_ticket=cmd.master_ticket, ok=True,
                           slave_ticket=cmd.slave_ticket, retcode=TRADE_RETCODE_DONE)
+        # one positions scan for all per-leg info (RealMt5.position_by_ticket
+        # does a FULL positions_get per call): map lookups per leg, identical
+        # values/behavior (vanished leg -> None -> counts as closed)
+        pos_map = {p.ticket: p for p in adapter.positions_get()}
         first_failure = None
         for pos in legs:
-            live = adapter.position_by_ticket(pos.ticket)
+            live = pos_map.get(pos.ticket)
             if live is None:
                 continue  # vanished mid-fan-out (already closed): counts as closed
             pos = live  # current snapshot, as today's single-position fetch

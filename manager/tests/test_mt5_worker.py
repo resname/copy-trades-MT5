@@ -830,6 +830,55 @@ def test_execute_close_union_includes_mangled_leg_even_when_scan_is_nonempty():
     assert ack.ok
     assert mt.position_by_ticket(777) is None and mt.position_by_ticket(778) is None
 
+
+class _CountingScanFake(FakeMt5):
+    """Counts positions_get() calls (RealMt5.position_by_ticket does a FULL
+    positions_get per call, so a fan-out used to scan once per leg)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.scan_count = 0
+
+    def positions_get(self):
+        self.scan_count += 1
+        return super().positions_get()
+
+
+def test_execute_close_fanout_uses_one_positions_scan():
+    mt = _CountingScanFake(positions=[_leg(777, 0.6), _leg(778, 0.4)],
+                           symbol_infos={"EURUSD": SI, "GBPUSD": SI},
+                           account={"login": 123, "balance": 1000.0,
+                                    "equity": 1000.0, "currency": "USD",
+                                    "server": "Demo"},
+                           ticks={"EURUSD": (1.10000, 1.10010)})
+    cmd = CommandMsg(slave_id="s1", action="CLOSE", master_ticket=1, slave_ticket=777)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    assert mt.position_by_ticket(777) is None and mt.position_by_ticket(778) is None
+    # 1 scan for _find_legs + 1 scan for the per-leg map (was 1 + N per-leg
+    # live fetches); the fake's position_by_ticket is a cheap list walk, the
+    # real one is a full scan per call
+    assert mt.scan_count == 2
+
+
+def test_execute_partial_close_fanout_uses_one_positions_scan_for_remaining():
+    mt = _CountingScanFake(positions=[_leg(777, 0.6), _leg(778, 0.4)],
+                           symbol_infos={"EURUSD": SI, "GBPUSD": SI},
+                           account={"login": 123, "balance": 1000.0,
+                                    "equity": 1000.0, "currency": "USD",
+                                    "server": "Demo"},
+                           ticks={"EURUSD": (1.10000, 1.10010)})
+    cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
+                     slave_ticket=777, new_master_volume=0.5,
+                     master_open_volume=1.0, slave_open_volume=1.0)
+    ack = execute_command(mt, cmd, normalize_sltp=True, retry_count=1, retry_delay_ms=0)
+    assert ack.ok
+    # remaining_volume identical to today (0.3 + 0.2), from ONE fresh scan
+    assert ack.remaining_volume == pytest.approx(0.5, abs=1e-8)
+    # 1 scan for _find_legs + 1 fresh scan for the remaining map (was 1 + N
+    # position_by_ticket scans)
+    assert mt.scan_count == 2
+
 def test_execute_partial_close_estimates_mangled_leg_sv_from_remaining_legs():
     mt = _adapter(positions=_two_legs_one_mangled())
     cmd = CommandMsg(slave_id="s1", action="PARTIAL_CLOSE", master_ticket=1,
