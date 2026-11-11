@@ -35,3 +35,18 @@ def test_script_configures_autologin_and_lock_task():
     assert "LockWorkStation" in text
     assert "CopyTradesMT5-Lock" in text
     assert "New-ScheduledTaskTrigger -AtLogOn" in text
+
+
+def test_forceautologon_is_opt_in_and_lock_is_console_only():
+    text = SCRIPT.read_text(encoding="utf-8")
+    # ForceAutoLogon re-logs in after every logoff and can kick RDP sessions:
+    # it must be opt-in, defaulting to 0.
+    assert "[switch]$ForceAutoLogon" in text
+    assert "if ($ForceAutoLogon) { '1' } else { '0' }" in text
+    # The lock task must skip remote (RDP) sessions and lock only the console.
+    assert "GetSystemMetrics" in text
+    assert "SM_REMOTESESSION" in text
+    assert "lock-console-session.ps1" in text
+    # The script configures the LOCAL account; its domain is the computer name,
+    # not $env:USERDOMAIN (which can be a domain on domain-joined machines).
+    assert "$domainName = $env:COMPUTERNAME" in text

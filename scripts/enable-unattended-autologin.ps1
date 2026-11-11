@@ -25,10 +25,19 @@
   machine can recover it. Use a password dedicated to this trading PC, not one
   reused for other accounts. If you forget it, the built-in Administrator
   account is disabled, so keep the password somewhere safe.
+
+  ForceAutoLogon is OFF by default. With it ON, Windows logs in again after
+  every logoff, which can repeatedly kick RDP sessions on single-session
+  Windows clients. Pass -ForceAutoLogon only if you really need re-login after
+  a manual logoff.
+
+  The CopyTradesMT5-Lock task locks only the physical console. RDP sessions
+  are skipped (GetSystemMetrics(SM_REMOTESESSION)).
 #>
 [CmdletBinding()]
 param(
   [switch]$SkipPasswordPrompt,
+  [switch]$ForceAutoLogon,
   [int]$LockDelaySeconds = 5
 )
 
@@ -59,7 +68,11 @@ $errorLog = Join-Path $env:TEMP 'copytrades-autologin-error.txt'
 try {
 
 $userName = $env:USERNAME
-$domainName = $env:USERDOMAIN
+# This script configures the LOCAL account (Get-LocalUser below), so the
+# Winlogon domain and the task principal use the computer name. $env:USERDOMAIN
+# may be a domain on a domain-joined machine while the local account is
+# separate; the computer name is correct for the local SAM account.
+$domainName = $env:COMPUTERNAME
 $currentUser = "$domainName\$userName"
 
 try {
@@ -110,10 +123,11 @@ if (-not $SkipPasswordPrompt) {
 
 # ---- 2. Auto-logon ---------------------------------------------------------
 $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+$forceAutoLogonValue = if ($ForceAutoLogon) { '1' } else { '0' }
 Set-ItemProperty -LiteralPath $winlogon -Name AutoAdminLogon -Value '1' -Type String
 Set-ItemProperty -LiteralPath $winlogon -Name DefaultUserName -Value $userName -Type String
 Set-ItemProperty -LiteralPath $winlogon -Name DefaultDomainName -Value $domainName -Type String
-Set-ItemProperty -LiteralPath $winlogon -Name ForceAutoLogon -Value '1' -Type String
+Set-ItemProperty -LiteralPath $winlogon -Name ForceAutoLogon -Value $forceAutoLogonValue -Type String
 Set-ItemProperty -LiteralPath $winlogon -Name DisableCAD -Value '1' -Type String
 if ($null -ne $plain) {
   Set-ItemProperty -LiteralPath $winlogon -Name DefaultPassword -Value $plain -Type String
@@ -129,11 +143,22 @@ if (-not (Test-Path -LiteralPath $policy)) {
 }
 Set-ItemProperty -LiteralPath $policy -Name DisableAutomaticRestartSignOn -Value 0 -Type DWord
 
-# ---- 3. Lock right after logon --------------------------------------------
+# ---- 3. Lock right after logon (console only) ------------------------------
 $lockName = 'CopyTradesMT5-Lock'
-$lockExe = Join-Path $env:SystemRoot 'System32\rundll32.exe'
-$lockAction = New-ScheduledTaskAction -Execute $lockExe `
-  -Argument 'user32.dll,LockWorkStation'
+$lockDir = Join-Path $env:LOCALAPPDATA 'CopyTradesMT5\bin'
+New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+$lockHelper = Join-Path $lockDir 'lock-console-session.ps1'
+$lockHelperCode = @'
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Desk { [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex); }'
+$SM_REMOTESESSION = 0x1000
+if ([Desk]::GetSystemMetrics($SM_REMOTESESSION) -eq 0) {
+  rundll32.exe user32.dll,LockWorkStation
+}
+'@
+Set-Content -LiteralPath $lockHelper -Value $lockHelperCode -Encoding ASCII
+$lockAction = New-ScheduledTaskAction `
+  -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+  -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$lockHelper`""
 $lockTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
 try {
   $lockTrigger.Delay = "PT${LockDelaySeconds}S"
@@ -153,12 +178,12 @@ Register-ScheduledTask -TaskName $lockName -InputObject $lockTask -Force | Out-N
 $check = Get-ItemProperty -LiteralPath $winlogon
 Write-Host ""
 Write-Host "Auto-login: AutoAdminLogon=$($check.AutoAdminLogon) DefaultUserName=$($check.DefaultUserName) ForceAutoLogon=$($check.ForceAutoLogon)"
-Write-Host "Lock task : $lockName ($((Get-ScheduledTask -TaskName $lockName).State)), ${LockDelaySeconds}s after logon"
+Write-Host "Lock task : $lockName ($((Get-ScheduledTask -TaskName $lockName).State)), console only, ${LockDelaySeconds}s after logon"
 if (-not (Get-ScheduledTask -TaskName 'CopyTradesMT5' -ErrorAction SilentlyContinue)) {
   Write-Warning "The CopyTradesMT5 manager task is not registered yet. Enable 'Launch on Windows startup' in the app (one UAC prompt)."
 }
 Write-Host ""
-Write-Host "Reboot to verify: Windows signs in automatically, the manager starts elevated, then the screen locks."
+Write-Host "Reboot to verify: Windows signs in automatically, the manager starts elevated, then the console locks (RDP sessions are not locked)."
 
 } catch {
   $message = $_ | Out-String

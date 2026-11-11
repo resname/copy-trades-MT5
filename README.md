@@ -113,7 +113,7 @@ source:
   enabling) and auto-start copying 15 s after launch (one click to cancel). If
   the terminals aren't ready, it fails silently (logged, no modal). Optional
   `scripts/enable-unattended-autologin.ps1` configures hands-free auto-login at
-  boot and locks the screen shortly after logon.
+  boot and locks the console shortly after logon (RDP sessions stay unlocked).
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
 - **Persistent config** — the master terminal + slaves (with per-slave symbol
@@ -238,9 +238,11 @@ auto-restart. `copytrades update` runs the same update from the command line.
    the box off/on — to switch to the elevated task. For a fully unattended rig, run
    `scripts/enable-unattended-autologin.ps1` once from an elevated PowerShell:
    it sets a Windows password (prompted locally), configures Winlogon
-   auto-logon plus `ForceAutoLogon`, and registers the `CopyTradesMT5-Lock`
-   task, which locks the screen 5 s after every logon while the manager and MT5
-   keep running. **Auto restart
+   auto-logon (`AutoAdminLogon`; `ForceAutoLogon` is **off** by default because
+   it re-logs in after every logoff and can kick RDP sessions — opt in with
+   `-ForceAutoLogon`), and registers the `CopyTradesMT5-Lock`
+   task, which locks the **console** 5 s after logon while the manager and MT5
+   keep running; RDP sessions are not locked. **Auto restart
    when update is available** shows a countdown popup when an update is
    ready — the restart runs at zero or via **Restart now** (including
    mid-copy: copying is stopped orderly and resumed by the same countdown
