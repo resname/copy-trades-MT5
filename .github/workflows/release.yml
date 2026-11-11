@@ -65,7 +65,7 @@ jobs:
             dist/install.ps1 dist/manager-latest.whl dist/manager-latest.whl.sha256 dist/version.txt \
             dist/enable-unattended-autologin.ps1 \
             --target "$GITHUB_SHA" --title "v$BUILD_VERSION" \
-            --notes "Auto-built release v$BUILD_VERSION from $GITHUB_SHA. Upgrade note: if the app still starts from the old non-elevated Startup shortcut, the Auto-start group shows a migration banner. Click 'Migrate now (UAC)' once; from the next login the app starts with highest privileges. For a hands-free rig, run enable-unattended-autologin.ps1 from this release as administrator."
+            --notes "Auto-built release v$BUILD_VERSION from $GITHUB_SHA. Upgrade note: if the app still starts from the old non-elevated Startup shortcut, the Auto-start group shows a migration banner. Click 'Migrate now (UAC)' once; from the next login the app starts with highest privileges. For a hands-free rig, run enable-unattended-autologin.ps1 from this release as administrator. ForceAutoLogon is off by default: enable it only if you need re-login after a manual logoff, and never on a machine you access via RDP (it can repeatedly kick RDP sessions). The lock task locks only the physical console."
 
       - name: install.ps1 smoke (best-effort)
         if: github.ref_type == 'tag'
