@@ -108,9 +108,12 @@ source:
   log in/verify. Install is on the left; Open-for-login is on the right.
 - **Single-window close = stop** — closing the window stops the engine (joins
   workers) and exits the app; no system tray, no background-running mode.
-- **Auto-start on boot + auto-copy** — optionally launch the app at Windows
-  login and auto-start copying 15 s after launch (one click to cancel). If the
-  terminals aren't ready, it fails silently (logged, no modal).
+- **Auto-start on boot + auto-copy** — optionally launch the app elevated at
+  Windows login (scheduled task with highest privileges; one UAC prompt when
+  enabling) and auto-start copying 15 s after launch (one click to cancel). If
+  the terminals aren't ready, it fails silently (logged, no modal). Optional
+  `scripts/enable-unattended-autologin.ps1` configures hands-free auto-login at
+  boot and locks the screen shortly after logon.
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
 - **Persistent config** — the master terminal + slaves (with per-slave symbol
@@ -225,9 +228,19 @@ auto-restart. `copytrades update` runs the same update from the command line.
    the app — there is no tray. Minimize the window to keep it running in the
    background.
 7. **Auto-start (optional)**: in the **Auto-start** group, tick **Launch on
-   Windows startup** to start the app at login (a shortcut in `shell:startup`),
-   and/or **Auto-start copying on launch** to begin copying 15 s after the app
-   opens — a **Cancel** button appears during the countdown. **Auto restart
+   Windows startup** to start the app at login with **highest privileges** (a
+   scheduled task `CopyTradesMT5`; registering it shows one UAC prompt, after
+   which logon starts it elevated without prompting), and/or **Auto-start
+   copying on launch** to begin copying 15 s after the app opens — a **Cancel**
+   button appears during the countdown. Old installs that still use the
+   non-elevated `shell:startup` shortcut see a **Migration banner** in the
+   Auto-start group (plus a log hint); click **Migrate now (UAC)** — or toggle
+   the box off/on — to switch to the elevated task. For a fully unattended rig, run
+   `scripts/enable-unattended-autologin.ps1` once from an elevated PowerShell:
+   it sets a Windows password (prompted locally), configures Winlogon
+   auto-logon plus `ForceAutoLogon`, and registers the `CopyTradesMT5-Lock`
+   task, which locks the screen 5 s after every logon while the manager and MT5
+   keep running. **Auto restart
    when update is available** shows a countdown popup when an update is
    ready — the restart runs at zero or via **Restart now** (including
    mid-copy: copying is stopped orderly and resumed by the same countdown

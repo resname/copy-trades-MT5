@@ -1,6 +1,16 @@
+import sys
+
 import pytest
 
 pytest.importorskip("PySide6")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_scheduled_task(monkeypatch):
+    """GUI tests must not depend on a CopyTradesMT5 task registered on the
+    machine running the suite (we register one for real on the user's PC)."""
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "task_exists", lambda: False)
 
 
 class FakeController:
@@ -442,6 +452,110 @@ def test_boot_checkbox_syncs_to_lnk_existence_on_load(qapp, tmp_path, monkeypatc
     lnk.touch()
     w2 = MainWindow(FakeController(), store=store)
     assert w2.autostart_boot_checkbox.isChecked() is True
+
+
+def test_legacy_shortcut_without_task_logs_migration_hint(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    lnk = tmp_path / "CopyTradesMT5.lnk"
+    lnk.touch()
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: lnk)
+    w = MainWindow(FakeController(),
+                   store=SettingsStore(path=tmp_path / "settings.json"))
+    assert "elevated" in w.log_view.toPlainText().lower()
+
+
+def _window_with_legacy_shortcut(tmp_path, monkeypatch, store=None):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    lnk = tmp_path / "CopyTradesMT5.lnk"
+    lnk.touch()
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: lnk)
+    return MainWindow(FakeController(), store=store or SettingsStore(
+        path=tmp_path / "settings.json"))
+
+
+def test_legacy_shortcut_shows_migrate_banner(qapp, tmp_path, monkeypatch):
+    w = _window_with_legacy_shortcut(tmp_path, monkeypatch)
+    assert w.autostart_migrate_banner.isHidden() is False
+
+
+def test_no_migrate_banner_when_elevated_task_exists(
+        qapp, tmp_path, monkeypatch):
+    from manager.platform import autostart
+    monkeypatch.setattr(autostart, "task_exists", lambda: True)
+    w = _window_with_legacy_shortcut(tmp_path, monkeypatch)
+    assert w.autostart_migrate_banner.isHidden() is True
+
+
+def test_no_migrate_banner_when_autostart_is_off(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    w = MainWindow(FakeController(),
+                   store=SettingsStore(path=tmp_path / "settings.json"))
+    assert w.autostart_migrate_banner.isHidden() is True
+
+
+def test_migrate_banner_button_registers_elevated_task(
+        qapp, tmp_path, monkeypatch):
+    from manager.platform import autostart
+    calls = {}
+
+    def fake_enable(exe, arguments="-m manager", working_dir=None):
+        calls["exe"] = exe
+        calls["arguments"] = arguments
+
+    monkeypatch.setattr(autostart, "enable_autostart", fake_enable)
+    w = _window_with_legacy_shortcut(tmp_path, monkeypatch)
+
+    w.autostart_migrate_button.click()
+
+    assert calls["exe"] == sys.executable
+    assert calls["arguments"] == "-m manager"
+    assert w.autostart_migrate_banner.isHidden() is True
+    assert w.autostart_boot_checkbox.isChecked() is True
+    log = w.log_view.toPlainText().lower()
+    assert "migrated" in log
+
+
+def test_migrate_banner_failure_keeps_banner_and_logs(
+        qapp, tmp_path, monkeypatch):
+    from manager.platform import autostart
+
+    def boom(*args, **kwargs):
+        raise autostart.AutostartError("UAC cancelled")
+
+    monkeypatch.setattr(autostart, "enable_autostart", boom)
+    w = _window_with_legacy_shortcut(tmp_path, monkeypatch)
+
+    w.autostart_migrate_button.click()
+
+    assert w.autostart_migrate_banner.isHidden() is False
+    assert "migration failed" in w.log_view.toPlainText().lower()
+
+
+def test_autostart_disable_failure_keeps_checkbox_checked(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    from manager.platform import autostart
+    lnk = tmp_path / "CopyTradesMT5.lnk"
+    lnk.touch()
+    monkeypatch.setattr(autostart, "startup_lnk_path", lambda: lnk)
+    w = MainWindow(FakeController(),
+                   store=SettingsStore(path=tmp_path / "settings.json"))
+    assert w.autostart_boot_checkbox.isChecked() is True
+
+    def boom():
+        raise autostart.AutostartError("nope")
+
+    monkeypatch.setattr(autostart, "disable_autostart", boom)
+    w.autostart_boot_checkbox.setChecked(False)
+    assert w.autostart_boot_checkbox.isChecked() is True
+    assert "autostart disable failed" in w.log_view.toPlainText()
 
 
 def test_start_silent_logs_on_algo_trading_disabled_no_modal(qapp, monkeypatch):

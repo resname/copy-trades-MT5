@@ -145,6 +145,22 @@ class MainWindow(QMainWindow):
         as_layout.addWidget(self.autostart_boot_checkbox)
         as_layout.addWidget(self.autostart_copy_checkbox)
         as_layout.addWidget(self.autostart_auto_update_checkbox)
+        # Migration banner for installs still using the old non-elevated
+        # Startup .lnk. Deliberately non-modal: it must not block the 15 s
+        # auto-copy countdown on an unattended reboot.
+        self.autostart_migrate_banner = QWidget()
+        banner_layout = QVBoxLayout(self.autostart_migrate_banner)
+        banner_layout.setContentsMargins(0, 0, 0, 0)
+        self.autostart_migrate_label = QLabel(
+            "Autostart uses the old non-elevated Startup shortcut. "
+            "Migrate once to an elevated scheduled task (one UAC prompt); "
+            "from the next login the app starts with admin rights.")
+        self.autostart_migrate_label.setWordWrap(True)
+        self.autostart_migrate_button = QPushButton("Migrate now (UAC)")
+        banner_layout.addWidget(self.autostart_migrate_label)
+        banner_layout.addWidget(self.autostart_migrate_button)
+        self.autostart_migrate_banner.setVisible(False)
+        as_layout.addWidget(self.autostart_migrate_banner)
         self.autostart_box.setLayout(as_layout)
 
         # Start/Stop + countdown Cancel
@@ -208,6 +224,7 @@ class MainWindow(QMainWindow):
             self._on_autostart_copy_toggled)
         self.autostart_auto_update_checkbox.toggled.connect(
             self._on_auto_update_toggled)
+        self.autostart_migrate_button.clicked.connect(self._migrate_autostart)
         self.autostart_cancel_button.clicked.connect(self._cancel_autostart_copy)
 
     def _populate_terminals(self):
@@ -290,6 +307,16 @@ class MainWindow(QMainWindow):
         self.autostart_boot_checkbox.blockSignals(True)
         self.autostart_boot_checkbox.setChecked(autostart.is_autostart_enabled())
         self.autostart_boot_checkbox.blockSignals(False)
+        # Legacy installs autostart via the non-elevated Startup .lnk. Offer
+        # the one-click migration to the elevated scheduled task (one UAC).
+        legacy_only = (autostart.legacy_shortcut_exists()
+                       and not autostart.task_exists())
+        self.autostart_migrate_banner.setVisible(legacy_only)
+        if legacy_only:
+            self.append_log(
+                "autostart uses the legacy Startup shortcut (not elevated) — "
+                "click 'Migrate now (UAC)' or toggle 'Launch on Windows "
+                "startup' off/on to switch to the elevated scheduled task")
 
     # ---- public API (controller) ----
     def append_status(self, update: StatusUpdate) -> None:
@@ -495,6 +522,28 @@ class MainWindow(QMainWindow):
                 self.autostart_boot_checkbox.blockSignals(False)
             else:
                 self.append_log(f"autostart disable failed: {exc}")
+                # the task/shortcut is still there — keep the UI truthful
+                self.autostart_boot_checkbox.blockSignals(True)
+                self.autostart_boot_checkbox.setChecked(True)
+                self.autostart_boot_checkbox.blockSignals(False)
+        self._save_config()
+
+    def _migrate_autostart(self) -> None:
+        """Migrate the old non-elevated Startup .lnk to the elevated scheduled
+        task. One UAC prompt; applies from the next login (the current session
+        keeps its token)."""
+        try:
+            autostart.enable_autostart(sys.executable, "-m manager")
+        except Exception as exc:
+            self.append_log(f"autostart migration failed: {exc}")
+            return
+        self.autostart_boot_checkbox.blockSignals(True)
+        self.autostart_boot_checkbox.setChecked(True)
+        self.autostart_boot_checkbox.blockSignals(False)
+        self.autostart_migrate_banner.setVisible(False)
+        self.append_log(
+            "autostart migrated to the elevated scheduled task — applies from "
+            "the next login")
         self._save_config()
 
     def _on_autostart_copy_toggled(self, _checked: bool) -> None:
