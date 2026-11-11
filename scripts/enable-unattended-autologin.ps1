@@ -145,6 +145,8 @@ Set-ItemProperty -LiteralPath $policy -Name DisableAutomaticRestartSignOn -Value
 
 # ---- 3. Lock right after logon (console only) ------------------------------
 $lockName = 'CopyTradesMT5-Lock'
+$marker = Join-Path $env:LOCALAPPDATA 'CopyTradesMT5\no-console-lock'
+Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
 $lockDir = Join-Path $env:LOCALAPPDATA 'CopyTradesMT5\bin'
 New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
 $lockHelper = Join-Path $lockDir 'lock-console-session.ps1'

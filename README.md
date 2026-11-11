@@ -242,10 +242,15 @@ auto-restart. `copytrades update` runs the same update from the command line.
    it re-logs in after every logoff and can kick RDP sessions — opt in with
    `-ForceAutoLogon`), and registers the `CopyTradesMT5-Lock`
    task, which locks the **console** 5 s after logon while the manager and MT5
-   keep running; RDP sessions are not locked. Upgrading from a **v0.1.34
-   unattended setup**: run `scripts/fix-unattended-autologin.ps1` once
-   elevated — it sets `ForceAutoLogon=0` and replaces the RDP-locking task with
-   the console-only version, without asking for the password. **Auto restart
+   keep running; RDP sessions are not locked. On startup the app **self-heals**
+   a legacy `ForceAutoLogon`/RDP-locking setup silently when it is elevated;
+   otherwise an in-app **Repair now (UAC)** banner appears. The Auto-start group
+   also offers **Set up unattended boot (UAC)**, which downloads and runs the
+   setup script with the password prompt in its own secure window — no manual
+   commands. `scripts/fix-unattended-autologin.ps1` remains as a fallback for
+   machines where the app cannot run; it sets `ForceAutoLogon=0` and replaces
+   the RDP-locking task with the console-only version without asking for the
+   password. **Auto restart
    when update is available** shows a countdown popup when an update is
    ready — the restart runs at zero or via **Restart now** (including
    mid-copy: copying is stopped orderly and resumed by the same countdown

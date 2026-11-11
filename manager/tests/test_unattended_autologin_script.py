@@ -48,6 +48,7 @@ def test_script_configures_autologin_and_lock_task():
     assert "LockWorkStation" in text
     assert "CopyTradesMT5-Lock" in text
     assert "New-ScheduledTaskTrigger -AtLogOn" in text
+    assert "no-console-lock" in text
 
 
 def test_forceautologon_is_opt_in_and_lock_is_console_only():
@@ -82,6 +83,7 @@ def test_fix_script_fixes_forceautologon_and_console_lock():
     assert "Register-ScheduledTask" in text
     assert "DefaultDomainName" in text
     assert "RemoveLockTask" in text
+    assert "no-console-lock" in text
     # The repair must never change the account password.
     assert "Set-LocalUser" not in text
     for line in text.splitlines():

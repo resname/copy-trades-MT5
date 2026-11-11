@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,15 @@ def _no_real_scheduled_task(monkeypatch):
     machine running the suite (we register one for real on the user's PC)."""
     from manager.platform import autostart
     monkeypatch.setattr(autostart, "task_exists", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_autologon_repair(monkeypatch):
+    """Keep GUI tests away from the host's real Winlogon/task state."""
+    from manager.platform import autologon_repair
+    monkeypatch.setattr(autologon_repair, "repair_on_startup",
+                        lambda: autologon_repair.RepairResult())
+    monkeypatch.setattr(autologon_repair, "setup_configured", lambda: True)
 
 
 class FakeController:
@@ -535,6 +545,84 @@ def test_migrate_banner_failure_keeps_banner_and_logs(
 
     assert w.autostart_migrate_banner.isHidden() is False
     assert "migration failed" in w.log_view.toPlainText().lower()
+
+
+def _patch_needs_elevation(monkeypatch):
+    from manager.platform import autologon_repair
+    monkeypatch.setattr(
+        autologon_repair, "repair_on_startup",
+        lambda: autologon_repair.RepairResult(
+            reasons=("ForceAutoLogon=1",), needs_elevation=True))
+
+
+def test_autologon_repair_banner_shown_when_needs_elevation(
+        qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    _patch_needs_elevation(monkeypatch)
+    w = MainWindow(FakeController())
+    assert w.autologon_repair_banner.isHidden() is False
+
+
+def test_autologon_repair_button_hides_banner_and_logs(
+        qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.platform import autologon_repair
+    _patch_needs_elevation(monkeypatch)
+    w = MainWindow(FakeController())
+    monkeypatch.setattr(
+        autologon_repair, "repair_now",
+        lambda: autologon_repair.RepairResult(changed=("ForceAutoLogon=1",)))
+    w.autologon_repair_button.click()
+    assert w.autologon_repair_banner.isHidden() is True
+    assert "autologon repaired" in w.log_view.toPlainText().lower()
+
+
+def test_autologon_startup_self_heal_is_logged(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.platform import autologon_repair
+    monkeypatch.setattr(
+        autologon_repair, "repair_on_startup",
+        lambda: autologon_repair.RepairResult(changed=("ForceAutoLogon=1",)))
+    w = MainWindow(FakeController())
+    assert "autologon self-heal" in w.log_view.toPlainText().lower()
+
+
+def test_autologon_setup_button_visible_when_not_configured(
+        qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.platform import autologon_repair
+    monkeypatch.setattr(autologon_repair, "setup_configured", lambda: False)
+    w = MainWindow(FakeController())
+    assert w.autologon_setup_button.isHidden() is False
+
+
+def test_autologon_setup_button_downloads_and_launches(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.platform import autologon_repair
+    monkeypatch.setattr(autologon_repair, "setup_configured", lambda: False)
+    calls = {}
+    monkeypatch.setattr(autologon_repair, "download_setup_script",
+                        lambda: Path("C:/tmp/enable.ps1"))
+    monkeypatch.setattr(autologon_repair, "launch_setup_script",
+                        lambda path: calls.setdefault("path", path))
+    w = MainWindow(FakeController())
+    w.autologon_setup_button.click()
+    assert calls["path"] == Path("C:/tmp/enable.ps1")
+    assert "setup finished" in w.log_view.toPlainText().lower()
+
+
+def test_autologon_setup_failure_is_logged(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.platform import autologon_repair
+    monkeypatch.setattr(autologon_repair, "setup_configured", lambda: False)
+
+    def boom():
+        raise autologon_repair.AutologonRepairError("download failed")
+
+    monkeypatch.setattr(autologon_repair, "download_setup_script", boom)
+    w = MainWindow(FakeController())
+    w.autologon_setup_button.click()
+    assert "setup failed" in w.log_view.toPlainText().lower()
 
 
 def test_autostart_disable_failure_keeps_checkbox_checked(

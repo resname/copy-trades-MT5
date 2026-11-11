@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from manager.app.controller import AccountSpec, StatusUpdate, AlgoTradingDisabledError
-from manager.platform import autostart
+from manager.platform import autostart, autologon_repair
 
 MT5_DOWNLOAD_URL = "https://www.metatrader5.com/en/download"
 
@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         self._update_timer.timeout.connect(self.check_for_updates_now)
         self._update_timer.start()
         QTimer.singleShot(10_000, self.check_for_updates_now)
+        self._refresh_autologon_repair(run_repair=True)
         self._maybe_begin_autostart_copy()
 
     # ---- UI construction ----
@@ -161,6 +162,24 @@ class MainWindow(QMainWindow):
         banner_layout.addWidget(self.autostart_migrate_button)
         self.autostart_migrate_banner.setVisible(False)
         as_layout.addWidget(self.autostart_migrate_banner)
+        # Self-heal for the legacy ForceAutoLogon=1 / RDP-locking setup. When
+        # the app is elevated the repair runs silently at startup; otherwise
+        # this banner offers a one-click UAC repair.
+        self.autologon_repair_banner = QWidget()
+        repair_layout = QVBoxLayout(self.autologon_repair_banner)
+        repair_layout.setContentsMargins(0, 0, 0, 0)
+        self.autologon_repair_label = QLabel(
+            "Unattended autologin needs a repair (ForceAutoLogon / RDP-safe "
+            "console lock).")
+        self.autologon_repair_label.setWordWrap(True)
+        self.autologon_repair_button = QPushButton("Repair now (UAC)")
+        repair_layout.addWidget(self.autologon_repair_label)
+        repair_layout.addWidget(self.autologon_repair_button)
+        self.autologon_repair_banner.setVisible(False)
+        as_layout.addWidget(self.autologon_repair_banner)
+        self.autologon_setup_button = QPushButton(
+            "Set up unattended boot (UAC)")
+        as_layout.addWidget(self.autologon_setup_button)
         self.autostart_box.setLayout(as_layout)
 
         # Start/Stop + countdown Cancel
@@ -225,6 +244,8 @@ class MainWindow(QMainWindow):
         self.autostart_auto_update_checkbox.toggled.connect(
             self._on_auto_update_toggled)
         self.autostart_migrate_button.clicked.connect(self._migrate_autostart)
+        self.autologon_repair_button.clicked.connect(self._repair_autologon)
+        self.autologon_setup_button.clicked.connect(self._setup_autologon)
         self.autostart_cancel_button.clicked.connect(self._cancel_autostart_copy)
 
     def _populate_terminals(self):
@@ -545,6 +566,47 @@ class MainWindow(QMainWindow):
             "autostart migrated to the elevated scheduled task — applies from "
             "the next login")
         self._save_config()
+
+    def _refresh_autologon_repair(self, run_repair: bool) -> None:
+        """Run the startup self-heal (or refresh the banner/button state) and
+        keep the setup button visibility in sync with the registry."""
+        if run_repair:
+            result = autologon_repair.repair_on_startup()
+            if result.changed:
+                self.append_log(
+                    "autologon self-heal: " + ", ".join(result.changed))
+            if result.error:
+                self.append_log(f"autologon self-heal failed: {result.error}")
+            self.autologon_repair_banner.setVisible(result.needs_elevation)
+        self.autologon_setup_button.setVisible(
+            not autologon_repair.setup_configured())
+
+    def _repair_autologon(self) -> None:
+        """One-click repair for the legacy ForceAutoLogon/RDP lock setup."""
+        result = autologon_repair.repair_now()
+        if result.error:
+            self.append_log(f"autologon repair failed: {result.error}")
+            return
+        if result.changed:
+            self.append_log(
+                "autologon repaired: " + ", ".join(result.changed))
+        self.autologon_repair_banner.setVisible(False)
+        self.autologon_setup_button.setVisible(
+            not autologon_repair.setup_configured())
+
+    def _setup_autologon(self) -> None:
+        """Launch the elevated unattended-boot setup. The Windows password is
+        entered only in the setup's own secure console window."""
+        self.autologon_setup_button.setEnabled(False)
+        try:
+            path = autologon_repair.download_setup_script()
+            autologon_repair.launch_setup_script(path)
+            self.append_log("unattended boot setup finished")
+        except Exception as exc:
+            self.append_log(f"unattended boot setup failed: {exc}")
+        finally:
+            self.autologon_setup_button.setEnabled(True)
+            self._refresh_autologon_repair(run_repair=True)
 
     def _on_autostart_copy_toggled(self, _checked: bool) -> None:
         # No OS side effect; the countdown only fires on launch, not mid-session.

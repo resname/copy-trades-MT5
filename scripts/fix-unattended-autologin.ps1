@@ -82,6 +82,7 @@ if ($autoConfigured -and $p.DefaultUserName -eq $userName `
 }
 
 # ---- 3. Lock task: console only, never RDP --------------------------------
+$marker = Join-Path $env:LOCALAPPDATA 'CopyTradesMT5\no-console-lock'
 if ($RemoveLockTask) {
   if ($lockTask) {
     Unregister-ScheduledTask -TaskName $lockName -Confirm:$false
@@ -89,7 +90,10 @@ if ($RemoveLockTask) {
   } else {
     $changes += "${lockName}: already absent"
   }
+  New-Item -ItemType File -Force -Path $marker | Out-Null
+  $changes += 'no-console-lock marker written (the app will not re-add the lock)'
 } elseif ($autoConfigured) {
+  Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
   $lockDir = Join-Path $env:LOCALAPPDATA 'CopyTradesMT5\bin'
   New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
   $lockHelper = Join-Path $lockDir 'lock-console-session.ps1'
