@@ -390,37 +390,57 @@ class MainWindow(QMainWindow):
         # into copy profiles and persist the result. Runs after the autostart
         # toggles are restored so the immediate save cannot clobber them.
         if not had_profiles_key:
+            original_profiles = list(self._profiles)
+            original_slaves = list(self._slaves)
             try:
                 migrated, mapping = migrate_legacy_profiles(self._slaves)
+                # The grouper copies unvalidated slave fields, so validate the
+                # minted profiles before installing them: a corrupt legacy
+                # field must not reach the profile tooltip or a slave. A
+                # dropped profile leaves its slaves on their own settings.
+                minted = coerce_profiles(
+                    [dataclasses.asdict(p) for p in migrated],
+                    log=self.append_log)
+                surviving = {p.id for p in minted}
+                mapping = {sid: pid for sid, pid in mapping.items()
+                           if pid in surviving}
+                if minted:
+                    self._profiles.extend(minted)
+                    by_id = {p.id: p for p in minted}
+                    for i, spec in enumerate(self._slaves):
+                        pid = mapping.get(spec.id)
+                        if pid is not None:
+                            self._slaves[i] = apply_profile(spec, by_id[pid])
+                    for profile in minted:
+                        ids = [sid for sid, pid in mapping.items()
+                               if pid == profile.id]
+                        self.append_log(
+                            f"migrated slaves {', '.join(ids)} into profile "
+                            f"'{profile.name}'")
+                # Refresh both lists, then save. The save also writes
+                # profiles: [] when nothing qualified (or migration failed),
+                # so the next start sees the key and never re-runs it.
+                self._refresh_profile_list()
+                self._refresh_slave_list()
+                self._save_config()
             except Exception as exc:
-                # Corrupt numeric fields can still reach the grouper (the
-                # loader does no type enforcement); never let that crash
-                # MainWindow.__init__. Leave the slaves on their own settings.
+                # Corrupt legacy configs can still trip the grouper, the
+                # validation, or a list refresh; never let that crash
+                # MainWindow.__init__. Restore the pre-migration state so the
+                # slaves stay on their own settings, then still save (writing
+                # profiles: []) so the next launch does not retry.
                 self.append_log(f"legacy profile migration failed: {exc}")
-                migrated, mapping = [], {}
-            if migrated:
-                self._profiles.extend(migrated)
-                by_id = {p.id: p for p in migrated}
-                for i, spec in enumerate(self._slaves):
-                    pid = mapping.get(spec.id)
-                    if pid is not None and pid in by_id:
-                        self._slaves[i] = apply_profile(spec, by_id[pid])
-                for profile in migrated:
-                    ids = [sid for sid, pid in mapping.items()
-                           if pid == profile.id]
-                    self.append_log(
-                        f"migrated slaves {', '.join(ids)} into profile "
-                        f"{profile.name!r}")
-            # Refresh both lists, then save. The save also writes
-            # profiles: [] when nothing qualified (or migration failed), so
-            # the next start sees the key and never re-runs the migration.
-            self._refresh_profile_list()
-            self._refresh_slave_list()
-            self._save_config()
+                self._profiles = original_profiles
+                self._slaves = original_slaves
+                try:
+                    self._refresh_profile_list()
+                    self._refresh_slave_list()
+                except Exception:
+                    pass
+                self._save_config()
         else:
             self._refresh_profile_list()
-        # Labels reflect profile attachments (own settings vs profile name).
-        self._refresh_slave_list()
+            self._refresh_slave_list()
 
     # ---- public API (controller) ----
     def append_status(self, update: StatusUpdate) -> None:

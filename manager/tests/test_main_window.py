@@ -1013,3 +1013,29 @@ def test_migration_failure_is_logged_and_does_not_crash(
     cfg = store.load_config()
     assert cfg["profiles"] == []
     assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+
+
+def test_corrupt_but_hashable_legacy_fields_do_not_crash(qapp, tmp_path):
+    """A legacy config whose identical slaves carry a corrupt-but-hashable
+    shared field (symbol_map_csv=5) must not crash: the grouper succeeds, but
+    the minted profile is invalid and must be dropped before the list refresh
+    builds its tooltip (parse_symbol_map would raise AttributeError)."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [
+            {"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+             "symbol_map_csv": 5, "step_amount": 100.0},
+            {"id": "s2", "terminal_path": "C:/s2/terminal64.exe",
+             "symbol_map_csv": 5, "step_amount": 100.0},
+        ],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._profiles == []
+    assert [s.profile_id for s in w._slaves] == ["", ""]
+    assert w.log_view.toPlainText()  # the drop is reported
+    cfg = store.load_config()
+    assert cfg["profiles"] == []
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
