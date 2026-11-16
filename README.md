@@ -228,8 +228,8 @@ auto-restart. `copytrades update` runs the same update from the command line.
    slaves can stay on **Own settings (no profile)** and keep their per-slave
    symbol map / lot-sizing mode (balance step with optional master base lot,
    copy master lot, or fixed lot) / normalization options. Add as many slaves
-   as you need (one terminal each). Drag the divider between the Slaves list
-   and the lower panel to give the list more room; the position is remembered.
+   as you need (one terminal each). **Open slave list…** opens a large modal
+   list with the same Add / Remove / Edit actions.
    After updating from a version without
    profiles, slaves that already had identical settings are grouped into one
    profile automatically (once); lone slaves stay on "Own settings".

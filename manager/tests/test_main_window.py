@@ -1256,3 +1256,98 @@ def test_edit_slave_by_id_updates_the_right_one_and_applies_live(
     assert w.slave_list.item(1).text().startswith("s2:")
     assert c.applied_edits == [("s2", edited)]
     assert w._edit_slave_by_id("gone") is False
+
+
+def _slave(sid):
+    from manager.app.controller import AccountSpec
+    return AccountSpec(id=sid, terminal_path=f"C:/{sid}/terminal64.exe")
+
+
+def test_slave_list_dialog_lists_labels_tooltips_and_selection(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.gui.slave_list_dialog import SlaveListDialog
+    w = MainWindow(FakeController())
+    w._slaves = [_slave("s1"), _slave("s2")]
+    w._refresh_slave_list()
+    dlg = SlaveListDialog(w)
+    assert dlg.list_widget.count() == 2
+    assert dlg.list_widget.item(1).text() == w._slave_label(w._slaves[1])
+    assert dlg.list_widget.item(1).toolTip() == w._slave_label(w._slaves[1])
+    assert not dlg.remove_button.isEnabled()
+    assert not dlg.edit_button.isEnabled()
+    dlg.list_widget.setCurrentRow(1)
+    assert dlg.remove_button.isEnabled() and dlg.edit_button.isEnabled()
+
+
+def test_slave_list_dialog_with_no_slaves_is_empty(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.gui.slave_list_dialog import SlaveListDialog
+    dlg = SlaveListDialog(MainWindow(FakeController()))
+    assert dlg.list_widget.count() == 0
+    assert not dlg.remove_button.isEnabled()
+    assert not dlg.edit_button.isEnabled()
+
+
+def test_slave_list_dialog_add_selects_the_new_slave(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.gui.slave_list_dialog import SlaveListDialog
+    from PySide6.QtCore import Qt
+    w = MainWindow(FakeController())
+    spec = _slave("s1")
+
+    def add():
+        w._slaves.append(spec)
+        return spec
+    monkeypatch.setattr(w, "_on_add_slave", add)
+    dlg = SlaveListDialog(w)
+    dlg.add_button.click()
+    assert dlg.list_widget.count() == 1
+    assert dlg.list_widget.currentItem().data(Qt.ItemDataRole.UserRole) == "s1"
+
+
+def test_slave_list_dialog_remove_and_edit_delegate_by_id(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.gui.slave_list_dialog import SlaveListDialog
+    w = MainWindow(FakeController())
+    w._slaves = [_slave("s1")]
+    calls = []
+    monkeypatch.setattr(w, "_remove_slave_by_id",
+                        lambda sid: calls.append(("remove", sid)) or True)
+    monkeypatch.setattr(w, "_edit_slave_by_id",
+                        lambda sid: calls.append(("edit", sid)) or True)
+    dlg = SlaveListDialog(w)
+    dlg.list_widget.setCurrentRow(0)
+    dlg.remove_button.click()
+    dlg.list_widget.setCurrentRow(0)
+    dlg.edit_button.click()
+    assert calls == [("remove", "s1"), ("edit", "s1")]
+
+
+def test_slave_list_dialog_double_click_edits(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.gui.slave_list_dialog import SlaveListDialog
+    w = MainWindow(FakeController())
+    w._slaves = [_slave("s1")]
+    calls = []
+    monkeypatch.setattr(w, "_edit_slave_by_id",
+                        lambda sid: calls.append(sid) or True)
+    dlg = SlaveListDialog(w)
+    dlg.list_widget.itemDoubleClicked.emit(dlg.list_widget.item(0))
+    assert calls == ["s1"]
+
+
+def test_open_slave_list_button_opens_the_dialog(qapp, monkeypatch):
+    import manager.gui.slave_list_dialog as sld
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    opened = []
+
+    class _D:
+        def __init__(self, manager, parent=None):
+            opened.append(manager)
+
+        def exec(self):
+            return 0
+    monkeypatch.setattr(sld, "SlaveListDialog", _D)
+    w.open_slave_list_button.click()
+    assert opened == [w]

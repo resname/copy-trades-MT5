@@ -155,11 +155,13 @@ class MainWindow(QMainWindow):
         self.add_slave_button = QPushButton("Add Slave…")
         self.remove_slave_button = QPushButton("Remove Slave")
         self.edit_slave_button = QPushButton("Edit Slave…")
+        self.open_slave_list_button = QPushButton("Open slave list…")
         self.edit_slave_button.setEnabled(False)
         row = QHBoxLayout()
         row.addWidget(self.add_slave_button)
         row.addWidget(self.remove_slave_button)
         row.addWidget(self.edit_slave_button)
+        row.addWidget(self.open_slave_list_button)
         sl.addWidget(self.slave_list)
         sl.addLayout(row)
         self.slave_box.setLayout(sl)
@@ -260,6 +262,7 @@ class MainWindow(QMainWindow):
         self.add_slave_button.clicked.connect(self._on_add_slave)
         self.remove_slave_button.clicked.connect(self._on_remove_slave)
         self.edit_slave_button.clicked.connect(self._on_edit_slave)
+        self.open_slave_list_button.clicked.connect(self._on_open_slave_list)
         self.slave_list.itemDoubleClicked.connect(
             lambda _item: self._on_edit_slave())
         self.slave_list.itemSelectionChanged.connect(self._update_edit_enabled)
@@ -871,6 +874,10 @@ class MainWindow(QMainWindow):
 
     def _on_edit_slave(self, *_args) -> None:
         self._edit_slave_at(self.slave_list.currentRow())
+
+    def _on_open_slave_list(self) -> None:
+        from manager.gui.slave_list_dialog import open_slave_list
+        open_slave_list(self)
 
     # ---- copy profiles ----
     def _profile_by_id(self, profile_id: str) -> CopyProfile | None:
