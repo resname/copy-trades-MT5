@@ -359,6 +359,22 @@ def test_invalid_numeric_text_keeps_own_settings_selected(qapp):
     assert dlg.copy_settings.step_amount.text() == "abc"
 
 
+def test_set_spec_unknown_profile_id_falls_back_to_own_settings(qapp):
+    """An edited slave whose profile_id does not resolve must not return a
+    dangling id when accepted unchanged: it becomes an own-settings slave."""
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    dlg = SlaveEditor(FakeController(), profiles=[])
+    dlg.set_spec(AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             profile_id="gone", step_amount=123.0))
+    assert dlg.profile_combo.currentData() == ""
+    dlg.accept()
+    out = dlg.spec()
+    assert out.profile_id == ""
+    assert out.step_amount == 123.0
+    assert dlg.step_amount.isEnabled()
+
+
 def _accept_with_name_dialog(name):
     def stub(self):
         self.name_edit.setText(name)

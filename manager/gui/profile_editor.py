@@ -1,6 +1,7 @@
 # manager/gui/profile_editor.py
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import fields, is_dataclass, replace
 
@@ -14,6 +15,18 @@ from manager.app.controller import (
     AccountSpec, CopyProfile, SHARED_PROFILE_FIELDS, new_profile_id,
 )
 from manager.engine.transform import parse_symbol_map
+
+
+# (attribute name, user-facing label) for the numeric shared fields. The label
+# is the form-row caption, so an invalid value is named in the warning.
+_NUMERIC_FIELD_LABELS = (
+    ("step_amount", "Step amount"),
+    ("step_size", "Step size"),
+    ("max_lot", "Max lots"),
+    ("max_trade_age_minutes", "Max trade age (min)"),
+    ("master_base_lot", "Master base lot size"),
+    ("fixed_lot", "Fixed lot size"),
+)
 
 
 class CopySettingsWidget(QWidget):
@@ -230,6 +243,23 @@ class ProfileEditor(QDialog):
                 self, "Invalid profile",
                 f"A profile named '{name}' already exists.")
             return
+        # Validate each numeric field individually so the warning can name the
+        # offending one, and reject non-finite values (float() accepts nan/inf
+        # and 1e400 is already inf — they would raise later when sizing lots).
+        for field, label in _NUMERIC_FIELD_LABELS:
+            text = getattr(self.copy_settings, field).text()
+            try:
+                value = float(text)
+            except (TypeError, ValueError):
+                QMessageBox.warning(
+                    self, "Invalid profile",
+                    f"{label} must be a number.")
+                return
+            if not math.isfinite(value):
+                QMessageBox.warning(
+                    self, "Invalid profile",
+                    f"{label} must be a finite number.")
+                return
         try:
             values = self.copy_settings.values()
         except (TypeError, ValueError):

@@ -1,6 +1,7 @@
 # manager/app/controller.py
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
@@ -161,10 +162,17 @@ def coerce_profiles(raw: object, *,
                     reason = f"{field} is not a number"
                     break
                 try:
-                    kwargs[field] = float(value)
-                except (TypeError, ValueError):
+                    converted = float(value)
+                except (TypeError, ValueError, OverflowError):
                     reason = f"{field} is not a number"
                     break
+                # float() accepts nan/inf and a JSON float such as 1e400 is
+                # already inf; a non-finite lot would raise later in the
+                # engine/supervisor, so drop the profile here.
+                if not math.isfinite(converted):
+                    reason = f"{field} is not a finite number"
+                    break
+                kwargs[field] = converted
         if reason is None and "normalize_sltp" in entry:
             value = entry["normalize_sltp"]
             if not isinstance(value, bool):
@@ -190,6 +198,16 @@ def coerce_profiles(raw: object, *,
     return profiles
 
 
+def _numeric_key(value: object) -> object:
+    """Normalize a legacy numeric value for comparison: stored configs may
+    hold "100.0" while another slave holds 100.0, and both are the same
+    setting. Non-numeric values fall back to the raw value."""
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return value
+
+
 def migrate_legacy_profiles(slaves: list[AccountSpec]
                             ) -> tuple[list[CopyProfile], dict[str, str]]:
     """Group legacy slaves with identical shared settings into profiles.
@@ -208,8 +226,11 @@ def migrate_legacy_profiles(slaves: list[AccountSpec]
             # corrupt settings JSON (e.g. a list) must be made hashable.
             symbol_map = raw_csv if isinstance(raw_csv, str) else repr(raw_csv)
         key = (
-            spec.step_amount, spec.step_size, spec.max_lot,
-            spec.max_trade_age_minutes, spec.master_base_lot, spec.fixed_lot,
+            _numeric_key(spec.step_amount), _numeric_key(spec.step_size),
+            _numeric_key(spec.max_lot),
+            _numeric_key(spec.max_trade_age_minutes),
+            _numeric_key(spec.master_base_lot),
+            _numeric_key(spec.fixed_lot),
             spec.normalize_sltp, spec.sizing_mode, symbol_map,
         )
         groups.setdefault(key, []).append(spec)

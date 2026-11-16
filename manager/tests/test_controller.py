@@ -479,6 +479,31 @@ def test_coerce_profiles_tolerates_missing_or_non_list():
     assert coerce_profiles({"id": "p1"}) == []
 
 
+def test_coerce_profiles_drops_overflowing_integer():
+    """A JSON integer too large for float() (OverflowError) must drop the
+    whole profile instead of escaping to crash the caller."""
+    from manager.app.controller import coerce_profiles
+    logs = []
+    raw = [{"id": "p1", "name": "A", "step_amount": int("9" * 400)}]
+    assert coerce_profiles(raw, log=logs.append) == []
+    assert any("step_amount" in m for m in logs)
+
+
+def test_coerce_profiles_drops_non_finite_numerics():
+    """float() accepts nan/inf/1e400; every numeric field must be finite or
+    the profile is dropped (a non-finite lot would raise later in the engine)."""
+    from manager.app.controller import (
+        coerce_profiles, _NUMERIC_PROFILE_FIELDS,
+    )
+    bad_values = (float("nan"), float("inf"), float("-inf"), 1e400)
+    for field in _NUMERIC_PROFILE_FIELDS:
+        for bad in bad_values:
+            logs = []
+            raw = [{"id": "p1", "name": "A", field: bad}]
+            assert coerce_profiles(raw, log=logs.append) == [], (field, bad)
+            assert any(field in m for m in logs), (field, bad)
+
+
 def _spec(sid, **kw):
     from manager.app.controller import AccountSpec
     return AccountSpec(id=sid, terminal_path=f"C:/{sid}/terminal64.exe", **kw)
@@ -511,6 +536,19 @@ def test_migrate_no_groups_returns_empty():
     from manager.app.controller import migrate_legacy_profiles
     profiles, mapping = migrate_legacy_profiles([_spec("s1"), _spec("s2", max_lot=5.0)])
     assert profiles == [] and mapping == {}
+
+
+def test_migrate_groups_numeric_string_and_float_values():
+    """Legacy sloppy values must compare numerically: a stored "100.0" and a
+    stored 100.0 describe the same setting and must share one profile."""
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [
+        _spec("s1", step_amount="100.0", max_lot="10"),
+        _spec("s2", step_amount=100.0, max_lot=10.0),
+    ]
+    profiles, mapping = migrate_legacy_profiles(slaves)
+    assert len(profiles) == 1
+    assert set(mapping) == {"s1", "s2"}
 
 
 def test_migrate_tolerates_unhashable_symbol_map_csv():

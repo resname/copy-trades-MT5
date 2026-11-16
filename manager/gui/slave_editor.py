@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QLabel,
 )
 
-from manager.app.controller import AccountSpec, CopyProfile
+from manager.app.controller import AccountSpec, CopyProfile, new_profile_id
 from manager.gui.profile_editor import CopySettingsWidget, ProfileEditor
 
 _NUMERIC_FIELDS = (
@@ -221,7 +221,11 @@ class SlaveEditor(QDialog):
         if self.profile_combo.currentData() != "__new__":
             return
         try:
-            seed = CopyProfile(id="", name="", **self.copy_settings.values())
+            # Mint an id that avoids every profile already in this editor, so
+            # a newly created profile can never collide with an existing one.
+            seed = CopyProfile(
+                id=new_profile_id({p.id for p in self.profiles}), name="",
+                **self.copy_settings.values())
         except (TypeError, ValueError):
             # Keep the invalid text in place; stay on the previous selection.
             self._reload_profiles(self._last_pid)
@@ -310,8 +314,15 @@ class SlaveEditor(QDialog):
         if lock_identity:
             self.terminal.setEnabled(False)
         profile = self._profile_by_id(self._current_pid)
-        self.copy_settings.set_values(profile if profile is not None else spec)
         idx = self.profile_combo.findData(self._current_pid)
+        if self._current_pid and (profile is None or idx < 0):
+            # Unknown id (e.g. the profile was deleted or the list was not
+            # passed in): fall back to own settings so an unchanged Accept
+            # cannot persist a dangling profile reference.
+            self._current_pid = ""
+            self._last_pid = ""
+            idx = -1
+        self.copy_settings.set_values(profile if profile is not None else spec)
         self.profile_combo.blockSignals(True)
         try:
             self.profile_combo.setCurrentIndex(idx if idx >= 0 else 0)

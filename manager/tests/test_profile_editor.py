@@ -108,6 +108,24 @@ def test_profile_editor_rejects_non_numeric_field(qapp, monkeypatch):
     dlg.accept()
     assert dlg.result() != QDialog.DialogCode.Accepted
     assert warnings
+    # the warning names the offending field, not a generic message
+    assert "Step amount" in warnings[0][2]
+
+
+def test_profile_editor_rejects_non_finite_numeric_fields(qapp, monkeypatch):
+    from manager.gui.profile_editor import ProfileEditor
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *a, **k: warnings.append(a[2] if len(a) > 2 else ""))
+    for text in ("nan", "1e400"):
+        warnings.clear()
+        dlg = ProfileEditor()
+        dlg.name_edit.setText("A")
+        dlg.copy_settings.step_amount.setText(text)
+        dlg.accept()
+        assert dlg.result() != QDialog.DialogCode.Accepted, text
+        assert warnings and "Step amount" in warnings[0], text
 
 
 def test_new_profile_generates_id_and_uses_seed(qapp, monkeypatch):

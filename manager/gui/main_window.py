@@ -293,10 +293,20 @@ class MainWindow(QMainWindow):
             self.append_log(f"discovery failed: {exc}")
 
     # ---- config persistence ----
+    def _slave_config_dict(self, spec: AccountSpec) -> dict:
+        """Materialize an attached slave from its profile immediately before
+        writing: the file is internally consistent even if an in-memory spec
+        drifted from its profile."""
+        profile = (self._profile_by_id(spec.profile_id)
+                   if spec.profile_id else None)
+        if profile is not None:
+            spec = apply_profile(spec, profile)
+        return dataclasses.asdict(spec)
+
     def _config_dict(self) -> dict:
         return {
             "master": {"terminal_path": self.master_terminal.currentText().strip()},
-            "slaves": [dataclasses.asdict(s) for s in self._slaves],
+            "slaves": [self._slave_config_dict(s) for s in self._slaves],
             "profiles": [dataclasses.asdict(p) for p in self._profiles],
             "autostart": {
                 "on_boot": self.autostart_boot_checkbox.isChecked(),
@@ -324,16 +334,28 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_log(f"config load failed: {exc}")
             return
-        had_profiles_key = isinstance(cfg, dict) and "profiles" in cfg
-        self._profiles = coerce_profiles(
-            cfg.get("profiles") if isinstance(cfg, dict) else None,
-            log=self.append_log)
-        master = cfg.get("master") if isinstance(cfg, dict) else None
+        if not isinstance(cfg, dict):
+            cfg = {}
+        had_profiles_key = "profiles" in cfg
+        if not cfg:
+            # Missing or corrupt file: the store returns {}. Do not run the
+            # legacy migration (it would overwrite a corrupt file or create
+            # one on a fresh install) — leave the file untouched.
+            self.append_log(
+                "no restorable config in settings (missing or unreadable)")
+        try:
+            self._profiles = coerce_profiles(cfg.get("profiles"),
+                                             log=self.append_log)
+        except Exception as exc:
+            # Defense in depth: no stored-profile value may crash __init__.
+            self.append_log(f"profiles load failed: {exc}")
+            self._profiles = []
+        master = cfg.get("master")
         if isinstance(master, dict):
             mpath = str(master.get("terminal_path", "")).strip()
             if mpath:
                 self.master_terminal.setEditText(mpath)
-        for s in (cfg.get("slaves") if isinstance(cfg, dict) else None) or []:
+        for s in cfg.get("slaves") or []:
             if not isinstance(s, dict):
                 continue
             if str(s.get("platform") or "").lower() == "ib":
@@ -361,7 +383,7 @@ class MainWindow(QMainWindow):
         # .lnk's existence (reality is the source of truth). blockSignals so
         # syncing does not re-trigger the toggle handler (which would touch the
         # OS or save).
-        as_cfg = (cfg.get("autostart") if isinstance(cfg, dict) else None) or {}
+        as_cfg = cfg.get("autostart") or {}
         if not isinstance(as_cfg, dict):
             as_cfg = {}
         self.autostart_copy_checkbox.blockSignals(True)
@@ -389,7 +411,7 @@ class MainWindow(QMainWindow):
         # One-time migration of pre-profile configs: group identical slaves
         # into copy profiles and persist the result. Runs after the autostart
         # toggles are restored so the immediate save cannot clobber them.
-        if not had_profiles_key:
+        if not had_profiles_key and cfg:
             original_profiles = list(self._profiles)
             original_slaves = list(self._slaves)
             try:
@@ -835,12 +857,22 @@ class MainWindow(QMainWindow):
     def _profile_names(self, exclude_id: str = "") -> list[str]:
         return [p.name for p in self._profiles if p.id != exclude_id]
 
+    def _profile_label(self, profile: CopyProfile) -> str:
+        return profile.name
+
     def _profile_tooltip(self, profile: CopyProfile) -> str:
         symbols = len(parse_symbol_map(profile.symbol_map_csv or ""))
         mode = (profile.sizing_mode or "").replace("_", " ")
+        # Include the lot parameter that the selected mode actually uses.
+        if profile.sizing_mode == "fixed_lot":
+            mode_detail = f" · fixed {profile.fixed_lot}"
+        elif profile.sizing_mode == "balance_step":
+            mode_detail = f" · base {profile.master_base_lot}"
+        else:
+            mode_detail = ""
         normalize = "on" if profile.normalize_sltp else "off"
         return (
-            f"{mode} · step {profile.step_amount}/{profile.step_size} · "
+            f"{mode}{mode_detail} · step {profile.step_amount}/{profile.step_size} · "
             f"max {profile.max_lot} · age {profile.max_trade_age_minutes} min · "
             f"{symbols} symbols · normalize {normalize}")
 
@@ -872,7 +904,7 @@ class MainWindow(QMainWindow):
         try:
             self.profile_list.clear()
             for profile in self._profiles:
-                item = QListWidgetItem(profile.name)
+                item = QListWidgetItem(self._profile_label(profile))
                 item.setData(Qt.ItemDataRole.UserRole, profile.id)
                 item.setToolTip(self._profile_tooltip(profile))
                 self.profile_list.addItem(item)
