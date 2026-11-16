@@ -171,8 +171,9 @@ def test_config_round_trip_restores_master_and_slaves(qapp, tmp_path):
 
 def test_load_config_drops_saved_ib_slave_and_keeps_mt5(qapp, tmp_path):
     """A v0.1.26 settings.json with an IB slave loads on the MT5-only build:
-    the IB slave is dropped in memory (one log line, no crash, the file is
-    not rewritten); mt5 slaves survive."""
+    the IB slave is dropped in memory (one log line, no crash); mt5 slaves
+    survive. The file predates the one-time profiles migration, so the load
+    rewrites it: the dead IB slave is gone and profiles: [] marks it done."""
     import json
     from manager.gui.main_window import MainWindow
     from manager.settings.store import SettingsStore
@@ -197,8 +198,10 @@ def test_load_config_drops_saved_ib_slave_and_keeps_mt5(qapp, tmp_path):
     assert [x.id for x in w._slaves] == ["s1"]
     assert w.slave_list.count() == 1
     assert "ib1" in w.log_view.toPlainText()
-    # the file is NOT rewritten: it still contains the saved (dead) IB slave
-    assert "ib1" in path.read_text(encoding="utf-8")
+    # the one-time legacy migration rewrites the file: the dead IB slave is
+    # gone and profiles: [] marks the migration as done
+    assert "ib1" not in path.read_text(encoding="utf-8")
+    assert store.load_config()["profiles"] == []
 
 
 def test_load_config_skips_when_store_none(qapp):
@@ -887,3 +890,126 @@ def test_slave_label_shows_profile_name_or_own_settings(qapp):
     assert w._slave_label(p) == "s1: terminal64.exe (A)"
     p.profile_id = ""
     assert w._slave_label(p) == "s1: terminal64.exe (own settings)"
+
+
+def test_config_round_trip_restores_profiles_and_attachments(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    w = MainWindow(FakeController(), store=store)
+    w.master_terminal.addItem("C:/m/terminal64.exe")
+    w.master_terminal.setCurrentIndex(0)
+    w._profiles = [_copy_profile(step_amount=500.0)]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=500.0, profile_id="p1")]
+    w._save_config()
+    w2 = MainWindow(FakeController(), store=store)
+    assert [p.id for p in w2._profiles] == ["p1"]
+    assert w2._slaves[0].profile_id == "p1"
+    assert w2.slave_list.item(0).text() == "s1: terminal64.exe (A)"
+
+
+def test_load_migrates_identical_legacy_slaves_once(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [
+            {"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+             "step_amount": 100.0},
+            {"id": "s2", "terminal_path": "C:/s2/terminal64.exe",
+             "step_amount": 100.0},
+            {"id": "s3", "terminal_path": "C:/s3/terminal64.exe",
+             "step_amount": 500.0},
+        ],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert len(w._profiles) == 1
+    assert w._profiles[0].name == "s1 + s2"
+    assert w._slaves[0].profile_id == w._profiles[0].id
+    assert w._slaves[1].profile_id == w._profiles[0].id
+    assert w._slaves[2].profile_id == ""
+    assert "migrated slaves s1, s2" in w.log_view.toPlainText()
+    cfg = store.load_config()
+    assert len(cfg["profiles"]) == 1
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+    w2 = MainWindow(FakeController(), store=store)
+    assert len(w2._profiles) == 1  # second start does not migrate again
+
+
+def test_malformed_profile_drops_and_slave_falls_back(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "profiles": [{"id": "p1", "name": "A", "step_amount": "abc"}],
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "profile_id": "p1", "step_amount": 123.0}],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._profiles == []
+    assert w._slaves[0].profile_id == ""
+    assert w._slaves[0].step_amount == 123.0
+    assert "dropped" in w.log_view.toPlainText()
+
+
+def test_unknown_profile_id_falls_back_to_stored_settings(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "profiles": [],
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "profile_id": "gone", "step_amount": 123.0}],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._slaves[0].profile_id == ""
+    assert w._slaves[0].step_amount == 123.0
+    assert "not found" in w.log_view.toPlainText()
+
+
+def test_legacy_config_with_stale_profile_id_is_treated_as_legacy(
+        qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "profile_id": "gone", "step_amount": 100.0}],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._profiles == []
+    assert w._slaves[0].profile_id == ""
+    assert store.load_config()["profiles"] == []  # migration marked as done
+
+
+def test_migration_failure_is_logged_and_does_not_crash(
+        qapp, tmp_path, monkeypatch):
+    """A corrupt legacy config can make migrate_legacy_profiles raise (the
+    loader does no type enforcement). MainWindow must still construct, leave
+    the slaves on their own settings, and still persist profiles: []."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    import manager.gui.main_window as mw
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "step_amount": [1, 2]}],
+    })
+
+    def boom(slaves):
+        raise TypeError("unhashable type: 'list'")
+
+    monkeypatch.setattr(mw, "migrate_legacy_profiles", boom)
+    w = MainWindow(FakeController(), store=store)
+    assert w._slaves[0].profile_id == ""
+    assert "migration failed" in w.log_view.toPlainText()
+    cfg = store.load_config()
+    assert cfg["profiles"] == []
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"

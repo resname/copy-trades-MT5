@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
 
 from manager.app.controller import (
     AccountSpec, CopyProfile, StatusUpdate, AlgoTradingDisabledError,
-    apply_profile, unique_profile_name,
+    apply_profile, coerce_profiles, migrate_legacy_profiles,
+    unique_profile_name,
 )
 from manager.engine.transform import parse_symbol_map
 from manager.platform import autostart, autologon_repair
@@ -323,6 +324,10 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_log(f"config load failed: {exc}")
             return
+        had_profiles_key = isinstance(cfg, dict) and "profiles" in cfg
+        self._profiles = coerce_profiles(
+            cfg.get("profiles") if isinstance(cfg, dict) else None,
+            log=self.append_log)
         master = cfg.get("master") if isinstance(cfg, dict) else None
         if isinstance(master, dict):
             mpath = str(master.get("terminal_path", "")).strip()
@@ -342,9 +347,16 @@ class MainWindow(QMainWindow):
                 spec = AccountSpec(**kwargs)
             except TypeError:
                 continue
+            if spec.profile_id:
+                profile = self._profile_by_id(spec.profile_id)
+                if profile is not None:
+                    spec = apply_profile(spec, profile)
+                else:
+                    self.append_log(
+                        f"profile {spec.profile_id} for slave {spec.id} "
+                        "not found — using stored settings")
+                    spec = dataclasses.replace(spec, profile_id="")
             self._slaves.append(spec)
-            label = (spec.terminal_path or spec.id).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-            self.slave_list.addItem(f"{spec.id}: {label}")
         # autostart toggles: auto_copy from stored value, on_boot synced to the
         # .lnk's existence (reality is the source of truth). blockSignals so
         # syncing does not re-trigger the toggle handler (which would touch the
@@ -374,6 +386,41 @@ class MainWindow(QMainWindow):
                 "autostart uses the legacy Startup shortcut (not elevated) — "
                 "click 'Migrate now (UAC)' or toggle 'Launch on Windows "
                 "startup' off/on to switch to the elevated scheduled task")
+        # One-time migration of pre-profile configs: group identical slaves
+        # into copy profiles and persist the result. Runs after the autostart
+        # toggles are restored so the immediate save cannot clobber them.
+        if not had_profiles_key:
+            try:
+                migrated, mapping = migrate_legacy_profiles(self._slaves)
+            except Exception as exc:
+                # Corrupt numeric fields can still reach the grouper (the
+                # loader does no type enforcement); never let that crash
+                # MainWindow.__init__. Leave the slaves on their own settings.
+                self.append_log(f"legacy profile migration failed: {exc}")
+                migrated, mapping = [], {}
+            if migrated:
+                self._profiles.extend(migrated)
+                by_id = {p.id: p for p in migrated}
+                for i, spec in enumerate(self._slaves):
+                    pid = mapping.get(spec.id)
+                    if pid is not None and pid in by_id:
+                        self._slaves[i] = apply_profile(spec, by_id[pid])
+                for profile in migrated:
+                    ids = [sid for sid, pid in mapping.items()
+                           if pid == profile.id]
+                    self.append_log(
+                        f"migrated slaves {', '.join(ids)} into profile "
+                        f"{profile.name!r}")
+            # Refresh both lists, then save. The save also writes
+            # profiles: [] when nothing qualified (or migration failed), so
+            # the next start sees the key and never re-runs the migration.
+            self._refresh_profile_list()
+            self._refresh_slave_list()
+            self._save_config()
+        else:
+            self._refresh_profile_list()
+        # Labels reflect profile attachments (own settings vs profile name).
+        self._refresh_slave_list()
 
     # ---- public API (controller) ----
     def append_status(self, update: StatusUpdate) -> None:
