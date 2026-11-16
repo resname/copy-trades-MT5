@@ -446,3 +446,68 @@ def test_build_worker_configs_mt5_unchanged():
     assert "platform" not in cfgs["s1"]
     assert "contract_map" not in cfgs["s1"]
     assert cfgs["s1"]["terminal_path"].endswith("terminal64.exe")
+
+
+def test_coerce_profiles_drops_malformed_and_dedupes_ids():
+    from manager.app.controller import coerce_profiles
+    logs = []
+    raw = [
+        {"id": "p1", "name": "A", "step_amount": 100.0},
+        {"id": "p2", "name": "B", "step_amount": "abc"},      # bad number
+        {"id": "p3", "name": "C", "normalize_sltp": "yes"},   # bad bool
+        {"id": "p4", "name": "D", "sizing_mode": "nonsense"}, # bad mode
+        {"id": "p1", "name": "E", "step_amount": 200.0},      # duplicate id
+        "not a dict",
+    ]
+    got = coerce_profiles(raw, log=logs.append)
+    assert [p.id for p in got] == ["p1"]
+    assert got[0].name == "A" and got[0].step_amount == 100.0
+    assert len(logs) == 5
+
+
+def test_coerce_profiles_fixes_empty_and_duplicate_names():
+    from manager.app.controller import coerce_profiles
+    raw = [{"id": "p1", "name": ""}, {"id": "p2", "name": "A"},
+           {"id": "p3", "name": "a"}]
+    got = coerce_profiles(raw)
+    assert [p.name for p in got] == ["Profile p1", "A", "a 2"]
+
+
+def test_coerce_profiles_tolerates_missing_or_non_list():
+    from manager.app.controller import coerce_profiles
+    assert coerce_profiles(None) == []
+    assert coerce_profiles({"id": "p1"}) == []
+
+
+def _spec(sid, **kw):
+    from manager.app.controller import AccountSpec
+    return AccountSpec(id=sid, terminal_path=f"C:/{sid}/terminal64.exe", **kw)
+
+
+def test_migrate_groups_identical_slaves_and_leaves_lone_alone():
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [
+        _spec("s1", symbol_map_csv="A=X,B=Y", step_amount=100.0),
+        _spec("s2", symbol_map_csv="B=Y,A=X", step_amount=100.0),  # same map
+        _spec("s3", step_amount=500.0),
+    ]
+    profiles, mapping = migrate_legacy_profiles(slaves)
+    assert len(profiles) == 1
+    assert profiles[0].name == "s1 + s2"
+    assert profiles[0].symbol_map_csv in ("A=X,B=Y", "B=Y,A=X")
+    assert mapping == {"s1": profiles[0].id, "s2": profiles[0].id}
+
+
+def test_migrate_names_three_or_more_with_count():
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [_spec("s1"), _spec("s2"), _spec("s3")]
+    profiles, mapping = migrate_legacy_profiles(slaves)
+    assert len(profiles) == 1
+    assert profiles[0].name == "s1 + 2 more"
+    assert set(mapping) == {"s1", "s2", "s3"}
+
+
+def test_migrate_no_groups_returns_empty():
+    from manager.app.controller import migrate_legacy_profiles
+    profiles, mapping = migrate_legacy_profiles([_spec("s1"), _spec("s2", max_lot=5.0)])
+    assert profiles == [] and mapping == {}
