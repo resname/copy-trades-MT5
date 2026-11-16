@@ -1241,6 +1241,19 @@ def test_malformed_splitter_sizes_fall_back(qapp, tmp_path):
     assert "splitter" in w.log_view.toPlainText().lower()
 
 
+def test_out_of_range_splitter_sizes_fall_back(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
+                       "profiles": [], "slaves": [],
+                       "ui": {"splitter_sizes": [2 ** 63, 1]}})
+    w = MainWindow(FakeController(), store=store)  # must not raise
+    sizes = w.content_splitter.sizes()
+    assert len(sizes) == 2 and sum(sizes) > 0
+    assert "splitter" in w.log_view.toPlainText().lower()
+
+
 def test_giving_the_slaves_pane_more_size_enlarges_the_list(qapp):
     from manager.gui.main_window import MainWindow
     from manager.app.controller import AccountSpec

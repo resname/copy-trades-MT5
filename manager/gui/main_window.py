@@ -439,11 +439,15 @@ class MainWindow(QMainWindow):
             raw = ui_cfg.get("splitter_sizes")
             valid = (
                 isinstance(raw, (list, tuple)) and len(raw) == 2
-                and all(isinstance(v, int) and not isinstance(v, bool) and v >= 0
-                        for v in raw)
+                and all(isinstance(v, int) and not isinstance(v, bool)
+                        and 0 <= v <= 1_000_000 for v in raw)
                 and sum(raw) > 0)
             if valid:
-                self.content_splitter.setSizes([int(raw[0]), int(raw[1])])
+                try:
+                    self.content_splitter.setSizes(
+                        [int(raw[0]), int(raw[1])])
+                except (OverflowError, ValueError):
+                    self.append_log("invalid ui.splitter_sizes ignored")
             else:
                 self.append_log("invalid ui.splitter_sizes ignored")
         # One-time migration of pre-profile configs: group identical slaves
