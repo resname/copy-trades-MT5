@@ -384,6 +384,57 @@ def test_start_proceeds_when_all_algo_trading_enabled():
         c.stop()
 
 
+def test_profile_from_spec_copies_only_shared_fields():
+    from manager.app.controller import AccountSpec, profile_from_spec
+    spec = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                       symbol_map_csv="EURUSD=EURUSD", step_amount=500.0,
+                       step_size=0.02, max_lot=20.0,
+                       max_trade_age_minutes=5.0, normalize_sltp=False,
+                       sizing_mode="fixed_lot", master_base_lot=0.2,
+                       fixed_lot=0.07)
+    p = profile_from_spec("p1", "Propfirm A", spec)
+    assert (p.id, p.name) == ("p1", "Propfirm A")
+    assert p.symbol_map_csv == "EURUSD=EURUSD"
+    assert p.step_amount == 500.0 and p.step_size == 0.02
+    assert p.max_lot == 20.0 and p.max_trade_age_minutes == 5.0
+    assert p.normalize_sltp is False
+    assert p.sizing_mode == "fixed_lot"
+    assert p.master_base_lot == 0.2 and p.fixed_lot == 0.07
+
+
+def test_apply_profile_preserves_identity_and_overrides_shared_fields():
+    from manager.app.controller import AccountSpec, CopyProfile, apply_profile
+    spec = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                       step_amount=100.0, max_lot=10.0, profile_id="")
+    p = CopyProfile(id="p1", name="A", symbol_map_csv="A=B",
+                    step_amount=500.0, max_lot=20.0,
+                    normalize_sltp=False, sizing_mode="fixed_lot",
+                    fixed_lot=0.07)
+    out = apply_profile(spec, p)
+    assert out is not spec
+    assert (out.id, out.terminal_path) == ("s1", "C:/s1/terminal64.exe")
+    assert out.profile_id == "p1"
+    assert out.step_amount == 500.0 and out.max_lot == 20.0
+    assert out.symbol_map_csv == "A=B"
+    assert out.normalize_sltp is False and out.fixed_lot == 0.07
+
+
+def test_new_profile_id_is_unique_and_short():
+    from manager.app.controller import new_profile_id
+    a = new_profile_id()
+    b = new_profile_id(existing_ids={a})
+    assert a != b
+    assert len(a) == 8 and len(b) == 8
+
+
+def test_unique_profile_name_trims_and_suffixes():
+    from manager.app.controller import unique_profile_name
+    assert unique_profile_name("  Propfirm A  ", {"Other"}) == "Propfirm A"
+    assert unique_profile_name("", set()) == "Profile"
+    assert unique_profile_name("A", {"a"}) == "A 2"
+    assert unique_profile_name("A", {"A", "A 2"}) == "A 3"
+
+
 def test_build_worker_configs_mt5_unchanged():
     """MT5 slave configs gain no new keys: platform is deliberately absent (the
     supervisor defaults to MT5), so old configs stay byte-identical."""

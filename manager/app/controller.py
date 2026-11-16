@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
+from uuid import uuid4
 
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
 from manager.engine.models import BUY, SELL  # noqa: F401  (re-exported for GUI)
@@ -43,6 +45,65 @@ class AccountSpec:
     sizing_mode: str = "balance_step"
     master_base_lot: float = 0.0
     fixed_lot: float = 0.01
+    profile_id: str = ""
+
+
+SHARED_PROFILE_FIELDS = (
+    "symbol_map_csv", "step_amount", "step_size", "max_lot",
+    "max_trade_age_minutes", "normalize_sltp", "sizing_mode",
+    "master_base_lot", "fixed_lot",
+)
+
+
+@dataclass
+class CopyProfile:
+    id: str
+    name: str
+    symbol_map_csv: str = ""
+    step_amount: float = 100.0
+    step_size: float = 0.01
+    max_lot: float = 10.0
+    max_trade_age_minutes: float = 10.0
+    normalize_sltp: bool = True
+    sizing_mode: str = "balance_step"
+    master_base_lot: float = 0.0
+    fixed_lot: float = 0.01
+
+
+def profile_from_spec(profile_id: str, name: str, spec: AccountSpec) -> CopyProfile:
+    """Capture an account's shared (non-identity) trading fields as a profile."""
+    return CopyProfile(id=profile_id, name=name,
+                       **{f: getattr(spec, f) for f in SHARED_PROFILE_FIELDS})
+
+
+def apply_profile(spec: AccountSpec, profile: CopyProfile) -> AccountSpec:
+    """Return a new spec with shared fields from profile; identity (id +
+    terminal_path) is preserved and profile_id is set."""
+    return replace(spec, profile_id=profile.id,
+                   **{f: getattr(profile, f) for f in SHARED_PROFILE_FIELDS})
+
+
+def new_profile_id(existing_ids: Iterable[str] = ()) -> str:
+    """Draw a short unique id (8 hex chars), avoiding existing_ids."""
+    existing = set(existing_ids)
+    while True:
+        pid = uuid4().hex[:8]
+        if pid not in existing:
+            return pid
+
+
+def unique_profile_name(name: str, existing_names: Iterable[str], *,
+                        fallback: str = "Profile") -> str:
+    """Return a trimmed name that does not collide (case-insensitively) with
+    existing_names, falling back when empty and suffixing ' 2', ' 3', …."""
+    base = name.strip() or fallback
+    taken = {n.casefold() for n in existing_names}
+    if base.casefold() not in taken:
+        return base
+    i = 2
+    while f"{base} {i}".casefold() in taken:
+        i += 1
+    return f"{base} {i}"
 
 
 @dataclass
