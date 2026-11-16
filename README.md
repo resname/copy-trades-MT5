@@ -45,8 +45,10 @@ a respawn so `mt5.initialize` does not hit the `-10003` IPC-collision error.
    through the MT5 Python API; if Algo Trading is off, `order_send` is blocked and
    **nothing copies**. The manager refuses to Start until every terminal reports
    Algo Trading enabled.
-4. **Select the master terminal** in the manager and **Add Slave…** for each
-   slave (per-slave terminal, symbol map, lot sizing, normalization).
+4. **Select the master terminal** in the manager. Create a **Copy profile**
+   (**Copy profiles → New…**) for the shared symbol map, lot sizing, and
+   normalization, then **Add Slave…** for each slave — pick its terminal and
+   the profile (or **Own settings (no profile)**).
 5. **Click Start** — the manager connects to every terminal, gates on readiness
    and Algo Trading, then copies opens/modifies/partial-closes/closes from master
    to slaves.
@@ -78,7 +80,9 @@ source:
   Master entries can be **regular expressions** with optional `$1`–`$9`
   group substitution in the slave name (see
   [Symbol map: regex support](#symbol-map-regex-support)).
-- **Risk-managed lot sizing** per slave — choose a mode per slave:
+- **Copy profiles** — define symbol map + lot sizing once, attach many slaves,
+  edit once (live while copying).
+- **Risk-managed lot sizing** per slave or shared via a profile — choose a mode per slave:
   - **Balance step (lots step)** — `floor(slave_balance / step_amount) * step_size`,
     rounded down to the symbol's lot step, clamped to its min/max. Optionally set
     a **Master base lot size** (the master's usual lot, e.g. 0.1): when a specific
@@ -116,9 +120,10 @@ source:
   boot and locks the console shortly after logon (RDP sessions stay unlocked).
 - **Restart recovery** — does not duplicate copied positions already open on a
   slave (positions are matched by their `CPY#<ticket>|MV..|SV..` comment).
-- **Persistent config** — the master terminal + slaves (with per-slave symbol
-  map / lot-sizing / normalization) are saved to `settings.json` and restored
-  on the next launch, so a restart (or an update) does not lose your setup.
+- **Persistent config** — the master terminal, copy profiles, and slaves
+  (attached to a profile or with their own symbol map / lot-sizing /
+  normalization) are saved to `settings.json` and restored on the next
+  launch, so a restart (or an update) does not lose your setup.
 
 ---
 
@@ -216,10 +221,16 @@ auto-restart. `copytrades update` runs the same update from the command line.
    Click **Start** (the manager connects to that terminal's saved account —
    no login/server/password entered in the manager). **Algo Trading must be
    enabled on every terminal** (see Quick Start step 3) or Start is blocked.
-4. **Slaves**: click **Add slave** to open the slave editor — select each
-   slave's terminal, and set the per-slave symbol map / lot-sizing mode
-   (balance step with optional master base lot, copy master lot, or fixed lot) /
-   normalization options. Add as many slaves as you need (one terminal each).
+4. **Slaves**: create a **Copy profile** under the new **Copy profiles**
+   group (**New…**), then select it in **Add Slave… / Edit Slave…** — a
+   profile holds the symbol map and all lot-sizing/normalization settings,
+   and editing it updates every attached slave live while copying. Standalone
+   slaves can stay on **Own settings (no profile)** and keep their per-slave
+   symbol map / lot-sizing mode (balance step with optional master base lot,
+   copy master lot, or fixed lot) / normalization options. Add as many slaves
+   as you need (one terminal each). After updating from a version without
+   profiles, slaves that already had identical settings are grouped into one
+   profile automatically (once); lone slaves stay on "Own settings".
 5. **Start**: the manager assigns terminals, spawns one worker per slave,
    waits for every slave to report ready (SymbolInfo + first status), then
    spawns the master worker and starts the copy loop. The status panel shows
@@ -375,7 +386,7 @@ manager/
   gui/
     main_window.py       Main window (master terminal form + Launch/Install buttons, slave list, status/log, update UI)
     slave_editor.py      Add/edit slave account dialog
-  tests/                 pytest suite (294 headless / 373 with PySide6)
+  tests/                 pytest suite (380 headless / 513 with PySide6)
 scripts/
   install.ps1            One-liner installer/updater (winget-first Python, venv, SHA256-verified wheel)
   smoke-install.ps1      Local install.ps1 smoke check
@@ -396,8 +407,8 @@ installed and run on a PySide6-enabled host.
 
 ```powershell
 python -m pytest manager/tests -q
-# headless (no PySide6): 294 passed, 5 skipped
-# on a host with PySide6 installed: 373 passed
+# headless (no PySide6): 380 passed, 7 skipped
+# on a host with PySide6 installed: 513 passed, 1 skipped
 ```
 
 See [`docs/TESTING.md`](docs/TESTING.md) for the suite layout and how to run
@@ -446,8 +457,9 @@ credentials — see [Security model](#security-model).
 
 **How many slave accounts can copy from one master?**
 As many as you like — one MT5 terminal per account, added with the
-**Add slave** button. Each slave mirrors independently with its own symbol
-map and lot sizing.
+**Add slave** button. Each slave mirrors independently, with its symbol map
+and lot sizing either shared from a **copy profile** or kept on its own
+settings.
 
 **Can it copy between brokers / prop firms with different symbol names?**
 Yes — per-slave symbol mapping handles renamed instruments (`US30` → `WS30`,

@@ -171,8 +171,9 @@ def test_config_round_trip_restores_master_and_slaves(qapp, tmp_path):
 
 def test_load_config_drops_saved_ib_slave_and_keeps_mt5(qapp, tmp_path):
     """A v0.1.26 settings.json with an IB slave loads on the MT5-only build:
-    the IB slave is dropped in memory (one log line, no crash, the file is
-    not rewritten); mt5 slaves survive."""
+    the IB slave is dropped in memory (one log line, no crash); mt5 slaves
+    survive. The file predates the one-time profiles migration, so the load
+    rewrites it: the dead IB slave is gone and profiles: [] marks it done."""
     import json
     from manager.gui.main_window import MainWindow
     from manager.settings.store import SettingsStore
@@ -197,8 +198,10 @@ def test_load_config_drops_saved_ib_slave_and_keeps_mt5(qapp, tmp_path):
     assert [x.id for x in w._slaves] == ["s1"]
     assert w.slave_list.count() == 1
     assert "ib1" in w.log_view.toPlainText()
-    # the file is NOT rewritten: it still contains the saved (dead) IB slave
-    assert "ib1" in path.read_text(encoding="utf-8")
+    # the one-time legacy migration rewrites the file: the dead IB slave is
+    # gone and profiles: [] marks the migration as done
+    assert "ib1" not in path.read_text(encoding="utf-8")
+    assert store.load_config()["profiles"] == []
 
 
 def test_load_config_skips_when_store_none(qapp):
@@ -325,10 +328,10 @@ def test_on_edit_slave_updates_row_label_and_saves_config(qapp, tmp_path, monkey
     w.slave_list.setCurrentRow(0)
     edited = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
                          symbol_map_csv="EURUSD=EURUSD", step_amount=200.0)
-    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: edited)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec, **kw: edited)
     w._on_edit_slave()
     assert w._slaves[0].step_amount == 200.0
-    assert w.slave_list.item(0).text() == "s1: terminal64.exe"
+    assert w.slave_list.item(0).text() == "s1: terminal64.exe (own settings)"
     cfg = store.load_config()
     assert cfg["slaves"][0]["step_amount"] == 200.0
 
@@ -342,7 +345,7 @@ def test_on_edit_slave_cancel_is_noop(qapp, monkeypatch):
                              step_amount=100.0)]
     w.slave_list.addItem("s1: terminal64.exe")
     w.slave_list.setCurrentRow(0)
-    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: None)  # cancel
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec, **kw: None)  # cancel
     w._on_edit_slave()
     assert w._slaves[0].step_amount == 100.0  # unchanged
 
@@ -360,7 +363,7 @@ def test_on_edit_slave_applies_live_when_running(qapp, monkeypatch):
     w.slave_list.setCurrentRow(0)
     edited = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
                           step_amount=200.0)
-    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: edited)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec, **kw: edited)
     w._on_edit_slave()
     assert c.applied_edits == [("s1", edited)]
 
@@ -783,3 +786,381 @@ def test_autostart_cancel_button_aborts(qapp, tmp_path, monkeypatch):
     # buttons re-enabled to the not-running state
     assert w.start_button.isEnabled()
     assert not w.stop_button.isEnabled()
+
+
+def _copy_profile(pid="p1", name="A", **kw):
+    from manager.app.controller import CopyProfile
+    return CopyProfile(id=pid, name=name, **kw)
+
+
+def test_profiles_group_constructs(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    assert w.profile_list is not None
+    assert w.add_profile_button.text() == "New…"
+    assert w.edit_profile_button.text() == "Edit…"
+    assert w.duplicate_profile_button.text() == "Duplicate…"
+    assert w.delete_profile_button.text() == "Delete"
+
+
+def test_add_profile_appends_selects_and_saves(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    w = MainWindow(FakeController(), store=store)
+    monkeypatch.setattr("manager.gui.profile_editor.new_profile",
+                        lambda **kw: _copy_profile())
+    w._on_add_profile()
+    assert [p.id for p in w._profiles] == ["p1"]
+    assert w.profile_list.currentRow() == 0
+    assert store.load_config()["profiles"][0]["name"] == "A"
+
+
+def test_edit_profile_updates_attached_slaves_and_applies_live(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    w._profiles = [_copy_profile(step_amount=100.0)]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0, profile_id="p1")]
+    w._refresh_profile_list("p1")
+    w._refresh_slave_list()
+    c.started = True  # live apply path
+    monkeypatch.setattr("manager.gui.profile_editor.edit_profile",
+                        lambda profile, **kw: _copy_profile(step_amount=500.0))
+    w._on_edit_profile()
+    assert w._profiles[0].step_amount == 500.0
+    assert w._slaves[0].step_amount == 500.0
+    assert [sid for sid, _ in c.applied_edits] == ["s1"]
+    assert store.load_config()["slaves"][0]["step_amount"] == 500.0
+
+
+def test_duplicate_profile_gets_new_id_and_unique_copy_name(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    w = MainWindow(FakeController(), store=SettingsStore(tmp_path / "s.json"))
+    w._profiles = [_copy_profile(name="A")]
+    w._refresh_profile_list("p1")
+    seen = {}
+    def fake_new(**kw):
+        seen.update(kw)
+        return _copy_profile(pid="p2", name="A (copy)")
+    monkeypatch.setattr("manager.gui.profile_editor.new_profile", fake_new)
+    w._on_duplicate_profile()
+    assert seen["seed"].name == "A (copy)"
+    assert [p.id for p in w._profiles] == ["p1", "p2"]
+
+
+def test_delete_profile_blocked_while_attached(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from PySide6.QtWidgets import QMessageBox
+    w = MainWindow(FakeController())
+    w._profiles = [_copy_profile()]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             profile_id="p1")]
+    w._refresh_profile_list("p1")
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a))
+    w._on_delete_profile()
+    assert warned and [p.id for p in w._profiles] == ["p1"]
+
+
+def test_delete_profile_allowed_when_unused(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    w._profiles = [_copy_profile()]
+    w._refresh_profile_list("p1")
+    w._on_delete_profile()
+    assert w._profiles == []
+
+
+def test_slave_label_shows_profile_name_or_own_settings(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    w = MainWindow(FakeController())
+    w._profiles = [_copy_profile(name="A")]
+    p = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                    profile_id="p1")
+    assert w._slave_label(p) == "s1: terminal64.exe (A)"
+    p.profile_id = ""
+    assert w._slave_label(p) == "s1: terminal64.exe (own settings)"
+
+
+def test_config_round_trip_restores_profiles_and_attachments(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    w = MainWindow(FakeController(), store=store)
+    w.master_terminal.addItem("C:/m/terminal64.exe")
+    w.master_terminal.setCurrentIndex(0)
+    w._profiles = [_copy_profile(step_amount=500.0)]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=500.0, profile_id="p1")]
+    w._save_config()
+    w2 = MainWindow(FakeController(), store=store)
+    assert [p.id for p in w2._profiles] == ["p1"]
+    assert w2._slaves[0].profile_id == "p1"
+    assert w2.slave_list.item(0).text() == "s1: terminal64.exe (A)"
+
+
+def test_load_migrates_identical_legacy_slaves_once(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [
+            {"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+             "step_amount": 100.0},
+            {"id": "s2", "terminal_path": "C:/s2/terminal64.exe",
+             "step_amount": 100.0},
+            {"id": "s3", "terminal_path": "C:/s3/terminal64.exe",
+             "step_amount": 500.0},
+        ],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert len(w._profiles) == 1
+    assert w._profiles[0].name == "s1 + s2"
+    assert w._slaves[0].profile_id == w._profiles[0].id
+    assert w._slaves[1].profile_id == w._profiles[0].id
+    assert w._slaves[2].profile_id == ""
+    assert "migrated slaves s1, s2" in w.log_view.toPlainText()
+    cfg = store.load_config()
+    assert len(cfg["profiles"]) == 1
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+    w2 = MainWindow(FakeController(), store=store)
+    assert len(w2._profiles) == 1  # second start does not migrate again
+
+
+def test_malformed_profile_drops_and_slave_falls_back(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "profiles": [{"id": "p1", "name": "A", "step_amount": "abc"}],
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "profile_id": "p1", "step_amount": 123.0}],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._profiles == []
+    assert w._slaves[0].profile_id == ""
+    assert w._slaves[0].step_amount == 123.0
+    assert "dropped" in w.log_view.toPlainText()
+
+
+def test_unknown_profile_id_falls_back_to_stored_settings(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "profiles": [],
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "profile_id": "gone", "step_amount": 123.0}],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._slaves[0].profile_id == ""
+    assert w._slaves[0].step_amount == 123.0
+    assert "not found" in w.log_view.toPlainText()
+
+
+def test_legacy_config_with_stale_profile_id_is_treated_as_legacy(
+        qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "profile_id": "gone", "step_amount": 100.0}],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._profiles == []
+    assert w._slaves[0].profile_id == ""
+    assert store.load_config()["profiles"] == []  # migration marked as done
+
+
+def test_migration_failure_is_logged_and_does_not_crash(
+        qapp, tmp_path, monkeypatch):
+    """A corrupt legacy config can make migrate_legacy_profiles raise (the
+    loader does no type enforcement). MainWindow must still construct, leave
+    the slaves on their own settings, and still persist profiles: []."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    import manager.gui.main_window as mw
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "step_amount": [1, 2]}],
+    })
+
+    def boom(slaves):
+        raise TypeError("unhashable type: 'list'")
+
+    monkeypatch.setattr(mw, "migrate_legacy_profiles", boom)
+    w = MainWindow(FakeController(), store=store)
+    assert w._slaves[0].profile_id == ""
+    assert "migration failed" in w.log_view.toPlainText()
+    cfg = store.load_config()
+    assert cfg["profiles"] == []
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+
+
+def test_corrupt_but_hashable_legacy_fields_do_not_crash(qapp, tmp_path):
+    """A legacy config whose identical slaves carry a corrupt-but-hashable
+    shared field (symbol_map_csv=5) must not crash: the grouper succeeds, but
+    the minted profile is invalid and must be dropped before the list refresh
+    builds its tooltip (parse_symbol_map would raise AttributeError)."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "slaves": [
+            {"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+             "symbol_map_csv": 5, "step_amount": 100.0},
+            {"id": "s2", "terminal_path": "C:/s2/terminal64.exe",
+             "symbol_map_csv": 5, "step_amount": 100.0},
+        ],
+    })
+    w = MainWindow(FakeController(), store=store)
+    assert w._profiles == []
+    assert [s.profile_id for s in w._slaves] == ["", ""]
+    assert w.log_view.toPlainText()  # the drop is reported
+    cfg = store.load_config()
+    assert cfg["profiles"] == []
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+
+
+def test_stored_profile_with_huge_integer_does_not_crash(qapp, tmp_path):
+    """A huge JSON integer in a stored profile makes float() raise
+    OverflowError. The loader must drop that profile, install none, log, and
+    still construct the window."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    store.save_config({
+        "master": {"terminal_path": "C:/m/terminal64.exe"},
+        "profiles": [{"id": "p1", "name": "A",
+                      "step_amount": int("9" * 400)}],
+        "slaves": [{"id": "s1", "terminal_path": "C:/s1/terminal64.exe",
+                    "profile_id": "p1", "step_amount": 100.0}],
+    })
+    w = MainWindow(FakeController(), store=store)  # must not raise
+    assert w._profiles == []
+    assert w._slaves[0].profile_id == ""
+    assert w._slaves[0].step_amount == 100.0
+    assert "step_amount" in w.log_view.toPlainText()
+
+
+def test_corrupt_settings_file_is_left_untouched_on_startup(qapp, tmp_path):
+    """A corrupt settings.json returns {} from the store; startup must not
+    rewrite it (no migration branch), and must log that config was unreadable."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    path = tmp_path / "settings.json"
+    path.write_text("{this is not json", encoding="utf-8")
+    before = path.read_bytes()
+    w = MainWindow(FakeController(), store=SettingsStore(path=path))
+    assert path.read_bytes() == before
+    assert w.log_view.toPlainText()
+
+
+def test_missing_settings_file_is_not_created_on_startup(qapp, tmp_path):
+    """A fresh install has no settings.json; constructing the window must not
+    create one (no empty-config migration/save)."""
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    path = tmp_path / "settings.json"
+    MainWindow(FakeController(), store=SettingsStore(path=path))
+    assert not path.exists()
+
+
+def test_save_materializes_attached_slaves_from_profile(qapp, tmp_path):
+    """A manually drifted attached spec is written with the profile's values,
+    so the store's materialization invariant self-heals on every save."""
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    w = MainWindow(FakeController(), store=store)
+    w._profiles = [_copy_profile(step_amount=500.0, max_lot=20.0)]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=999.0, max_lot=1.0, profile_id="p1")]
+    w._save_config()
+    cfg = store.load_config()
+    assert cfg["slaves"][0]["step_amount"] == 500.0
+    assert cfg["slaves"][0]["max_lot"] == 20.0
+    assert cfg["slaves"][0]["profile_id"] == "p1"
+
+
+def test_profile_tooltip_includes_mode_relevant_lot(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    fixed = w._profile_tooltip(_copy_profile(sizing_mode="fixed_lot",
+                                             fixed_lot=0.07))
+    assert "fixed 0.07" in fixed
+    balance = w._profile_tooltip(_copy_profile(sizing_mode="balance_step",
+                                               master_base_lot=0.2))
+    assert "base 0.2" in balance
+
+
+def test_profile_label_is_the_name(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    w._profiles = [_copy_profile(name="Propfirm A")]
+    w._refresh_profile_list()
+    assert w._profile_label(w._profiles[0]) == "Propfirm A"
+    assert w.profile_list.item(0).text() == "Propfirm A"
+
+
+def test_edit_profile_not_running_does_not_live_apply(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    c = FakeController()  # not started
+    w = MainWindow(c, store=SettingsStore(tmp_path / "s.json"))
+    w._profiles = [_copy_profile(step_amount=100.0)]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0, profile_id="p1")]
+    w._refresh_profile_list("p1")
+    w._refresh_slave_list()
+    monkeypatch.setattr("manager.gui.profile_editor.edit_profile",
+                        lambda profile, **kw: _copy_profile(step_amount=500.0))
+    w._on_edit_profile()
+    assert w._slaves[0].step_amount == 500.0
+    assert c.applied_edits == []  # not running -> no live apply
+
+
+def test_edit_profile_updates_and_live_applies_all_attached_slaves(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    c = FakeController()
+    c.started = True  # live apply path
+    w = MainWindow(c, store=SettingsStore(tmp_path / "s.json"))
+    w._profiles = [_copy_profile(step_amount=100.0)]
+    w._slaves = [
+        AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                    step_amount=100.0, profile_id="p1"),
+        AccountSpec(id="s2", terminal_path="C:/s2/terminal64.exe",
+                    step_amount=100.0, profile_id="p1"),
+    ]
+    w._refresh_profile_list("p1")
+    w._refresh_slave_list()
+    monkeypatch.setattr("manager.gui.profile_editor.edit_profile",
+                        lambda profile, **kw: _copy_profile(step_amount=500.0))
+    w._on_edit_profile()
+    assert [s.step_amount for s in w._slaves] == [500.0, 500.0]
+    assert [sid for sid, _ in c.applied_edits] == ["s1", "s2"]

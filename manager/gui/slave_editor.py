@@ -2,29 +2,121 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable, Iterable
+from dataclasses import replace
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QComboBox, QLineEdit,
-    QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QCheckBox,
-    QHeaderView,
+    QPushButton, QHBoxLayout, QLabel,
 )
 
-from manager.app.controller import AccountSpec
-from manager.engine.transform import parse_symbol_map
+from manager.app.controller import AccountSpec, CopyProfile, new_profile_id
+from manager.gui.profile_editor import CopySettingsWidget, ProfileEditor
+
+_NUMERIC_FIELDS = (
+    "step_amount", "step_size", "max_lot", "max_trade_age_minutes",
+    "master_base_lot", "fixed_lot",
+)
 
 
 class SlaveEditor(QDialog):
     """A modal dialog to add/edit one slave account: terminal-path dropdown
     (auto-populated, required — the user manually logs in to the terminal),
-    an Open-terminal-for-login button, a master->slave symbol map table, lot-sizing
-    fields, maxLot, maxTradeAge, and the normalize-SL/TP toggle. ``spec()``
-    returns the configured AccountSpec (None if cancelled)."""
+    an Open-terminal-for-login button, a copy-profile picker, the shared
+    copy-trading settings (symbol map, lot sizing, normalize SL/TP), and a
+    hint when the settings come from a profile. ``spec()`` returns the
+    configured AccountSpec (None if cancelled)."""
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, profiles: Iterable[CopyProfile] = (),
+                 create_profile: Callable[[CopyProfile], None] | None = None,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Slave")
         self._controller = controller
+        # Local copy: creating a profile must not mutate the caller's list.
+        self.profiles = list(profiles or [])
+        self._create_profile = create_profile
+        self._own_snapshot: dict[str, object] | None = None
+        self._own_texts: dict[str, str] = {}
+        self._started_attached = False
+        self._current_pid = ""
+        self._last_pid = ""
         self._build_ui()
         self._populate_terminals()
+        self._reload_profiles("")
+
+    # ---- delegating properties (kept for existing callers/tests) ----
+    @property
+    def symbol_table(self):
+        return self.copy_settings.symbol_table
+
+    @symbol_table.setter
+    def symbol_table(self, widget) -> None:
+        self.copy_settings.symbol_table = widget
+
+    @property
+    def sizing_mode(self):
+        return self.copy_settings.sizing_mode
+
+    @sizing_mode.setter
+    def sizing_mode(self, widget) -> None:
+        self.copy_settings.sizing_mode = widget
+
+    @property
+    def step_amount(self):
+        return self.copy_settings.step_amount
+
+    @step_amount.setter
+    def step_amount(self, widget) -> None:
+        self.copy_settings.step_amount = widget
+
+    @property
+    def step_size(self):
+        return self.copy_settings.step_size
+
+    @step_size.setter
+    def step_size(self, widget) -> None:
+        self.copy_settings.step_size = widget
+
+    @property
+    def max_lot(self):
+        return self.copy_settings.max_lot
+
+    @max_lot.setter
+    def max_lot(self, widget) -> None:
+        self.copy_settings.max_lot = widget
+
+    @property
+    def max_trade_age_minutes(self):
+        return self.copy_settings.max_trade_age_minutes
+
+    @max_trade_age_minutes.setter
+    def max_trade_age_minutes(self, widget) -> None:
+        self.copy_settings.max_trade_age_minutes = widget
+
+    @property
+    def master_base_lot(self):
+        return self.copy_settings.master_base_lot
+
+    @master_base_lot.setter
+    def master_base_lot(self, widget) -> None:
+        self.copy_settings.master_base_lot = widget
+
+    @property
+    def fixed_lot(self):
+        return self.copy_settings.fixed_lot
+
+    @fixed_lot.setter
+    def fixed_lot(self, widget) -> None:
+        self.copy_settings.fixed_lot = widget
+
+    @property
+    def normalize_sltp(self):
+        return self.copy_settings.normalize_sltp
+
+    @normalize_sltp.setter
+    def normalize_sltp(self, widget) -> None:
+        self.copy_settings.normalize_sltp = widget
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -39,47 +131,18 @@ class SlaveEditor(QDialog):
         self.launch_terminal_button = QPushButton("Open terminal for login")
         term_row.addWidget(self.launch_terminal_button)
         form.addRow("", term_row)
+
+        self.profile_combo = QComboBox()
+        self.profile_hint = QLabel("")
+        self.profile_hint.setWordWrap(True)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(self.profile_combo)
+        profile_row.addWidget(self.profile_hint)
+        form.addRow("Copy profile", profile_row)
         root.addLayout(form)
 
-        self.symbol_table = QTableWidget(0, 2)
-        self.symbol_table.setHorizontalHeaderLabels(
-            ["Master symbol (regex)", "Slave symbol"])
-        self.symbol_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch)
-        root.addWidget(self.symbol_table)
-        sym_row = QHBoxLayout()
-        self.add_sym_button = QPushButton("Add Row")
-        self.del_sym_button = QPushButton("Remove Row")
-        sym_row.addWidget(self.add_sym_button)
-        sym_row.addWidget(self.del_sym_button)
-        root.addLayout(sym_row)
-        self.add_sym_button.clicked.connect(self._add_sym_row)
-        self.del_sym_button.clicked.connect(self._del_sym_row)
-
-        self._sizing = QFormLayout()
-        self.sizing_mode = QComboBox()
-        self.sizing_mode.addItem("Balance step (lots step)", "balance_step")
-        self.sizing_mode.addItem("Copy master lot", "copy_master")
-        self.sizing_mode.addItem("Fixed lot", "fixed_lot")
-        self.step_amount = QLineEdit("100")
-        self.step_size = QLineEdit("0.01")
-        self.max_lot = QLineEdit("10")
-        self.max_trade_age_minutes = QLineEdit("10")
-        self.master_base_lot = QLineEdit("0.0")
-        self.fixed_lot = QLineEdit("0.01")
-        self.normalize_sltp = QCheckBox("Normalize SL/TP to slave open price")
-        self.normalize_sltp.setChecked(True)
-        self._sizing.addRow("Lot sizing mode", self.sizing_mode)
-        self._sizing.addRow("Master base lot size", self.master_base_lot)
-        self._sizing.addRow("Fixed lot size", self.fixed_lot)
-        self._sizing.addRow("Step amount", self.step_amount)
-        self._sizing.addRow("Step size", self.step_size)
-        self._sizing.addRow("Max lots", self.max_lot)
-        self._sizing.addRow("Max trade age (min)", self.max_trade_age_minutes)
-        root.addLayout(self._sizing)
-        root.addWidget(self.normalize_sltp)
-        self.sizing_mode.currentIndexChanged.connect(self._update_sizing_visibility)
-        self._update_sizing_visibility()
+        self.copy_settings = CopySettingsWidget()
+        root.addWidget(self.copy_settings)
 
         buttons = QHBoxLayout()
         self.ok_button = QPushButton("OK")
@@ -90,24 +153,8 @@ class SlaveEditor(QDialog):
         self.ok_button.clicked.connect(self.accept)
         self.cancel_button.clicked.connect(self.reject)
         self.launch_terminal_button.clicked.connect(self._on_launch_terminal)
-
-    def _update_sizing_visibility(self) -> None:
-        """Show only the lot-sizing fields relevant to the chosen mode.
-        Widgets stay constructed in every mode (so tests/old code can read
-        them); only visibility toggles. max_lot + max_trade_age are always
-        relevant (cap + age apply to all modes)."""
-        mode = self.sizing_mode.currentData()
-        def show_row(widget, visible: bool) -> None:
-            widget.setVisible(visible)
-            lbl = self._sizing.labelForField(widget)
-            if lbl is not None:
-                lbl.setVisible(visible)
-        is_balance = mode == "balance_step"
-        is_fixed = mode == "fixed_lot"
-        show_row(self.step_amount, is_balance)
-        show_row(self.step_size, is_balance)
-        show_row(self.master_base_lot, is_balance)
-        show_row(self.fixed_lot, is_fixed)
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        self.profile_combo.activated.connect(self._on_profile_activated)
 
     def _on_launch_terminal(self):
         exe = self.terminal.currentText().strip()
@@ -118,16 +165,6 @@ class SlaveEditor(QDialog):
         except OSError:
             pass
 
-    def _add_sym_row(self):
-        self.symbol_table.insertRow(self.symbol_table.rowCount())
-        self.symbol_table.setItem(self.symbol_table.rowCount() - 1, 0, QTableWidgetItem(""))
-        self.symbol_table.setItem(self.symbol_table.rowCount() - 1, 1, QTableWidgetItem(""))
-
-    def _del_sym_row(self):
-        r = self.symbol_table.currentRow()
-        if r >= 0:
-            self.symbol_table.removeRow(r)
-
     def _populate_terminals(self):
         self.terminal.clear()
         try:
@@ -136,35 +173,136 @@ class SlaveEditor(QDialog):
         except Exception:
             pass
 
-    def _symbol_map_csv(self) -> str:
-        pairs = []
-        for r in range(self.symbol_table.rowCount()):
-            m = self.symbol_table.item(r, 0)
-            s = self.symbol_table.item(r, 1)
-            if m is None or s is None:
-                continue
-            mt = m.text().strip()
-            st = s.text().strip()
-            if mt and st:
-                pairs.append(f"{mt}={st}")
-        return ",".join(pairs)
+    # ---- copy profile picker ----
+    def _profile_by_id(self, pid: str) -> CopyProfile | None:
+        for profile in self.profiles:
+            if profile.id == pid:
+                return profile
+        return None
 
-    def _spec_from_fields(self, sid, terminal_path, step_amount, step_size,
-                          max_lot, max_age, normalize, sizing_mode,
-                          master_base_lot, fixed_lot) -> AccountSpec:
-        return AccountSpec(
-            id=sid, terminal_path=terminal_path or None,
-            symbol_map_csv=self._symbol_map_csv(),
-            step_amount=float(step_amount), step_size=float(step_size),
-            max_lot=float(max_lot), max_trade_age_minutes=float(max_age),
-            normalize_sltp=bool(normalize),
-            sizing_mode=sizing_mode, master_base_lot=float(master_base_lot),
-            fixed_lot=float(fixed_lot))
+    def _reload_profiles(self, select_id: str = "") -> None:
+        """Refill the picker: own settings, one item per profile, a disabled
+        separator and the "New profile…" action. Selecting ``select_id`` is
+        done with signals blocked so no profile-change handler fires."""
+        combo = self.profile_combo
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem("Own settings (no profile)", "")
+            for profile in self.profiles:
+                combo.addItem(profile.name, profile.id)
+            combo.insertSeparator(combo.count())
+            combo.addItem("New profile…", "__new__")
+            idx = combo.findData(select_id)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+        finally:
+            combo.blockSignals(False)
+
+    def _update_profile_hint(self, profile: CopyProfile | None) -> None:
+        if profile is None:
+            self.profile_hint.setText("")
+            self.profile_hint.setVisible(False)
+        else:
+            self.profile_hint.setText(
+                f"Settings come from profile '{profile.name}' — "
+                "edit it under Copy profiles.")
+            self.profile_hint.setVisible(True)
+
+    def _on_profile_changed(self, _index: int = -1) -> None:
+        data = self.profile_combo.currentData()
+        if data == "__new__":
+            # The creation action only fires on activation.
+            return
+        data = data or ""
+        self._last_pid = data
+        self._apply_profile_selection(data)
+
+    def _on_profile_activated(self, _index: int) -> None:
+        if self.profile_combo.currentData() != "__new__":
+            return
+        try:
+            # Mint an id that avoids every profile already in this editor, so
+            # a newly created profile can never collide with an existing one.
+            seed = CopyProfile(
+                id=new_profile_id({p.id for p in self.profiles}), name="",
+                **self.copy_settings.values())
+        except (TypeError, ValueError):
+            # Keep the invalid text in place; stay on the previous selection.
+            self._reload_profiles(self._last_pid)
+            self._apply_profile_selection(self._last_pid)
+            return
+        dlg = ProfileEditor(seed,
+                            existing_names=[p.name for p in self.profiles],
+                            parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            self._reload_profiles(self._last_pid)
+            self._apply_profile_selection(self._last_pid)
+            return
+        profile = dlg.profile()
+        if profile is None:
+            self._reload_profiles(self._last_pid)
+            self._apply_profile_selection(self._last_pid)
+            return
+        self.profiles.append(profile)
+        if self._create_profile is not None:
+            self._create_profile(profile)
+        self._reload_profiles(profile.id)
+        self._apply_profile_selection(profile.id)
+
+    def _apply_profile_selection(self, pid: str) -> None:
+        """Switch the shared settings to the profile ``pid`` (or own settings
+        for ``""``), snapshotting/restoring the user's own values as needed."""
+        pid = pid or ""
+        profile = self._profile_by_id(pid) if pid else None
+        if pid == self._current_pid:
+            # Just refresh the presentation; never touch the values.
+            self.copy_settings.set_editable(profile is None)
+            self._update_profile_hint(profile)
+            return
+        if pid:
+            if profile is None:
+                # Unknown id (e.g. the profile list was not passed in).
+                self._reload_profiles(self._current_pid)
+                return
+            if self._current_pid == "":
+                try:
+                    self._own_snapshot = dict(self.copy_settings.values())
+                except (TypeError, ValueError):
+                    # Invalid numeric text: keep it and stay on own settings.
+                    self._last_pid = ""
+                    self._reload_profiles("")
+                    self.copy_settings.set_editable(True)
+                    self._update_profile_hint(None)
+                    return
+                # values() normalizes numbers to floats; remember the exact
+                # text so restoring own settings shows what the user typed.
+                self._own_texts = {
+                    name: getattr(self.copy_settings, name).text()
+                    for name in _NUMERIC_FIELDS
+                }
+            self.copy_settings.set_values(profile)
+            self.copy_settings.set_editable(False)
+        else:
+            self.copy_settings.set_editable(True)
+            if not self._started_attached and self._own_snapshot is not None:
+                self.copy_settings.set_values(self._own_snapshot)
+                for name, text in self._own_texts.items():
+                    getattr(self.copy_settings, name).setText(text)
+        self._current_pid = pid
+        # Keep the previous selection in sync so a following "New profile…"
+        # cancel restores this selection (including a just-created profile).
+        self._last_pid = pid
+        self._update_profile_hint(profile)
 
     def set_spec(self, spec: AccountSpec, *, lock_identity: bool = True) -> None:
         """Pre-populate the editor from an existing AccountSpec (edit mode).
         When lock_identity is True, the slave id and terminal path are shown
         read-only/disabled so the slave's identity cannot change mid-edit."""
+        self._started_attached = bool(spec.profile_id)
+        self._own_snapshot = None
+        self._own_texts = {}
+        self._current_pid = spec.profile_id or ""
+        self._last_pid = self._current_pid
         self.setWindowTitle("Edit Slave")
         self.id_edit.setText(spec.id)
         if lock_identity:
@@ -175,48 +313,54 @@ class SlaveEditor(QDialog):
             self.terminal.setCurrentText(spec.terminal_path)
         if lock_identity:
             self.terminal.setEnabled(False)
-        self.symbol_table.setRowCount(0)
-        for master, slave in parse_symbol_map(spec.symbol_map_csv).items():
-            r = self.symbol_table.rowCount()
-            self.symbol_table.insertRow(r)
-            self.symbol_table.setItem(r, 0, QTableWidgetItem(master))
-            self.symbol_table.setItem(r, 1, QTableWidgetItem(slave))
-        idx = self.sizing_mode.findData(spec.sizing_mode)
-        self.sizing_mode.setCurrentIndex(idx if idx >= 0 else 0)
-        self.master_base_lot.setText(str(spec.master_base_lot))
-        self.fixed_lot.setText(str(spec.fixed_lot))
-        self.step_amount.setText(str(spec.step_amount))
-        self.step_size.setText(str(spec.step_size))
-        self.max_lot.setText(str(spec.max_lot))
-        self.max_trade_age_minutes.setText(str(spec.max_trade_age_minutes))
-        self.normalize_sltp.setChecked(spec.normalize_sltp)
+        profile = self._profile_by_id(self._current_pid)
+        idx = self.profile_combo.findData(self._current_pid)
+        if self._current_pid and (profile is None or idx < 0):
+            # Unknown id (e.g. the profile was deleted or the list was not
+            # passed in): fall back to own settings so an unchanged Accept
+            # cannot persist a dangling profile reference.
+            self._current_pid = ""
+            self._last_pid = ""
+            idx = -1
+        self.copy_settings.set_values(profile if profile is not None else spec)
+        self.profile_combo.blockSignals(True)
+        try:
+            self.profile_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        finally:
+            self.profile_combo.blockSignals(False)
+        self.copy_settings.set_editable(profile is None)
+        self._update_profile_hint(profile)
 
     def spec(self) -> AccountSpec | None:
         if self.result() != QDialog.DialogCode.Accepted:
             return None
-        return self._spec_from_fields(
-            self.id_edit.text().strip() or "s1",
-            self.terminal.currentText().strip(),
-            self.step_amount.text(), self.step_size.text(),
-            self.max_lot.text(), self.max_trade_age_minutes.text(),
-            self.normalize_sltp.isChecked(),
-            self.sizing_mode.currentData(),
-            self.master_base_lot.text(), self.fixed_lot.text())
+        base = AccountSpec(
+            id=self.id_edit.text().strip() or "s1",
+            terminal_path=self.terminal.currentText().strip() or None,
+            profile_id=self._current_pid or "")
+        return replace(base, **self.copy_settings.values())
 
 
-def add_slave(parent_window) -> AccountSpec | None:
+def add_slave(parent_window, profiles: Iterable[CopyProfile] = (),
+              create_profile: Callable[[CopyProfile], None] | None = None
+              ) -> AccountSpec | None:
     """Open the SlaveEditor modally against the main window's controller.
     Returns the configured AccountSpec, or None if the user cancelled."""
-    dlg = SlaveEditor(parent_window._controller, parent=parent_window)
+    dlg = SlaveEditor(parent_window._controller, profiles=profiles,
+                      create_profile=create_profile, parent=parent_window)
     if dlg.exec() == QDialog.DialogCode.Accepted:
         return dlg.spec()
     return None
 
 
-def edit_slave(parent_window, spec: AccountSpec) -> AccountSpec | None:
+def edit_slave(parent_window, spec: AccountSpec,
+               profiles: Iterable[CopyProfile] = (),
+               create_profile: Callable[[CopyProfile], None] | None = None
+               ) -> AccountSpec | None:
     """Open the SlaveEditor modally, pre-populated with `spec` (identity
     locked). Returns the edited AccountSpec, or None if the user cancelled."""
-    dlg = SlaveEditor(parent_window._controller, parent=parent_window)
+    dlg = SlaveEditor(parent_window._controller, profiles=profiles,
+                      create_profile=create_profile, parent=parent_window)
     dlg.set_spec(spec, lock_identity=True)
     if dlg.exec() == QDialog.DialogCode.Accepted:
         return dlg.spec()

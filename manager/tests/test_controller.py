@@ -384,6 +384,57 @@ def test_start_proceeds_when_all_algo_trading_enabled():
         c.stop()
 
 
+def test_profile_from_spec_copies_only_shared_fields():
+    from manager.app.controller import AccountSpec, profile_from_spec
+    spec = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                       symbol_map_csv="EURUSD=EURUSD", step_amount=500.0,
+                       step_size=0.02, max_lot=20.0,
+                       max_trade_age_minutes=5.0, normalize_sltp=False,
+                       sizing_mode="fixed_lot", master_base_lot=0.2,
+                       fixed_lot=0.07)
+    p = profile_from_spec("p1", "Propfirm A", spec)
+    assert (p.id, p.name) == ("p1", "Propfirm A")
+    assert p.symbol_map_csv == "EURUSD=EURUSD"
+    assert p.step_amount == 500.0 and p.step_size == 0.02
+    assert p.max_lot == 20.0 and p.max_trade_age_minutes == 5.0
+    assert p.normalize_sltp is False
+    assert p.sizing_mode == "fixed_lot"
+    assert p.master_base_lot == 0.2 and p.fixed_lot == 0.07
+
+
+def test_apply_profile_preserves_identity_and_overrides_shared_fields():
+    from manager.app.controller import AccountSpec, CopyProfile, apply_profile
+    spec = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                       step_amount=100.0, max_lot=10.0, profile_id="")
+    p = CopyProfile(id="p1", name="A", symbol_map_csv="A=B",
+                    step_amount=500.0, max_lot=20.0,
+                    normalize_sltp=False, sizing_mode="fixed_lot",
+                    fixed_lot=0.07)
+    out = apply_profile(spec, p)
+    assert out is not spec
+    assert (out.id, out.terminal_path) == ("s1", "C:/s1/terminal64.exe")
+    assert out.profile_id == "p1"
+    assert out.step_amount == 500.0 and out.max_lot == 20.0
+    assert out.symbol_map_csv == "A=B"
+    assert out.normalize_sltp is False and out.fixed_lot == 0.07
+
+
+def test_new_profile_id_is_unique_and_short():
+    from manager.app.controller import new_profile_id
+    a = new_profile_id()
+    b = new_profile_id(existing_ids={a})
+    assert a != b
+    assert len(a) == 8 and len(b) == 8
+
+
+def test_unique_profile_name_trims_and_suffixes():
+    from manager.app.controller import unique_profile_name
+    assert unique_profile_name("  Propfirm A  ", {"Other"}) == "Propfirm A"
+    assert unique_profile_name("", set()) == "Profile"
+    assert unique_profile_name("A", {"a"}) == "A 2"
+    assert unique_profile_name("A", {"A", "A 2"}) == "A 3"
+
+
 def test_build_worker_configs_mt5_unchanged():
     """MT5 slave configs gain no new keys: platform is deliberately absent (the
     supervisor defaults to MT5), so old configs stay byte-identical."""
@@ -395,3 +446,118 @@ def test_build_worker_configs_mt5_unchanged():
     assert "platform" not in cfgs["s1"]
     assert "contract_map" not in cfgs["s1"]
     assert cfgs["s1"]["terminal_path"].endswith("terminal64.exe")
+
+
+def test_coerce_profiles_drops_malformed_and_dedupes_ids():
+    from manager.app.controller import coerce_profiles
+    logs = []
+    raw = [
+        {"id": "p1", "name": "A", "step_amount": 100.0},
+        {"id": "p2", "name": "B", "step_amount": "abc"},      # bad number
+        {"id": "p3", "name": "C", "normalize_sltp": "yes"},   # bad bool
+        {"id": "p4", "name": "D", "sizing_mode": "nonsense"}, # bad mode
+        {"id": "p1", "name": "E", "step_amount": 200.0},      # duplicate id
+        "not a dict",
+    ]
+    got = coerce_profiles(raw, log=logs.append)
+    assert [p.id for p in got] == ["p1"]
+    assert got[0].name == "A" and got[0].step_amount == 100.0
+    assert len(logs) == 5
+
+
+def test_coerce_profiles_fixes_empty_and_duplicate_names():
+    from manager.app.controller import coerce_profiles
+    raw = [{"id": "p1", "name": ""}, {"id": "p2", "name": "A"},
+           {"id": "p3", "name": "a"}]
+    got = coerce_profiles(raw)
+    assert [p.name for p in got] == ["Profile p1", "A", "a 2"]
+
+
+def test_coerce_profiles_tolerates_missing_or_non_list():
+    from manager.app.controller import coerce_profiles
+    assert coerce_profiles(None) == []
+    assert coerce_profiles({"id": "p1"}) == []
+
+
+def test_coerce_profiles_drops_overflowing_integer():
+    """A JSON integer too large for float() (OverflowError) must drop the
+    whole profile instead of escaping to crash the caller."""
+    from manager.app.controller import coerce_profiles
+    logs = []
+    raw = [{"id": "p1", "name": "A", "step_amount": int("9" * 400)}]
+    assert coerce_profiles(raw, log=logs.append) == []
+    assert any("step_amount" in m for m in logs)
+
+
+def test_coerce_profiles_drops_non_finite_numerics():
+    """float() accepts nan/inf/1e400; every numeric field must be finite or
+    the profile is dropped (a non-finite lot would raise later in the engine)."""
+    from manager.app.controller import (
+        coerce_profiles, _NUMERIC_PROFILE_FIELDS,
+    )
+    bad_values = (float("nan"), float("inf"), float("-inf"), 1e400)
+    for field in _NUMERIC_PROFILE_FIELDS:
+        for bad in bad_values:
+            logs = []
+            raw = [{"id": "p1", "name": "A", field: bad}]
+            assert coerce_profiles(raw, log=logs.append) == [], (field, bad)
+            assert any(field in m for m in logs), (field, bad)
+
+
+def _spec(sid, **kw):
+    from manager.app.controller import AccountSpec
+    return AccountSpec(id=sid, terminal_path=f"C:/{sid}/terminal64.exe", **kw)
+
+
+def test_migrate_groups_identical_slaves_and_leaves_lone_alone():
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [
+        _spec("s1", symbol_map_csv="A=X,B=Y", step_amount=100.0),
+        _spec("s2", symbol_map_csv="B=Y,A=X", step_amount=100.0),  # same map
+        _spec("s3", step_amount=500.0),
+    ]
+    profiles, mapping = migrate_legacy_profiles(slaves)
+    assert len(profiles) == 1
+    assert profiles[0].name == "s1 + s2"
+    assert profiles[0].symbol_map_csv in ("A=X,B=Y", "B=Y,A=X")
+    assert mapping == {"s1": profiles[0].id, "s2": profiles[0].id}
+
+
+def test_migrate_names_three_or_more_with_count():
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [_spec("s1"), _spec("s2"), _spec("s3")]
+    profiles, mapping = migrate_legacy_profiles(slaves)
+    assert len(profiles) == 1
+    assert profiles[0].name == "s1 + 2 more"
+    assert set(mapping) == {"s1", "s2", "s3"}
+
+
+def test_migrate_no_groups_returns_empty():
+    from manager.app.controller import migrate_legacy_profiles
+    profiles, mapping = migrate_legacy_profiles([_spec("s1"), _spec("s2", max_lot=5.0)])
+    assert profiles == [] and mapping == {}
+
+
+def test_migrate_groups_numeric_string_and_float_values():
+    """Legacy sloppy values must compare numerically: a stored "100.0" and a
+    stored 100.0 describe the same setting and must share one profile."""
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [
+        _spec("s1", step_amount="100.0", max_lot="10"),
+        _spec("s2", step_amount=100.0, max_lot=10.0),
+    ]
+    profiles, mapping = migrate_legacy_profiles(slaves)
+    assert len(profiles) == 1
+    assert set(mapping) == {"s1", "s2"}
+
+
+def test_migrate_tolerates_unhashable_symbol_map_csv():
+    """Corrupt/hand-edited settings.json can hold a non-string symbol_map_csv
+    (e.g. a JSON array). The loader tolerates it, so migration must not raise
+    when building its grouping key."""
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [_spec("s1", symbol_map_csv=["A=X"]),
+              _spec("s2", symbol_map_csv=["A=X"])]
+    profiles, mapping = migrate_legacy_profiles(slaves)  # must not raise
+    assert len(profiles) == 1
+    assert set(mapping) == {"s1", "s2"}

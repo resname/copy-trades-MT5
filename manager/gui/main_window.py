@@ -8,11 +8,17 @@ import webbrowser
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QCheckBox, QComboBox, QPushButton, QListWidget, QPlainTextEdit, QLabel,
+    QCheckBox, QComboBox, QPushButton, QListWidget, QListWidgetItem,
+    QPlainTextEdit, QLabel,
     QGroupBox, QProgressBar, QMessageBox,
 )
 
-from manager.app.controller import AccountSpec, StatusUpdate, AlgoTradingDisabledError
+from manager.app.controller import (
+    AccountSpec, CopyProfile, StatusUpdate, AlgoTradingDisabledError,
+    apply_profile, coerce_profiles, migrate_legacy_profiles,
+    unique_profile_name,
+)
+from manager.engine.transform import parse_symbol_map
 from manager.platform import autostart, autologon_repair
 
 MT5_DOWNLOAD_URL = "https://www.metatrader5.com/en/download"
@@ -62,6 +68,7 @@ class MainWindow(QMainWindow):
         self._controller = controller
         self._store = store
         self._slaves: list[AccountSpec] = []
+        self._profiles: list[CopyProfile] = []
         self._countdown_timer: QTimer | None = None
         self._countdown_remaining = 0
         # --resume-copy: set by update_helper's relaunch after an update
@@ -118,6 +125,26 @@ class MainWindow(QMainWindow):
         self.install_disclaimer_label.setWordWrap(True)
         mform.addRow("", self.install_disclaimer_label)
         master_box.setLayout(mform)
+
+        # Copy profiles — shared settings attached to any number of slaves
+        profile_box = QGroupBox("Copy profiles")
+        pl = QVBoxLayout()
+        self.profile_list = QListWidget()
+        self.add_profile_button = QPushButton("New…")
+        self.edit_profile_button = QPushButton("Edit…")
+        self.duplicate_profile_button = QPushButton("Duplicate…")
+        self.delete_profile_button = QPushButton("Delete")
+        self.edit_profile_button.setEnabled(False)
+        self.duplicate_profile_button.setEnabled(False)
+        self.delete_profile_button.setEnabled(False)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(self.add_profile_button)
+        profile_row.addWidget(self.edit_profile_button)
+        profile_row.addWidget(self.duplicate_profile_button)
+        profile_row.addWidget(self.delete_profile_button)
+        pl.addWidget(self.profile_list)
+        pl.addLayout(profile_row)
+        profile_box.setLayout(pl)
 
         # Slave list
         slave_box = QGroupBox("Slaves")
@@ -214,6 +241,7 @@ class MainWindow(QMainWindow):
         self.log_view.setReadOnly(True)
 
         root.addWidget(master_box)
+        root.addWidget(profile_box)
         root.addWidget(slave_box)
         root.addWidget(self.autostart_box)
         root.addLayout(controls)
@@ -233,6 +261,14 @@ class MainWindow(QMainWindow):
         self.slave_list.itemDoubleClicked.connect(
             lambda _item: self._on_edit_slave())
         self.slave_list.itemSelectionChanged.connect(self._update_edit_enabled)
+        self.add_profile_button.clicked.connect(self._on_add_profile)
+        self.edit_profile_button.clicked.connect(self._on_edit_profile)
+        self.duplicate_profile_button.clicked.connect(self._on_duplicate_profile)
+        self.delete_profile_button.clicked.connect(self._on_delete_profile)
+        self.profile_list.itemDoubleClicked.connect(
+            lambda _item: self._on_edit_profile())
+        self.profile_list.itemSelectionChanged.connect(
+            self._update_profile_buttons)
         self.launch_terminal_button.clicked.connect(self._on_launch_terminal)
         self.install_metatrader_button.clicked.connect(self._on_install_metatrader)
         self.check_update_button.clicked.connect(self.check_for_updates_now)
@@ -257,10 +293,21 @@ class MainWindow(QMainWindow):
             self.append_log(f"discovery failed: {exc}")
 
     # ---- config persistence ----
+    def _slave_config_dict(self, spec: AccountSpec) -> dict:
+        """Materialize an attached slave from its profile immediately before
+        writing: the file is internally consistent even if an in-memory spec
+        drifted from its profile."""
+        profile = (self._profile_by_id(spec.profile_id)
+                   if spec.profile_id else None)
+        if profile is not None:
+            spec = apply_profile(spec, profile)
+        return dataclasses.asdict(spec)
+
     def _config_dict(self) -> dict:
         return {
             "master": {"terminal_path": self.master_terminal.currentText().strip()},
-            "slaves": [dataclasses.asdict(s) for s in self._slaves],
+            "slaves": [self._slave_config_dict(s) for s in self._slaves],
+            "profiles": [dataclasses.asdict(p) for p in self._profiles],
             "autostart": {
                 "on_boot": self.autostart_boot_checkbox.isChecked(),
                 "auto_copy": self.autostart_copy_checkbox.isChecked(),
@@ -287,12 +334,28 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_log(f"config load failed: {exc}")
             return
-        master = cfg.get("master") if isinstance(cfg, dict) else None
+        if not isinstance(cfg, dict):
+            cfg = {}
+        had_profiles_key = "profiles" in cfg
+        if not cfg:
+            # Missing or corrupt file: the store returns {}. Do not run the
+            # legacy migration (it would overwrite a corrupt file or create
+            # one on a fresh install) — leave the file untouched.
+            self.append_log(
+                "no restorable config in settings (missing or unreadable)")
+        try:
+            self._profiles = coerce_profiles(cfg.get("profiles"),
+                                             log=self.append_log)
+        except Exception as exc:
+            # Defense in depth: no stored-profile value may crash __init__.
+            self.append_log(f"profiles load failed: {exc}")
+            self._profiles = []
+        master = cfg.get("master")
         if isinstance(master, dict):
             mpath = str(master.get("terminal_path", "")).strip()
             if mpath:
                 self.master_terminal.setEditText(mpath)
-        for s in (cfg.get("slaves") if isinstance(cfg, dict) else None) or []:
+        for s in cfg.get("slaves") or []:
             if not isinstance(s, dict):
                 continue
             if str(s.get("platform") or "").lower() == "ib":
@@ -306,14 +369,21 @@ class MainWindow(QMainWindow):
                 spec = AccountSpec(**kwargs)
             except TypeError:
                 continue
+            if spec.profile_id:
+                profile = self._profile_by_id(spec.profile_id)
+                if profile is not None:
+                    spec = apply_profile(spec, profile)
+                else:
+                    self.append_log(
+                        f"profile {spec.profile_id} for slave {spec.id} "
+                        "not found — using stored settings")
+                    spec = dataclasses.replace(spec, profile_id="")
             self._slaves.append(spec)
-            label = (spec.terminal_path or spec.id).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-            self.slave_list.addItem(f"{spec.id}: {label}")
         # autostart toggles: auto_copy from stored value, on_boot synced to the
         # .lnk's existence (reality is the source of truth). blockSignals so
         # syncing does not re-trigger the toggle handler (which would touch the
         # OS or save).
-        as_cfg = (cfg.get("autostart") if isinstance(cfg, dict) else None) or {}
+        as_cfg = cfg.get("autostart") or {}
         if not isinstance(as_cfg, dict):
             as_cfg = {}
         self.autostart_copy_checkbox.blockSignals(True)
@@ -338,6 +408,61 @@ class MainWindow(QMainWindow):
                 "autostart uses the legacy Startup shortcut (not elevated) — "
                 "click 'Migrate now (UAC)' or toggle 'Launch on Windows "
                 "startup' off/on to switch to the elevated scheduled task")
+        # One-time migration of pre-profile configs: group identical slaves
+        # into copy profiles and persist the result. Runs after the autostart
+        # toggles are restored so the immediate save cannot clobber them.
+        if not had_profiles_key and cfg:
+            original_profiles = list(self._profiles)
+            original_slaves = list(self._slaves)
+            try:
+                migrated, mapping = migrate_legacy_profiles(self._slaves)
+                # The grouper copies unvalidated slave fields, so validate the
+                # minted profiles before installing them: a corrupt legacy
+                # field must not reach the profile tooltip or a slave. A
+                # dropped profile leaves its slaves on their own settings.
+                minted = coerce_profiles(
+                    [dataclasses.asdict(p) for p in migrated],
+                    log=self.append_log)
+                surviving = {p.id for p in minted}
+                mapping = {sid: pid for sid, pid in mapping.items()
+                           if pid in surviving}
+                if minted:
+                    self._profiles.extend(minted)
+                    by_id = {p.id: p for p in minted}
+                    for i, spec in enumerate(self._slaves):
+                        pid = mapping.get(spec.id)
+                        if pid is not None:
+                            self._slaves[i] = apply_profile(spec, by_id[pid])
+                    for profile in minted:
+                        ids = [sid for sid, pid in mapping.items()
+                               if pid == profile.id]
+                        self.append_log(
+                            f"migrated slaves {', '.join(ids)} into profile "
+                            f"'{profile.name}'")
+                # Refresh both lists, then save. The save also writes
+                # profiles: [] when nothing qualified (or migration failed),
+                # so the next start sees the key and never re-runs it.
+                self._refresh_profile_list()
+                self._refresh_slave_list()
+                self._save_config()
+            except Exception as exc:
+                # Corrupt legacy configs can still trip the grouper, the
+                # validation, or a list refresh; never let that crash
+                # MainWindow.__init__. Restore the pre-migration state so the
+                # slaves stay on their own settings, then still save (writing
+                # profiles: []) so the next launch does not retry.
+                self.append_log(f"legacy profile migration failed: {exc}")
+                self._profiles = original_profiles
+                self._slaves = original_slaves
+                try:
+                    self._refresh_profile_list()
+                    self._refresh_slave_list()
+                except Exception:
+                    pass
+                self._save_config()
+        else:
+            self._refresh_profile_list()
+            self._refresh_slave_list()
 
     # ---- public API (controller) ----
     def append_status(self, update: StatusUpdate) -> None:
@@ -682,12 +807,13 @@ class MainWindow(QMainWindow):
         webbrowser.open(MT5_DOWNLOAD_URL)
 
     def _on_add_slave(self):
-        from manager.gui.slave_editor import SlaveEditor, add_slave
-        spec = add_slave(self)
+        from manager.gui.slave_editor import add_slave
+        spec = add_slave(self, profiles=list(self._profiles),
+                         create_profile=self._create_profile_from_editor)
         if spec is not None:
             self._slaves.append(spec)
-            label = spec.terminal_path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-            self.slave_list.addItem(f"{spec.id}: {label}")
+            self._refresh_slave_list()
+            self.slave_list.setCurrentRow(len(self._slaves) - 1)
             self._save_config()
 
     def _on_remove_slave(self):
@@ -707,21 +833,187 @@ class MainWindow(QMainWindow):
             return
         from manager.gui.slave_editor import edit_slave
         try:
-            new = edit_slave(self, self._slaves[row])
+            new = edit_slave(self, self._slaves[row],
+                             profiles=list(self._profiles),
+                             create_profile=self._create_profile_from_editor)
         except Exception as exc:
             self.append_log(f"edit failed: {exc}")
             return
         if new is None:
             return
         self._slaves[row] = new
-        label = (new.terminal_path or new.id).replace("\\", "/").rstrip("/") \
-            .rsplit("/", 1)[-1]
-        item = self.slave_list.item(row)
-        if item is not None:
-            item.setText(f"{new.id}: {label}")
+        self._refresh_slave_list()
         self._save_config()
         if self._controller.is_running():
             self._controller.apply_slave_edit(new.id, new)
+
+    # ---- copy profiles ----
+    def _profile_by_id(self, profile_id: str) -> CopyProfile | None:
+        for profile in self._profiles:
+            if profile.id == profile_id:
+                return profile
+        return None
+
+    def _profile_names(self, exclude_id: str = "") -> list[str]:
+        return [p.name for p in self._profiles if p.id != exclude_id]
+
+    def _profile_label(self, profile: CopyProfile) -> str:
+        return profile.name
+
+    def _profile_tooltip(self, profile: CopyProfile) -> str:
+        symbols = len(parse_symbol_map(profile.symbol_map_csv or ""))
+        mode = (profile.sizing_mode or "").replace("_", " ")
+        # Include the lot parameter that the selected mode actually uses.
+        if profile.sizing_mode == "fixed_lot":
+            mode_detail = f" · fixed {profile.fixed_lot}"
+        elif profile.sizing_mode == "balance_step":
+            mode_detail = f" · base {profile.master_base_lot}"
+        else:
+            mode_detail = ""
+        normalize = "on" if profile.normalize_sltp else "off"
+        return (
+            f"{mode}{mode_detail} · step {profile.step_amount}/{profile.step_size} · "
+            f"max {profile.max_lot} · age {profile.max_trade_age_minutes} min · "
+            f"{symbols} symbols · normalize {normalize}")
+
+    def _slave_label(self, spec: AccountSpec) -> str:
+        basename = (spec.terminal_path or spec.id).replace("\\", "/") \
+            .rstrip("/").rsplit("/", 1)[-1]
+        profile = self._profile_by_id(spec.profile_id) if spec.profile_id else None
+        suffix = profile.name if profile is not None else "own settings"
+        return f"{spec.id}: {basename} ({suffix})"
+
+    def _refresh_slave_list(self) -> None:
+        row = self.slave_list.currentRow()
+        self.slave_list.blockSignals(True)
+        try:
+            self.slave_list.clear()
+            for spec in self._slaves:
+                self.slave_list.addItem(self._slave_label(spec))
+            if 0 <= row < self.slave_list.count():
+                self.slave_list.setCurrentRow(row)
+        finally:
+            self.slave_list.blockSignals(False)
+        self._update_edit_enabled()
+
+    def _refresh_profile_list(self, select_id: str | None = None) -> None:
+        item = self.profile_list.currentItem()
+        current_id = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        target_id = select_id if select_id is not None else current_id
+        self.profile_list.blockSignals(True)
+        try:
+            self.profile_list.clear()
+            for profile in self._profiles:
+                item = QListWidgetItem(self._profile_label(profile))
+                item.setData(Qt.ItemDataRole.UserRole, profile.id)
+                item.setToolTip(self._profile_tooltip(profile))
+                self.profile_list.addItem(item)
+                if profile.id == target_id:
+                    self.profile_list.setCurrentItem(item)
+        finally:
+            self.profile_list.blockSignals(False)
+        self._update_profile_buttons()
+
+    def _update_profile_buttons(self, *_args) -> None:
+        selected = self.profile_list.currentItem() is not None
+        self.edit_profile_button.setEnabled(selected)
+        self.duplicate_profile_button.setEnabled(selected)
+        self.delete_profile_button.setEnabled(selected)
+
+    def _current_profile(self) -> CopyProfile | None:
+        item = self.profile_list.currentItem()
+        if item is None:
+            return None
+        return self._profile_by_id(item.data(Qt.ItemDataRole.UserRole))
+
+    def _on_add_profile(self) -> None:
+        from manager.gui.profile_editor import new_profile
+        profile = new_profile(
+            existing_names=self._profile_names(),
+            existing_ids={p.id for p in self._profiles},
+            parent=self)
+        if profile is None:
+            return
+        self._profiles.append(profile)
+        self._refresh_profile_list(profile.id)
+        self._save_config()
+
+    def _on_edit_profile(self, *_args) -> None:
+        cur = self._current_profile()
+        if cur is None:
+            return
+        from manager.gui.profile_editor import edit_profile
+        try:
+            updated = edit_profile(
+                cur, existing_names=self._profile_names(exclude_id=cur.id),
+                parent=self)
+        except Exception as exc:
+            self.append_log(f"profile edit failed: {exc}")
+            return
+        if updated is None:
+            return
+        self._apply_profile_change(updated)
+
+    def _apply_profile_change(self, profile: CopyProfile) -> None:
+        for i, existing in enumerate(self._profiles):
+            if existing.id == profile.id:
+                self._profiles[i] = profile
+                break
+        else:
+            return
+        for i, spec in enumerate(self._slaves):
+            if spec.profile_id != profile.id:
+                continue
+            updated = apply_profile(spec, profile)
+            self._slaves[i] = updated
+            if self._controller.is_running():
+                try:
+                    self._controller.apply_slave_edit(updated.id, updated)
+                except Exception as exc:
+                    self.append_log(
+                        f"live update failed for {updated.id}: {exc}")
+        self._refresh_profile_list(profile.id)
+        self._refresh_slave_list()
+        self._save_config()
+
+    def _on_duplicate_profile(self) -> None:
+        src = self._current_profile()
+        if src is None:
+            return
+        from manager.gui.profile_editor import new_profile
+        seed = dataclasses.replace(
+            src, id="",
+            name=unique_profile_name(f"{src.name} (copy)",
+                                     self._profile_names()))
+        profile = new_profile(
+            seed=seed, existing_names=self._profile_names(),
+            existing_ids={p.id for p in self._profiles},
+            parent=self)
+        if profile is None:
+            return
+        self._profiles.append(profile)
+        self._refresh_profile_list(profile.id)
+        self._save_config()
+
+    def _on_delete_profile(self) -> None:
+        cur = self._current_profile()
+        if cur is None:
+            return
+        attached = [s.id for s in self._slaves if s.profile_id == cur.id]
+        if attached:
+            QMessageBox.warning(
+                self, "Copy profile in use",
+                "Detach these slaves first: " + ", ".join(attached))
+            return
+        self._profiles = [p for p in self._profiles if p.id != cur.id]
+        self._refresh_profile_list()
+        self._save_config()
+
+    def _create_profile_from_editor(self, profile: CopyProfile) -> None:
+        if self._profile_by_id(profile.id) is None:
+            self._profiles.append(profile)
+        self._refresh_profile_list(profile.id)
+        self._save_config()
 
     # ---- close = quit ----
     def closeEvent(self, event):
