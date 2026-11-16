@@ -274,19 +274,18 @@ New `manager/gui/profile_editor.py`:
     profile-attached slave preview).
 - `ProfileEditor(QDialog)` — a name field plus a `CopySettingsWidget`.
   - Constructor: `ProfileEditor(profile: CopyProfile | None = None, *,
-    existing_names: Iterable[str] = (), exclude_profile_id: str = "",
-    parent=None)`. The caller passes the names it must not collide with (all
-    other profiles) and, when editing, the profile's own id so its current
-    name does not count as a duplicate.
+    existing_names: Iterable[str] = (), parent=None)`. `existing_names` are
+    the names the caller must not collide with; when editing, the caller
+    omits the edited profile's own name (it is unique by construction).
   - `set_profile(profile)` pre-populates; `profile() -> CopyProfile | None`
     returns the result on accept.
   - `accept()` is overridden: it trims the name, validates non-emptiness and
-    case-insensitive uniqueness against `existing_names` (minus the excluded
-    id), and validates every numeric field with `float(...)`. On any failure
-    it shows a `QMessageBox.warning` parented to the dialog and returns
-    without calling `super().accept()`, so the dialog stays open and the
-    entered values are kept (unlike the slave editor, which keeps its current
-    propagate behavior).
+    case-insensitive uniqueness against `existing_names`, and validates every
+    numeric field with `float(...)`. On any failure it shows a
+    `QMessageBox.warning` parented to the dialog and returns without calling
+    `super().accept()`, so the dialog stays open and the entered values are
+    kept (unlike the slave editor, which keeps its current propagate
+    behavior).
   - The dialog owns name validation; callers never re-open or post-validate.
 - `new_profile(*, existing_names=(), existing_ids=(), seed: CopyProfile |
   None = None) -> CopyProfile | None` and
