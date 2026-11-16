@@ -51,9 +51,7 @@ def test_slave_editor_symbol_table_round_trips_into_csv(qapp):
     dlg.symbol_table.setRowCount(1)
     dlg.symbol_table.setItem(0, 0, _qitem("EURUSD"))
     dlg.symbol_table.setItem(0, 1, _qitem("EURUSD"))
-    spec = dlg._spec_from_fields("s2", "C:/i0/terminal64.exe", "100", "0.01",
-                                 "10", "10", True, "balance_step", "0.1", "0.01")
-    assert "EURUSD=EURUSD" in spec.symbol_map_csv
+    assert "EURUSD=EURUSD" in dlg.copy_settings.values()["symbol_map_csv"]
 
 
 def test_slave_editor_master_column_header_advertises_regex(qapp):
@@ -247,3 +245,101 @@ def test_set_spec_pre_populates_sizing_fields(qapp):
     # fixed_lot mode -> fixed field visible, step fields hidden
     assert not dlg.fixed_lot.isHidden()
     assert dlg.step_amount.isHidden()
+
+
+def _profile(pid="p1", name="A", **kw):
+    from manager.app.controller import CopyProfile
+    return CopyProfile(id=pid, name=name, **kw)
+
+
+def test_profile_combo_lists_own_settings_profiles_and_new(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController(), profiles=[_profile()])
+    assert dlg.profile_combo.currentData() == ""
+    assert dlg.profile_combo.findData("p1") >= 0
+    assert dlg.profile_combo.findData("__new__") >= 0
+
+
+def test_selecting_profile_disables_fields_and_spec_uses_profile(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    dlg = SlaveEditor(FakeController([_inst("C:/s1/terminal64.exe")]),
+                      profiles=[_profile(step_amount=500.0, max_lot=20.0,
+                                         symbol_map_csv="A=X")])
+    dlg.set_spec(AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0, max_lot=10.0))
+    dlg.profile_combo.setCurrentIndex(dlg.profile_combo.findData("p1"))
+    assert not dlg.step_amount.isEnabled()
+    dlg.accept()
+    out = dlg.spec()
+    assert out.profile_id == "p1"
+    assert out.step_amount == 500.0 and out.max_lot == 20.0
+    assert out.symbol_map_csv == "A=X"
+
+
+def test_own_profile_own_restores_the_original_own_values(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    dlg = SlaveEditor(FakeController(), profiles=[_profile(step_amount=500.0)])
+    dlg.set_spec(AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0))
+    dlg.copy_settings.step_amount.setText("150")
+    dlg.profile_combo.setCurrentIndex(dlg.profile_combo.findData("p1"))
+    assert dlg.copy_settings.step_amount.text() == "500.0"
+    dlg.profile_combo.setCurrentIndex(dlg.profile_combo.findData(""))
+    assert dlg.copy_settings.step_amount.text() == "150"
+    assert dlg.copy_settings.step_amount.isEnabled()
+
+
+def test_detaching_a_profile_slave_keeps_the_profile_values(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    dlg = SlaveEditor(FakeController(), profiles=[_profile(step_amount=500.0)])
+    dlg.set_spec(AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0, profile_id="p1"))
+    dlg.profile_combo.setCurrentIndex(dlg.profile_combo.findData(""))
+    assert dlg.copy_settings.step_amount.text() == "500.0"
+    dlg.accept()
+    assert dlg.spec().profile_id == ""
+
+
+def test_new_profile_action_calls_callback_and_selects_it(qapp, monkeypatch):
+    from manager.gui import slave_editor as se
+    created = []
+    monkeypatch.setattr(se.ProfileEditor, "exec",
+                        _accept_with_name_dialog("Neu"))
+    dlg = se.SlaveEditor(FakeController(), profiles=[], create_profile=created.append)
+    idx = dlg.profile_combo.findData("__new__")
+    dlg.profile_combo.setCurrentIndex(idx)
+    dlg._on_profile_activated(idx)
+    assert len(created) == 1 and created[0].name == "Neu"
+    assert dlg.profile_combo.currentData() == created[0].id
+
+
+def test_new_profile_cancel_reverts_to_previous_selection(qapp, monkeypatch):
+    from manager.gui import slave_editor as se
+    from PySide6.QtWidgets import QDialog
+    monkeypatch.setattr(se.ProfileEditor, "exec",
+                        lambda self: QDialog.DialogCode.Rejected)
+    dlg = se.SlaveEditor(FakeController(), profiles=[])
+    idx = dlg.profile_combo.findData("__new__")
+    dlg.profile_combo.setCurrentIndex(idx)
+    dlg._on_profile_activated(idx)
+    assert dlg.profile_combo.currentData() == ""
+
+
+def test_invalid_numeric_text_keeps_own_settings_selected(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController(), profiles=[_profile(step_amount=500.0)])
+    dlg.copy_settings.step_amount.setText("abc")
+    dlg.profile_combo.setCurrentIndex(dlg.profile_combo.findData("p1"))
+    assert dlg.profile_combo.currentData() == ""
+    assert dlg.copy_settings.step_amount.text() == "abc"
+
+
+def _accept_with_name_dialog(name):
+    def stub(self):
+        self.name_edit.setText(name)
+        self.accept()
+        return self.result()
+    return stub
