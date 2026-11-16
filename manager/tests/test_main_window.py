@@ -1193,82 +1193,15 @@ def test_long_names_are_available_as_list_tooltips(qapp):
     assert "S" * 200 in w.slave_list.item(0).toolTip()
 
 
-def test_content_splitter_holds_slaves_and_lower_panel(qapp):
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QSplitter
-    from manager.gui.main_window import MainWindow
-    w = MainWindow(FakeController())
-    assert isinstance(w.content_splitter, QSplitter)
-    assert w.content_splitter.orientation() == Qt.Orientation.Vertical
-    assert w.content_splitter.childrenCollapsible() is False
-    assert w.content_splitter.widget(0) is w.slave_box
-    assert w.content_splitter.widget(1) is w.lower_panel
-    assert w.slave_list.minimumHeight() >= 80
-
-
-def test_splitter_sizes_round_trip(qapp, tmp_path):
-    from manager.gui.main_window import MainWindow
-    from manager.settings.store import SettingsStore
-    store = SettingsStore(tmp_path / "s.json")
-    w = MainWindow(FakeController(), store=store)
-    w.resize(900, 1600)
-    w.show()
-    qapp.processEvents()
-    w.content_splitter.setSizes([600, 400])
-    qapp.processEvents()
-    chosen = w.content_splitter.sizes()
-    w._save_config()
-    assert store.load_config()["ui"]["splitter_sizes"] == chosen
-    w2 = MainWindow(FakeController(), store=store)
-    w2.resize(900, 1600)
-    w2.show()
-    qapp.processEvents()
-    sizes = w2.content_splitter.sizes()
-    assert abs(sizes[0] - chosen[0]) <= 40
-    assert abs(sizes[1] - chosen[1]) <= 40
-
-
-def test_malformed_splitter_sizes_fall_back(qapp, tmp_path):
+def test_old_ui_config_is_ignored_and_not_rewritten(qapp, tmp_path):
     from manager.gui.main_window import MainWindow
     from manager.settings.store import SettingsStore
     store = SettingsStore(tmp_path / "s.json")
     store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
                        "profiles": [], "slaves": [],
-                       "ui": {"splitter_sizes": ["x", -1]}})
-    w = MainWindow(FakeController(), store=store)
-    sizes = w.content_splitter.sizes()
-    assert len(sizes) == 2 and sum(sizes) > 0
-    assert "splitter" in w.log_view.toPlainText().lower()
-
-
-def test_out_of_range_splitter_sizes_fall_back(qapp, tmp_path):
-    from manager.gui.main_window import MainWindow
-    from manager.settings.store import SettingsStore
-    store = SettingsStore(tmp_path / "s.json")
-    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"},
-                       "profiles": [], "slaves": [],
-                       "ui": {"splitter_sizes": [2 ** 63, 1]}})
+                       "ui": {"splitter_sizes": [999, 1]}})
     w = MainWindow(FakeController(), store=store)  # must not raise
-    sizes = w.content_splitter.sizes()
-    assert len(sizes) == 2 and sum(sizes) > 0
-    assert "splitter" in w.log_view.toPlainText().lower()
-
-
-def test_giving_the_slaves_pane_more_size_enlarges_the_list(qapp):
-    from manager.gui.main_window import MainWindow
-    from manager.app.controller import AccountSpec
-    w = MainWindow(FakeController())
-    w._slaves = [AccountSpec(id=f"s{i}",
-                             terminal_path=f"C:/s{i}/terminal64.exe")
-                 for i in range(30)]
-    w._refresh_slave_list()
-    w.resize(900, 1600)
-    w.show()
-    qapp.processEvents()
-    w.content_splitter.setSizes([700, 150])
-    qapp.processEvents()
-    big = w.slave_list.height()
-    w.content_splitter.setSizes([120, 730])
-    qapp.processEvents()
-    small = w.slave_list.height()
-    assert big > small
+    w._save_config()
+    cfg = store.load_config()
+    assert "ui" not in cfg
+    assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"

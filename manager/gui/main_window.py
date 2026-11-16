@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QCheckBox, QComboBox, QPushButton, QListWidget, QListWidgetItem,
     QPlainTextEdit, QLabel,
-    QGroupBox, QProgressBar, QMessageBox, QSplitter,
+    QGroupBox, QProgressBar, QMessageBox,
 )
 
 from manager.app.controller import (
@@ -23,9 +23,6 @@ from manager.gui.profile_editor import fit_combo_width
 from manager.platform import autostart, autologon_repair
 
 MT5_DOWNLOAD_URL = "https://www.metatrader5.com/en/download"
-
-# Initial heights of the slaves pane and the lower block (splitter sizes).
-DEFAULT_SPLITTER_SIZES = (240, 420)
 
 
 class _UpdateWorker(QThread):
@@ -155,7 +152,6 @@ class MainWindow(QMainWindow):
         self.slave_box = QGroupBox("Slaves")
         sl = QVBoxLayout()
         self.slave_list = QListWidget()
-        self.slave_list.setMinimumHeight(80)
         self.add_slave_button = QPushButton("Add Slave…")
         self.remove_slave_button = QPushButton("Remove Slave")
         self.edit_slave_button = QPushButton("Edit Slave…")
@@ -248,29 +244,15 @@ class MainWindow(QMainWindow):
 
         root.addWidget(master_box)
         root.addWidget(profile_box)
-
-        # Lower block: everything below the slaves list. The splitter divider
-        # lets the user trade height between the slaves list and this block;
-        # the size is persisted under config.ui.splitter_sizes.
-        self.lower_panel = QWidget()
-        lower = QVBoxLayout(self.lower_panel)
-        lower.addWidget(self.autostart_box)
-        lower.addLayout(controls)
-        lower.addLayout(updates_row)
-        lower.addWidget(self.update_progress)
-        lower.addWidget(QLabel("Status"))
-        lower.addWidget(self.status_view)
-        lower.addWidget(QLabel("Log"))
-        lower.addWidget(self.log_view)
-
-        self.content_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.content_splitter.addWidget(self.slave_box)
-        self.content_splitter.addWidget(self.lower_panel)
-        self.content_splitter.setChildrenCollapsible(False)
-        self.content_splitter.setStretchFactor(0, 1)
-        self.content_splitter.setStretchFactor(1, 0)
-        self.content_splitter.setSizes(list(DEFAULT_SPLITTER_SIZES))
-        root.addWidget(self.content_splitter)
+        root.addWidget(self.slave_box)
+        root.addWidget(self.autostart_box)
+        root.addLayout(controls)
+        root.addLayout(updates_row)
+        root.addWidget(self.update_progress)
+        root.addWidget(QLabel("Status"))
+        root.addWidget(self.status_view)
+        root.addWidget(QLabel("Log"))
+        root.addWidget(self.log_view)
 
         # wire buttons
         self.start_button.clicked.connect(self._on_start)
@@ -338,9 +320,6 @@ class MainWindow(QMainWindow):
                 # restart-loop guard: the newest version this install already
                 # auto-tried (set when the auto-restart actually fires)
                 "auto_update_last_attempt": self._auto_update_last_attempt,
-            },
-            "ui": {
-                "splitter_sizes": [int(s) for s in self.content_splitter.sizes()],
             },
         }
 
@@ -434,22 +413,6 @@ class MainWindow(QMainWindow):
                 "autostart uses the legacy Startup shortcut (not elevated) — "
                 "click 'Migrate now (UAC)' or toggle 'Launch on Windows "
                 "startup' off/on to switch to the elevated scheduled task")
-        ui_cfg = cfg.get("ui")
-        if isinstance(ui_cfg, dict):
-            raw = ui_cfg.get("splitter_sizes")
-            valid = (
-                isinstance(raw, (list, tuple)) and len(raw) == 2
-                and all(isinstance(v, int) and not isinstance(v, bool)
-                        and 0 <= v <= 1_000_000 for v in raw)
-                and sum(raw) > 0)
-            if valid:
-                try:
-                    self.content_splitter.setSizes(
-                        [int(raw[0]), int(raw[1])])
-                except (OverflowError, ValueError):
-                    self.append_log("invalid ui.splitter_sizes ignored")
-            else:
-                self.append_log("invalid ui.splitter_sizes ignored")
         # One-time migration of pre-profile configs: group identical slaves
         # into copy profiles and persist the result. Runs after the autostart
         # toggles are restored so the immediate save cannot clobber them.
