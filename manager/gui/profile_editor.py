@@ -1,17 +1,17 @@
 # manager/gui/profile_editor.py
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import fields, is_dataclass, replace
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QCheckBox,
-    QHeaderView,
+    QHeaderView, QDialog, QDialogButtonBox, QMessageBox,
 )
 
 from manager.app.controller import (
-    AccountSpec, CopyProfile, SHARED_PROFILE_FIELDS,
+    AccountSpec, CopyProfile, SHARED_PROFILE_FIELDS, new_profile_id,
 )
 from manager.engine.transform import parse_symbol_map
 
@@ -174,6 +174,108 @@ class CopySettingsWidget(QWidget):
             self.normalize_sltp,
         ):
             widget.setEnabled(editable)
+
+
+class ProfileEditor(QDialog):
+    """Modal dialog that edits a CopyProfile's name and shared settings.
+
+    ``accept()`` refuses an empty or case-insensitively duplicate name and
+    non-numeric sizing fields, showing a warning parented to the dialog and
+    staying open. ``profile()`` returns the resulting CopyProfile only when
+    the dialog was accepted, otherwise None."""
+
+    def __init__(self, profile: CopyProfile | None = None, *,
+                 existing_names: Iterable[str] = (), parent=None):
+        super().__init__(parent)
+        self._profile = profile
+        self._existing_names = tuple(existing_names)
+        self._result_name = ""
+        self._result_values: dict[str, object] | None = None
+
+        self.setWindowTitle("Copy Profile")
+        self.setModal(True)
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name_edit = QLineEdit(profile.name if profile is not None else "")
+        form.addRow("Profile name", self.name_edit)
+
+        self.copy_settings = CopySettingsWidget()
+        if profile is not None:
+            self.copy_settings.set_values(profile)
+        form.addRow(self.copy_settings)
+        root.addLayout(form)
+
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        root.addWidget(self.button_box)
+
+    def set_profile(self, profile: CopyProfile) -> None:
+        """Replace the profile shown by the dialog."""
+        self._profile = profile
+        self.name_edit.setText(profile.name)
+        self.copy_settings.set_values(profile)
+
+    def accept(self) -> None:
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Invalid profile",
+                                "Profile name cannot be empty.")
+            return
+        taken = {n.casefold() for n in self._existing_names}
+        if name.casefold() in taken:
+            QMessageBox.warning(
+                self, "Invalid profile",
+                f"A profile named '{name}' already exists.")
+            return
+        try:
+            values = self.copy_settings.values()
+        except (TypeError, ValueError):
+            QMessageBox.warning(
+                self, "Invalid profile",
+                "Every numeric field must contain a number.")
+            return
+        self._result_name = name
+        self._result_values = values
+        super().accept()
+
+    def profile(self) -> CopyProfile | None:
+        if self.result() != QDialog.DialogCode.Accepted:
+            return None
+        profile_id = self._profile.id if self._profile is not None else ""
+        if not profile_id:
+            profile_id = new_profile_id()
+        values = self._result_values
+        if values is None:
+            values = self.copy_settings.values()
+        name = self._result_name or self.name_edit.text().strip()
+        return CopyProfile(id=profile_id, name=name, **values)
+
+
+def new_profile(*, existing_names: Iterable[str] = (),
+                existing_ids: Iterable[str] = (),
+                seed: CopyProfile | None = None,
+                parent=None) -> CopyProfile | None:
+    """Open a ProfileEditor seeded from ``seed`` and return the new profile,
+    or None if cancelled. A fresh id avoids ``existing_ids``."""
+    if seed is None:
+        seed = CopyProfile(id=new_profile_id(existing_ids), name="")
+    else:
+        seed = replace(seed, id=new_profile_id(existing_ids))
+    dlg = ProfileEditor(seed, existing_names=existing_names, parent=parent)
+    dlg.exec()
+    return dlg.profile()
+
+
+def edit_profile(profile: CopyProfile, *, existing_names: Iterable[str] = (),
+                 parent=None) -> CopyProfile | None:
+    """Open a ProfileEditor for ``profile`` and return the edited copy
+    (same id), or None if cancelled."""
+    dlg = ProfileEditor(profile, existing_names=existing_names, parent=parent)
+    dlg.exec()
+    return dlg.profile()
 
 
 def _shared_fields(source: Mapping[str, object] | AccountSpec | CopyProfile

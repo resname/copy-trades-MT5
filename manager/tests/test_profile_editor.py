@@ -56,3 +56,74 @@ def test_copy_settings_widget_visibility_follows_mode(qapp):
     w.sizing_mode.setCurrentIndex(w.sizing_mode.findData("fixed_lot"))
     assert not w.fixed_lot.isHidden()
     assert w.step_amount.isHidden() and w.master_base_lot.isHidden()
+
+
+def _accept_with_name(name):
+    def stub(self):
+        self.name_edit.setText(name)
+        self.accept()
+        return self.result()
+    return stub
+
+
+def test_profile_editor_prepopulates_and_returns_profile(qapp):
+    from manager.gui.profile_editor import ProfileEditor
+    from manager.app.controller import CopyProfile
+    p = CopyProfile(id="p1", name="A", symbol_map_csv="EURUSD=EURUSD",
+                    step_amount=500.0, fixed_lot=0.07)
+    dlg = ProfileEditor(p)
+    assert dlg.name_edit.text() == "A"
+    assert dlg.copy_settings.values()["step_amount"] == 500.0
+    dlg.accept()
+    out = dlg.profile()
+    assert out.id == "p1" and out.name == "A"
+    assert out.symbol_map_csv == "EURUSD=EURUSD"
+    assert out.step_amount == 500.0 and out.fixed_lot == 0.07
+
+
+def test_profile_editor_rejects_empty_and_duplicate_names(qapp, monkeypatch):
+    from manager.gui.profile_editor import ProfileEditor
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *a, **k: warnings.append(a[2] if len(a) > 2 else ""))
+    dlg = ProfileEditor(existing_names={"Propfirm A"})
+    dlg.name_edit.setText("   ")
+    dlg.accept()
+    assert dlg.result() != QDialog.DialogCode.Accepted
+    dlg.name_edit.setText("propfirm a")
+    dlg.accept()
+    assert dlg.result() != QDialog.DialogCode.Accepted
+    assert len(warnings) == 2
+
+
+def test_profile_editor_rejects_non_numeric_field(qapp, monkeypatch):
+    from manager.gui.profile_editor import ProfileEditor
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a))
+    dlg = ProfileEditor()
+    dlg.name_edit.setText("A")
+    dlg.copy_settings.step_amount.setText("abc")
+    dlg.accept()
+    assert dlg.result() != QDialog.DialogCode.Accepted
+    assert warnings
+
+
+def test_new_profile_generates_id_and_uses_seed(qapp, monkeypatch):
+    from manager.gui.profile_editor import ProfileEditor, new_profile
+    from manager.app.controller import CopyProfile
+    monkeypatch.setattr(ProfileEditor, "exec", _accept_with_name("Neu"))
+    seed = CopyProfile(id="", name="", step_amount=500.0)
+    out = new_profile(seed=seed, existing_ids={"aaaaaaaa"})
+    assert out is not None
+    assert out.id and out.id != "aaaaaaaa"
+    assert out.name == "Neu" and out.step_amount == 500.0
+
+
+def test_edit_profile_returns_edited_profile(qapp, monkeypatch):
+    from manager.gui.profile_editor import ProfileEditor, edit_profile
+    from manager.app.controller import CopyProfile
+    monkeypatch.setattr(ProfileEditor, "exec", _accept_with_name("B"))
+    out = edit_profile(CopyProfile(id="p1", name="A"))
+    assert out is not None and out.id == "p1" and out.name == "B"
