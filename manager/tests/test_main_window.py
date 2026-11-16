@@ -325,10 +325,10 @@ def test_on_edit_slave_updates_row_label_and_saves_config(qapp, tmp_path, monkey
     w.slave_list.setCurrentRow(0)
     edited = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
                          symbol_map_csv="EURUSD=EURUSD", step_amount=200.0)
-    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: edited)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec, **kw: edited)
     w._on_edit_slave()
     assert w._slaves[0].step_amount == 200.0
-    assert w.slave_list.item(0).text() == "s1: terminal64.exe"
+    assert w.slave_list.item(0).text() == "s1: terminal64.exe (own settings)"
     cfg = store.load_config()
     assert cfg["slaves"][0]["step_amount"] == 200.0
 
@@ -342,7 +342,7 @@ def test_on_edit_slave_cancel_is_noop(qapp, monkeypatch):
                              step_amount=100.0)]
     w.slave_list.addItem("s1: terminal64.exe")
     w.slave_list.setCurrentRow(0)
-    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: None)  # cancel
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec, **kw: None)  # cancel
     w._on_edit_slave()
     assert w._slaves[0].step_amount == 100.0  # unchanged
 
@@ -360,7 +360,7 @@ def test_on_edit_slave_applies_live_when_running(qapp, monkeypatch):
     w.slave_list.setCurrentRow(0)
     edited = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
                           step_amount=200.0)
-    monkeypatch.setattr(se, "edit_slave", lambda parent, spec: edited)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec, **kw: edited)
     w._on_edit_slave()
     assert c.applied_edits == [("s1", edited)]
 
@@ -783,3 +783,107 @@ def test_autostart_cancel_button_aborts(qapp, tmp_path, monkeypatch):
     # buttons re-enabled to the not-running state
     assert w.start_button.isEnabled()
     assert not w.stop_button.isEnabled()
+
+
+def _copy_profile(pid="p1", name="A", **kw):
+    from manager.app.controller import CopyProfile
+    return CopyProfile(id=pid, name=name, **kw)
+
+
+def test_profiles_group_constructs(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    assert w.profile_list is not None
+    assert w.add_profile_button.text() == "New…"
+    assert w.edit_profile_button.text() == "Edit…"
+    assert w.duplicate_profile_button.text() == "Duplicate…"
+    assert w.delete_profile_button.text() == "Delete"
+
+
+def test_add_profile_appends_selects_and_saves(qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    w = MainWindow(FakeController(), store=store)
+    monkeypatch.setattr("manager.gui.profile_editor.new_profile",
+                        lambda **kw: _copy_profile())
+    w._on_add_profile()
+    assert [p.id for p in w._profiles] == ["p1"]
+    assert w.profile_list.currentRow() == 0
+    assert store.load_config()["profiles"][0]["name"] == "A"
+
+
+def test_edit_profile_updates_attached_slaves_and_applies_live(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(tmp_path / "s.json")
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    w._profiles = [_copy_profile(step_amount=100.0)]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0, profile_id="p1")]
+    w._refresh_profile_list("p1")
+    w._refresh_slave_list()
+    c.started = True  # live apply path
+    monkeypatch.setattr("manager.gui.profile_editor.edit_profile",
+                        lambda profile, **kw: _copy_profile(step_amount=500.0))
+    w._on_edit_profile()
+    assert w._profiles[0].step_amount == 500.0
+    assert w._slaves[0].step_amount == 500.0
+    assert [sid for sid, _ in c.applied_edits] == ["s1"]
+    assert store.load_config()["slaves"][0]["step_amount"] == 500.0
+
+
+def test_duplicate_profile_gets_new_id_and_unique_copy_name(
+        qapp, tmp_path, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    w = MainWindow(FakeController(), store=SettingsStore(tmp_path / "s.json"))
+    w._profiles = [_copy_profile(name="A")]
+    w._refresh_profile_list("p1")
+    seen = {}
+    def fake_new(**kw):
+        seen.update(kw)
+        return _copy_profile(pid="p2", name="A (copy)")
+    monkeypatch.setattr("manager.gui.profile_editor.new_profile", fake_new)
+    w._on_duplicate_profile()
+    assert seen["seed"].name == "A (copy)"
+    assert [p.id for p in w._profiles] == ["p1", "p2"]
+
+
+def test_delete_profile_blocked_while_attached(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from PySide6.QtWidgets import QMessageBox
+    w = MainWindow(FakeController())
+    w._profiles = [_copy_profile()]
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             profile_id="p1")]
+    w._refresh_profile_list("p1")
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a))
+    w._on_delete_profile()
+    assert warned and [p.id for p in w._profiles] == ["p1"]
+
+
+def test_delete_profile_allowed_when_unused(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    w._profiles = [_copy_profile()]
+    w._refresh_profile_list("p1")
+    w._on_delete_profile()
+    assert w._profiles == []
+
+
+def test_slave_label_shows_profile_name_or_own_settings(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    w = MainWindow(FakeController())
+    w._profiles = [_copy_profile(name="A")]
+    p = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                    profile_id="p1")
+    assert w._slave_label(p) == "s1: terminal64.exe (A)"
+    p.profile_id = ""
+    assert w._slave_label(p) == "s1: terminal64.exe (own settings)"
