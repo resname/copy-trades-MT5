@@ -77,15 +77,15 @@ class SlaveListDialog(QDialog):
         self._refresh(spec.id if spec is not None else "")
 
     def _on_remove(self) -> None:
-        slave_id = self._selected_id()
-        if slave_id:
-            self._manager._remove_slave_by_id(slave_id)
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self._manager._remove_slave_at(row)
         self._refresh()
 
     def _on_edit(self) -> None:
-        slave_id = self._selected_id()
-        if slave_id:
-            self._manager._edit_slave_by_id(slave_id)
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self._manager._edit_slave_at(row)
         self._refresh()
 
     def _on_item_double_clicked(self, item) -> None:
@@ -96,4 +96,9 @@ class SlaveListDialog(QDialog):
 def open_slave_list(parent_window) -> None:
     """Open the modal slave list against the main window's manager."""
     dlg = SlaveListDialog(parent_window, parent=parent_window)
-    dlg.exec()
+    try:
+        dlg.exec()
+    finally:
+        # The dialog is parented to the main window, so Python dropping the
+        # local does not free it; dispose it explicitly on every close.
+        dlg.deleteLater()

@@ -831,14 +831,23 @@ class MainWindow(QMainWindow):
             return False
         del self._slaves[row]
         self._refresh_slave_list()
+        if self._slaves:
+            # Keep a neighbour selected after the removal (the old takeItem
+            # behavior): the next row, or the previous one when the last row
+            # was removed.
+            self.slave_list.setCurrentRow(min(row, len(self._slaves) - 1))
         self._save_config()
         return True
 
     def _remove_slave_by_id(self, slave_id: str) -> bool:
-        for row, spec in enumerate(self._slaves):
-            if spec.id == slave_id:
-                return self._remove_slave_at(row)
-        return False
+        rows = [i for i, spec in enumerate(self._slaves)
+                if spec.id == slave_id]
+        if len(rows) != 1:
+            if len(rows) > 1:
+                self.append_log(
+                    f"ambiguous slave id {slave_id}: refusing to remove")
+            return False
+        return self._remove_slave_at(rows[0])
 
     def _on_remove_slave(self):
         self._remove_slave_at(self.slave_list.currentRow())
@@ -867,10 +876,14 @@ class MainWindow(QMainWindow):
         return True
 
     def _edit_slave_by_id(self, slave_id: str) -> bool:
-        for row, spec in enumerate(self._slaves):
-            if spec.id == slave_id:
-                return self._edit_slave_at(row)
-        return False
+        rows = [i for i, spec in enumerate(self._slaves)
+                if spec.id == slave_id]
+        if len(rows) != 1:
+            if len(rows) > 1:
+                self.append_log(
+                    f"ambiguous slave id {slave_id}: refusing to edit")
+            return False
+        return self._edit_slave_at(rows[0])
 
     def _on_edit_slave(self, *_args) -> None:
         self._edit_slave_at(self.slave_list.currentRow())

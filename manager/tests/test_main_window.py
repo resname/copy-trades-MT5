@@ -1305,22 +1305,23 @@ def test_slave_list_dialog_add_selects_the_new_slave(qapp, monkeypatch):
     assert dlg.list_widget.currentItem().data(Qt.ItemDataRole.UserRole) == "s1"
 
 
-def test_slave_list_dialog_remove_and_edit_delegate_by_id(qapp, monkeypatch):
+def test_slave_list_dialog_remove_and_edit_delegate_by_row(
+        qapp, monkeypatch):
     from manager.gui.main_window import MainWindow
     from manager.gui.slave_list_dialog import SlaveListDialog
     w = MainWindow(FakeController())
     w._slaves = [_slave("s1")]
     calls = []
-    monkeypatch.setattr(w, "_remove_slave_by_id",
-                        lambda sid: calls.append(("remove", sid)) or True)
-    monkeypatch.setattr(w, "_edit_slave_by_id",
-                        lambda sid: calls.append(("edit", sid)) or True)
+    monkeypatch.setattr(w, "_remove_slave_at",
+                        lambda row: calls.append(("remove", row)) or True)
+    monkeypatch.setattr(w, "_edit_slave_at",
+                        lambda row: calls.append(("edit", row)) or True)
     dlg = SlaveListDialog(w)
     dlg.list_widget.setCurrentRow(0)
     dlg.remove_button.click()
     dlg.list_widget.setCurrentRow(0)
     dlg.edit_button.click()
-    assert calls == [("remove", "s1"), ("edit", "s1")]
+    assert calls == [("remove", 0), ("edit", 0)]
 
 
 def test_slave_list_dialog_double_click_edits(qapp, monkeypatch):
@@ -1329,11 +1330,11 @@ def test_slave_list_dialog_double_click_edits(qapp, monkeypatch):
     w = MainWindow(FakeController())
     w._slaves = [_slave("s1")]
     calls = []
-    monkeypatch.setattr(w, "_edit_slave_by_id",
-                        lambda sid: calls.append(sid) or True)
+    monkeypatch.setattr(w, "_edit_slave_at",
+                        lambda row: calls.append(row) or True)
     dlg = SlaveListDialog(w)
     dlg.list_widget.itemDoubleClicked.emit(dlg.list_widget.item(0))
-    assert calls == ["s1"]
+    assert calls == [0]
 
 
 def test_open_slave_list_button_opens_the_dialog(qapp, monkeypatch):
@@ -1344,10 +1345,96 @@ def test_open_slave_list_button_opens_the_dialog(qapp, monkeypatch):
 
     class _D:
         def __init__(self, manager, parent=None):
-            opened.append(manager)
+            opened.append((manager, parent))
 
         def exec(self):
             return 0
     monkeypatch.setattr(sld, "SlaveListDialog", _D)
     w.open_slave_list_button.click()
-    assert opened == [w]
+    assert opened == [(w, w)]
+
+
+def test_open_slave_list_disposes_the_dialog(qapp, monkeypatch):
+    import manager.gui.slave_list_dialog as sld
+    from manager.gui.main_window import MainWindow
+    disposed = []
+
+    class _D:
+        def __init__(self, manager, parent=None):
+            pass
+
+        def exec(self):
+            return 0
+
+        def deleteLater(self):
+            disposed.append(True)
+    monkeypatch.setattr(sld, "SlaveListDialog", _D)
+    sld.open_slave_list(MainWindow(FakeController()))
+    assert disposed == [True]
+
+
+def test_slave_list_dialog_duplicate_ids_remove_the_selected_row(
+        qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.gui.slave_list_dialog import SlaveListDialog
+    from manager.app.controller import AccountSpec
+    w = MainWindow(FakeController())
+    w._slaves = [
+        AccountSpec(id="s1", terminal_path="C:/A/terminal64.exe"),
+        AccountSpec(id="s1", terminal_path="C:/B/terminal64.exe"),
+    ]
+    w._refresh_slave_list()
+    dlg = SlaveListDialog(w)
+    assert dlg.list_widget.count() == 2
+    dlg.list_widget.setCurrentRow(1)
+    dlg.remove_button.click()
+    assert [s.terminal_path for s in w._slaves] == ["C:/A/terminal64.exe"]
+
+
+def test_slave_list_dialog_duplicate_ids_edit_the_selected_row(
+        qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.gui.slave_list_dialog import SlaveListDialog
+    from manager.app.controller import AccountSpec
+    import manager.gui.slave_editor as se
+    w = MainWindow(FakeController())
+    w._slaves = [
+        AccountSpec(id="s1", terminal_path="C:/A/terminal64.exe",
+                    step_amount=100.0),
+        AccountSpec(id="s1", terminal_path="C:/B/terminal64.exe",
+                    step_amount=100.0),
+    ]
+    w._refresh_slave_list()
+    edited = AccountSpec(id="s1", terminal_path="C:/B/terminal64.exe",
+                         step_amount=500.0)
+    monkeypatch.setattr(se, "edit_slave", lambda parent, spec, **kw: edited)
+    dlg = SlaveListDialog(w)
+    dlg.list_widget.setCurrentRow(1)
+    dlg.edit_button.click()
+    assert [s.step_amount for s in w._slaves] == [100.0, 500.0]
+
+
+def test_remove_slave_by_id_refuses_ambiguous_ids(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    w = MainWindow(FakeController())
+    w._slaves = [
+        AccountSpec(id="s1", terminal_path="C:/A/terminal64.exe"),
+        AccountSpec(id="s1", terminal_path="C:/B/terminal64.exe"),
+    ]
+    w._refresh_slave_list()
+    assert w._remove_slave_by_id("s1") is False
+    assert len(w._slaves) == 2
+    assert "ambiguous" in w.log_view.toPlainText().lower()
+
+
+def test_remove_slave_at_keeps_a_neighbour_selected(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    w = MainWindow(FakeController())
+    w._slaves = [AccountSpec(id=f"s{i}", terminal_path=f"C:/s{i}/terminal64.exe")
+                 for i in range(3)]
+    w._refresh_slave_list()
+    w.slave_list.setCurrentRow(2)
+    assert w._remove_slave_at(2) is True
+    assert w.slave_list.currentRow() == 1
