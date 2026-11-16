@@ -511,3 +511,15 @@ def test_migrate_no_groups_returns_empty():
     from manager.app.controller import migrate_legacy_profiles
     profiles, mapping = migrate_legacy_profiles([_spec("s1"), _spec("s2", max_lot=5.0)])
     assert profiles == [] and mapping == {}
+
+
+def test_migrate_tolerates_unhashable_symbol_map_csv():
+    """Corrupt/hand-edited settings.json can hold a non-string symbol_map_csv
+    (e.g. a JSON array). The loader tolerates it, so migration must not raise
+    when building its grouping key."""
+    from manager.app.controller import migrate_legacy_profiles
+    slaves = [_spec("s1", symbol_map_csv=["A=X"]),
+              _spec("s2", symbol_map_csv=["A=X"])]
+    profiles, mapping = migrate_legacy_profiles(slaves)  # must not raise
+    assert len(profiles) == 1
+    assert set(mapping) == {"s1", "s2"}

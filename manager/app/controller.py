@@ -203,7 +203,10 @@ def migrate_legacy_profiles(slaves: list[AccountSpec]
             parsed = parse_symbol_map(spec.symbol_map_csv)
             symbol_map = tuple(sorted(parsed.items()))
         except Exception:
-            symbol_map = spec.symbol_map_csv
+            raw_csv = spec.symbol_map_csv
+            # The fallback is used in a dict key, so an unhashable value from
+            # corrupt settings JSON (e.g. a list) must be made hashable.
+            symbol_map = raw_csv if isinstance(raw_csv, str) else repr(raw_csv)
         key = (
             spec.step_amount, spec.step_size, spec.max_lot,
             spec.max_trade_age_minutes, spec.master_base_lot, spec.fixed_lot,
