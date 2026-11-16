@@ -19,6 +19,7 @@ from manager.app.controller import (
     unique_profile_name,
 )
 from manager.engine.transform import parse_symbol_map
+from manager.gui.profile_editor import fit_combo_width
 from manager.platform import autostart, autologon_repair
 
 MT5_DOWNLOAD_URL = "https://www.metatrader5.com/en/download"
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
         mform = QFormLayout()
         self.master_terminal = QComboBox()
         self.master_terminal.setEditable(True)
+        fit_combo_width(self.master_terminal, 30)
         mform.addRow("Terminal", self.master_terminal)
         term_row = QHBoxLayout()
         self.install_metatrader_button = QPushButton("Install MetaTrader")
@@ -289,6 +291,9 @@ class MainWindow(QMainWindow):
         try:
             for inst in self._controller.discover_instances():
                 self.master_terminal.addItem(inst.exe_path)
+                self.master_terminal.setItemData(
+                    self.master_terminal.count() - 1, inst.exe_path,
+                    Qt.ItemDataRole.ToolTipRole)
         except Exception as exc:
             self.append_log(f"discovery failed: {exc}")
 
@@ -889,7 +894,10 @@ class MainWindow(QMainWindow):
         try:
             self.slave_list.clear()
             for spec in self._slaves:
-                self.slave_list.addItem(self._slave_label(spec))
+                label = self._slave_label(spec)
+                item = QListWidgetItem(label)
+                item.setToolTip(label)
+                self.slave_list.addItem(item)
             if 0 <= row < self.slave_list.count():
                 self.slave_list.setCurrentRow(row)
         finally:
@@ -906,7 +914,8 @@ class MainWindow(QMainWindow):
             for profile in self._profiles:
                 item = QListWidgetItem(self._profile_label(profile))
                 item.setData(Qt.ItemDataRole.UserRole, profile.id)
-                item.setToolTip(self._profile_tooltip(profile))
+                item.setToolTip(
+                    f"{profile.name}\n{self._profile_tooltip(profile)}")
                 self.profile_list.addItem(item)
                 if profile.id == target_id:
                     self.profile_list.setCurrentItem(item)

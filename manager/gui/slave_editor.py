@@ -5,13 +5,16 @@ import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QComboBox, QLineEdit,
     QPushButton, QHBoxLayout, QLabel,
 )
 
 from manager.app.controller import AccountSpec, CopyProfile, new_profile_id
-from manager.gui.profile_editor import CopySettingsWidget, ProfileEditor
+from manager.gui.profile_editor import (
+    CopySettingsWidget, ProfileEditor, fit_combo_width,
+)
 
 _NUMERIC_FIELDS = (
     "step_amount", "step_size", "max_lot", "max_trade_age_minutes",
@@ -125,6 +128,7 @@ class SlaveEditor(QDialog):
         self.id_edit.setPlaceholderText("s1")
         self.terminal = QComboBox()
         self.terminal.setEditable(True)
+        fit_combo_width(self.terminal, 30)
         form.addRow("Slave id", self.id_edit)
         form.addRow("Terminal", self.terminal)
         term_row = QHBoxLayout()
@@ -133,6 +137,7 @@ class SlaveEditor(QDialog):
         form.addRow("", term_row)
 
         self.profile_combo = QComboBox()
+        fit_combo_width(self.profile_combo, 24)
         self.profile_hint = QLabel("")
         self.profile_hint.setWordWrap(True)
         profile_row = QHBoxLayout()
@@ -170,6 +175,9 @@ class SlaveEditor(QDialog):
         try:
             for inst in self._controller.discover_instances():
                 self.terminal.addItem(inst.exe_path)
+                self.terminal.setItemData(
+                    self.terminal.count() - 1, inst.exe_path,
+                    Qt.ItemDataRole.ToolTipRole)
         except Exception:
             pass
 
@@ -191,8 +199,12 @@ class SlaveEditor(QDialog):
             combo.addItem("Own settings (no profile)", "")
             for profile in self.profiles:
                 combo.addItem(profile.name, profile.id)
+                combo.setItemData(combo.count() - 1, profile.name,
+                                  Qt.ItemDataRole.ToolTipRole)
             combo.insertSeparator(combo.count())
             combo.addItem("New profile…", "__new__")
+            combo.setItemData(combo.count() - 1, "Create a new copy profile",
+                              Qt.ItemDataRole.ToolTipRole)
             idx = combo.findData(select_id)
             combo.setCurrentIndex(idx if idx >= 0 else 0)
         finally:
@@ -201,12 +213,22 @@ class SlaveEditor(QDialog):
     def _update_profile_hint(self, profile: CopyProfile | None) -> None:
         if profile is None:
             self.profile_hint.setText("")
+            self.profile_hint.setToolTip("")
             self.profile_hint.setVisible(False)
+            self.profile_combo.setToolTip("Own settings (no profile)")
         else:
+            # Keep a very long, unbroken name from forcing the dialog wider
+            # than the screen: elide it in the label, full text in the tooltip.
+            name = (profile.name if len(profile.name) <= 32
+                    else profile.name[:31] + "…")
             self.profile_hint.setText(
+                f"Settings come from profile '{name}' — "
+                "edit it under Copy profiles.")
+            self.profile_hint.setToolTip(
                 f"Settings come from profile '{profile.name}' — "
                 "edit it under Copy profiles.")
             self.profile_hint.setVisible(True)
+            self.profile_combo.setToolTip(profile.name)
 
     def _on_profile_changed(self, _index: int = -1) -> None:
         data = self.profile_combo.currentData()

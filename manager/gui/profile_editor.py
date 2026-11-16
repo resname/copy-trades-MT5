@@ -8,13 +8,24 @@ from dataclasses import fields, is_dataclass, replace
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QCheckBox,
-    QHeaderView, QDialog, QDialogButtonBox, QMessageBox,
+    QHeaderView, QDialog, QDialogButtonBox, QMessageBox, QSizePolicy,
 )
 
 from manager.app.controller import (
     AccountSpec, CopyProfile, SHARED_PROFILE_FIELDS, new_profile_id,
 )
 from manager.engine.transform import parse_symbol_map
+
+
+def fit_combo_width(combo: QComboBox, contents_length: int) -> None:
+    """A combo sizes itself to its longest item by default; a long terminal
+    path or profile name would then force the whole dialog wider than the
+    screen. Cap the width at a readable contents length — the popup still
+    lists every item (elided) and item tooltips carry the full text."""
+    combo.setSizeAdjustPolicy(
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(contents_length)
+    combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
 
 # (attribute name, user-facing label) for the numeric shared fields. The label

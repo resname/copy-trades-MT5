@@ -381,3 +381,28 @@ def _accept_with_name_dialog(name):
         self.accept()
         return self.result()
     return stub
+
+
+def test_long_profile_name_does_not_widen_the_dialog(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    from manager.app.controller import AccountSpec
+    name = "P" * 200
+    dlg = SlaveEditor(FakeController(), profiles=[_profile(name=name)])
+    dlg.set_spec(AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             profile_id="p1"))
+    dlg.layout().activate()
+    qapp.processEvents()
+    assert dlg.minimumSizeHint().width() < 1200
+    assert len(dlg.profile_hint.text()) < 200
+    assert name in dlg.profile_hint.toolTip()
+    assert name in dlg.profile_combo.toolTip()
+
+
+def test_long_terminal_path_does_not_widen_the_dialog(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    path = "C:/" + "x" * 240 + "/terminal64.exe"
+    dlg = SlaveEditor(FakeController([_inst(path)]))
+    dlg.terminal.setCurrentText(path)
+    dlg.layout().activate()
+    qapp.processEvents()
+    assert dlg.minimumSizeHint().width() < 1200

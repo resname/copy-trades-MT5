@@ -1164,3 +1164,30 @@ def test_edit_profile_updates_and_live_applies_all_attached_slaves(
     w._on_edit_profile()
     assert [s.step_amount for s in w._slaves] == [500.0, 500.0]
     assert [sid for sid, _ in c.applied_edits] == ["s1", "s2"]
+
+
+def test_long_master_terminal_path_does_not_widen_the_window(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.terminal.discovery import TerminalInstance
+    path = "C:/" + "x" * 240 + "/terminal64.exe"
+    c = FakeController()
+    c._instances = [TerminalInstance(path.rsplit("/", 1)[0], path, "appdata")]
+    w = MainWindow(c)
+    w.master_terminal.setCurrentText(path)
+    w.layout().activate()
+    qapp.processEvents()
+    assert w.minimumSizeHint().width() < 1200
+
+
+def test_long_names_are_available_as_list_tooltips(qapp):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    w = MainWindow(FakeController())
+    name = "P" * 200
+    w._profiles = [_copy_profile(name=name)]
+    w._refresh_profile_list("p1")
+    w._slaves = [AccountSpec(id="S" * 200,
+                             terminal_path="C:/s/terminal64.exe")]
+    w._refresh_slave_list()
+    assert name in w.profile_list.item(0).toolTip()
+    assert "S" * 200 in w.slave_list.item(0).toolTip()
