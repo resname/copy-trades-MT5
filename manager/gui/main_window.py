@@ -820,22 +820,32 @@ class MainWindow(QMainWindow):
             self._refresh_slave_list()
             self.slave_list.setCurrentRow(len(self._slaves) - 1)
             self._save_config()
+            return spec
+        return None
+
+    def _remove_slave_at(self, row: int) -> bool:
+        if not (0 <= row < len(self._slaves)):
+            return False
+        del self._slaves[row]
+        self._refresh_slave_list()
+        self._save_config()
+        return True
+
+    def _remove_slave_by_id(self, slave_id: str) -> bool:
+        for row, spec in enumerate(self._slaves):
+            if spec.id == slave_id:
+                return self._remove_slave_at(row)
+        return False
 
     def _on_remove_slave(self):
-        row = self.slave_list.currentRow()
-        if row < 0:
-            return
-        self.slave_list.takeItem(row)
-        del self._slaves[row]
-        self._save_config()
+        self._remove_slave_at(self.slave_list.currentRow())
 
     def _update_edit_enabled(self) -> None:
         self.edit_slave_button.setEnabled(self.slave_list.currentRow() >= 0)
 
-    def _on_edit_slave(self, *_args) -> None:
-        row = self.slave_list.currentRow()
-        if row < 0:
-            return
+    def _edit_slave_at(self, row: int) -> bool:
+        if not (0 <= row < len(self._slaves)):
+            return False
         from manager.gui.slave_editor import edit_slave
         try:
             new = edit_slave(self, self._slaves[row],
@@ -843,14 +853,24 @@ class MainWindow(QMainWindow):
                              create_profile=self._create_profile_from_editor)
         except Exception as exc:
             self.append_log(f"edit failed: {exc}")
-            return
+            return False
         if new is None:
-            return
+            return False
         self._slaves[row] = new
         self._refresh_slave_list()
         self._save_config()
         if self._controller.is_running():
             self._controller.apply_slave_edit(new.id, new)
+        return True
+
+    def _edit_slave_by_id(self, slave_id: str) -> bool:
+        for row, spec in enumerate(self._slaves):
+            if spec.id == slave_id:
+                return self._edit_slave_at(row)
+        return False
+
+    def _on_edit_slave(self, *_args) -> None:
+        self._edit_slave_at(self.slave_list.currentRow())
 
     # ---- copy profiles ----
     def _profile_by_id(self, profile_id: str) -> CopyProfile | None:

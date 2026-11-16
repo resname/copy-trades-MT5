@@ -1205,3 +1205,54 @@ def test_old_ui_config_is_ignored_and_not_rewritten(qapp, tmp_path):
     cfg = store.load_config()
     assert "ui" not in cfg
     assert cfg["master"]["terminal_path"] == "C:/m/terminal64.exe"
+
+
+def test_on_add_slave_returns_the_added_spec(qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    import manager.gui.slave_editor as se
+    w = MainWindow(FakeController())
+    spec = AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe")
+    monkeypatch.setattr(se, "add_slave", lambda parent, **kw: spec)
+    assert w._on_add_slave() is spec
+    assert w._slaves == [spec]
+    monkeypatch.setattr(se, "add_slave", lambda parent, **kw: None)
+    assert w._on_add_slave() is None
+
+
+def test_remove_slave_by_id_removes_the_right_one_and_saves(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    from manager.settings.store import SettingsStore
+    w = MainWindow(FakeController(), store=SettingsStore(tmp_path / "s.json"))
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe"),
+                 AccountSpec(id="s2", terminal_path="C:/s2/terminal64.exe")]
+    w._refresh_slave_list()
+    assert w._remove_slave_by_id("s2") is True
+    assert [s.id for s in w._slaves] == ["s1"]
+    assert w.slave_list.count() == 1
+    assert w._remove_slave_by_id("gone") is False
+
+
+def test_edit_slave_by_id_updates_the_right_one_and_applies_live(
+        qapp, monkeypatch):
+    from manager.gui.main_window import MainWindow
+    from manager.app.controller import AccountSpec
+    import manager.gui.slave_editor as se
+    c = FakeController()
+    c.started = True
+    w = MainWindow(c)
+    w._slaves = [AccountSpec(id="s1", terminal_path="C:/s1/terminal64.exe",
+                             step_amount=100.0),
+                 AccountSpec(id="s2", terminal_path="C:/s2/terminal64.exe",
+                             step_amount=100.0)]
+    w._refresh_slave_list()
+    edited = AccountSpec(id="s2", terminal_path="C:/s2/terminal64.exe",
+                          step_amount=500.0)
+    monkeypatch.setattr(se, "edit_slave",
+                        lambda parent, spec, **kw: edited)
+    assert w._edit_slave_by_id("s2") is True
+    assert w._slaves[1].step_amount == 500.0
+    assert w.slave_list.item(1).text().startswith("s2:")
+    assert c.applied_edits == [("s2", edited)]
+    assert w._edit_slave_by_id("gone") is False
