@@ -285,6 +285,9 @@ class SlaveEditor(QDialog):
                 for name, text in self._own_texts.items():
                     getattr(self.copy_settings, name).setText(text)
         self._current_pid = pid
+        # Keep the previous selection in sync so a following "New profile…"
+        # cancel restores this selection (including a just-created profile).
+        self._last_pid = pid
         self._update_profile_hint(profile)
 
     def set_spec(self, spec: AccountSpec, *, lock_identity: bool = True) -> None:

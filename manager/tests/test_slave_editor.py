@@ -328,6 +328,28 @@ def test_new_profile_cancel_reverts_to_previous_selection(qapp, monkeypatch):
     assert dlg.profile_combo.currentData() == ""
 
 
+def test_cancel_after_creating_profile_restores_the_created_selection(
+        qapp, monkeypatch):
+    from manager.gui import slave_editor as se
+    from PySide6.QtWidgets import QDialog
+    monkeypatch.setattr(se.ProfileEditor, "exec",
+                        _accept_with_name_dialog("Neu"))
+    dlg = se.SlaveEditor(FakeController(), profiles=[])
+    idx = dlg.profile_combo.findData("__new__")
+    dlg.profile_combo.setCurrentIndex(idx)
+    dlg._on_profile_activated(idx)
+    created_id = dlg.profile_combo.currentData()
+    assert created_id and created_id != "__new__"
+    monkeypatch.setattr(se.ProfileEditor, "exec",
+                        lambda self: QDialog.DialogCode.Rejected)
+    idx = dlg.profile_combo.findData("__new__")
+    dlg.profile_combo.setCurrentIndex(idx)
+    dlg._on_profile_activated(idx)
+    assert dlg.profile_combo.currentData() == created_id
+    dlg.accept()
+    assert dlg.spec().profile_id == created_id
+
+
 def test_invalid_numeric_text_keeps_own_settings_selected(qapp):
     from manager.gui.slave_editor import SlaveEditor
     dlg = SlaveEditor(FakeController(), profiles=[_profile(step_amount=500.0)])
