@@ -78,6 +78,8 @@ source:
   Master entries can be **regular expressions** with optional `$1`–`$9`
   group substitution in the slave name (see
   [Symbol map: regex support](#symbol-map-regex-support)).
+- **Copy profiles** — define symbol map + lot sizing once, attach many slaves,
+  edit once (live while copying).
 - **Risk-managed lot sizing** per slave — choose a mode per slave:
   - **Balance step (lots step)** — `floor(slave_balance / step_amount) * step_size`,
     rounded down to the symbol's lot step, clamped to its min/max. Optionally set
@@ -216,10 +218,16 @@ auto-restart. `copytrades update` runs the same update from the command line.
    Click **Start** (the manager connects to that terminal's saved account —
    no login/server/password entered in the manager). **Algo Trading must be
    enabled on every terminal** (see Quick Start step 3) or Start is blocked.
-4. **Slaves**: click **Add slave** to open the slave editor — select each
-   slave's terminal, and set the per-slave symbol map / lot-sizing mode
-   (balance step with optional master base lot, copy master lot, or fixed lot) /
-   normalization options. Add as many slaves as you need (one terminal each).
+4. **Slaves**: create a **Copy profile** under the new **Copy profiles**
+   group (**New…**), then select it in **Add Slave… / Edit Slave…** — a
+   profile holds the symbol map and all lot-sizing/normalization settings,
+   and editing it updates every attached slave live while copying. Standalone
+   slaves can stay on **Own settings (no profile)** and keep their per-slave
+   symbol map / lot-sizing mode (balance step with optional master base lot,
+   copy master lot, or fixed lot) / normalization options. Add as many slaves
+   as you need (one terminal each). After updating from a version without
+   profiles, slaves that already had identical settings are grouped into one
+   profile automatically (once); lone slaves stay on "Own settings".
 5. **Start**: the manager assigns terminals, spawns one worker per slave,
    waits for every slave to report ready (SymbolInfo + first status), then
    spawns the master worker and starts the copy loop. The status panel shows
