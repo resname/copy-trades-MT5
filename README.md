@@ -91,6 +91,10 @@ source:
   - **Copy master lot** — the slave mirrors the master's lot per trade (snapped to
     the symbol's lot step, clamped to its min/max).
   - **Fixed lot** — the slave opens one configured lot size for every trade.
+    Optionally set a **Master base lot size** (like balance step): when a master
+    trade is *smaller* than the base, the fixed lot is scaled down
+    proportionally (fixed 0.1 with base 10, master opens 5 → 0.05); trades at or
+    above the base are not scaled up.
   - If a computed volume exceeds the slave symbol's per-order max
     (`SYMBOL_VOLUME_MAX`), the order is **split into several slave orders** —
     e.g. 150 lots at a 100-lot max opens 100 + 50 — each leg carrying its own
