@@ -34,8 +34,9 @@ def _status(balance=1000.0):
                      balance=balance, equity=balance, currency="USD", server="Demo")
 
 
-def _pos(ticket, volume=0.5, sl=1.09500, tp=1.10500, side=BUY, open_time=NOW):
-    return Position(ticket=ticket, symbol="EURUSD", side=side, open_price=1.10000,
+def _pos(ticket, volume=0.5, sl=1.09500, tp=1.10500, side=BUY, open_time=NOW,
+         symbol="EURUSD"):
+    return Position(ticket=ticket, symbol=symbol, side=side, open_price=1.10000,
                    volume=volume, sl=sl, tp=tp, open_time=open_time, point=0.00001)
 
 
@@ -392,3 +393,79 @@ def test_update_slave_config_patches_sizing_mode():
     # next NEW mirrors the master lot, ignoring balance
     cmds = eng.ingest_snapshot(_snap([_pos(7, volume=0.42)]), now=NOW)["s1"]
     assert cmds[0].volume == pytest.approx(0.42, abs=1e-8)
+
+def _sizing_cfg(**kw):
+    base = dict(slave_id="s1", symbol_map_csv="EURUSD=EURUSD",
+                step_amount=100.0, step_size=0.01, max_lot=10.0,
+                max_trade_age_minutes=10, normalize_sltp=True,
+                sizing_mode="fixed_lot", master_base_lot=10.0, fixed_lot=0.1,
+                follow_master_lot=True)
+    base.update(kw)
+    return SlaveConfig(**base)
+
+
+def test_ingest_learns_largest_lot_per_symbol_and_reports_it():
+    seen = []
+    eng = CopyEngine(on_learned_lots_changed=seen.append)
+    eng.add_slave(_sizing_cfg())
+    eng.apply_symbol_info("s1", {"EURUSD": SI, "XAUUSD": SI})
+    eng.ingest_snapshot(_snap([_pos(1, volume=23.0),
+                               _pos(2, volume=0.5, symbol="XAUUSD")]), now=NOW)
+    assert eng.learned_master_lots() == {"EURUSD": 23.0, "XAUUSD": 0.5}
+    assert seen[-1] == {"EURUSD": 23.0, "XAUUSD": 0.5}
+
+
+def test_follow_master_lot_scales_down_from_the_learned_base_in_the_same_tick():
+    eng = _engine(slaves=(_sizing_cfg(),), infos={"s1": {"EURUSD": SI}})
+    cmds = eng.ingest_snapshot(_snap([_pos(42, volume=23.0)]), now=NOW)["s1"]
+    assert cmds[0].volume == 0.1            # learned base 23 -> full fixed lot
+    cmds = eng.ingest_snapshot(_snap([_pos(43, volume=10.0)]), now=NOW)["s1"]
+    assert cmds[0].volume == 0.04           # 0.1 * 10/23 = 0.043 -> snap down
+
+
+def test_follow_off_uses_the_configured_base_only():
+    eng = _engine(slaves=(_sizing_cfg(follow_master_lot=False),),
+                  infos={"s1": {"EURUSD": SI}})
+    eng.ingest_snapshot(_snap([_pos(1, volume=23.0)]), now=NOW)  # learns 23
+    cmds = eng.ingest_snapshot(
+        _snap([_pos(1, volume=23.0), _pos(2, volume=10.0)]), now=NOW)["s1"]
+    assert cmds[0].volume == 0.1            # base stays the configured 10
+
+
+def test_effective_base_is_the_max_of_configured_and_learned():
+    eng = _engine(slaves=(_sizing_cfg(master_base_lot=20.0),),
+                  infos={"s1": {"EURUSD": SI}})
+    cmds = eng.ingest_snapshot(_snap([_pos(1, volume=10.0)]), now=NOW)["s1"]
+    assert cmds[0].volume == 0.05           # base 20, 10/20
+
+
+def test_follow_is_per_master_symbol():
+    # configured base 0 so the per-symbol learned values are the only base
+    eng = _engine(
+        slaves=(_sizing_cfg(symbol_map_csv="EURUSD=EURUSD,XAUUSD=XAUUSD",
+                            master_base_lot=0.0),),
+        infos={"s1": {"EURUSD": SI, "XAUUSD": SI}})
+    eng.ingest_snapshot(_snap([_pos(1, volume=23.0)]), now=NOW)
+    cmds = eng.ingest_snapshot(
+        _snap([_pos(1, volume=23.0),
+               _pos(2, volume=0.5, symbol="XAUUSD")]), now=NOW)["s1"]
+    assert cmds[0].volume == 0.1            # XAUUSD base 0.5, not EURUSD's 23
+
+
+def test_reset_learned_master_lots_suppresses_open_tickets():
+    eng = _engine(slaves=(_sizing_cfg(),), infos={"s1": {"EURUSD": SI}})
+    eng.ingest_snapshot(_snap([_pos(1, volume=23.0)]), now=NOW)
+    eng.reset_learned_master_lots(eng.open_master_tickets())
+    assert eng.learned_master_lots() == {}
+    eng.ingest_snapshot(_snap([_pos(1, volume=23.0)]), now=NOW)
+    assert eng.learned_master_lots() == {}  # still-open ticket ignored
+
+
+def test_update_slave_config_patches_follow_master_lot():
+    eng = _engine(infos={"s1": {"EURUSD": SI}})
+    eng.update_slave_config("s1", step_amount=100.0, step_size=0.01,
+                            max_lot=10.0, max_trade_age_minutes=10,
+                            symbol_map_csv="EURUSD=EURUSD", normalize_sltp=True,
+                            sizing_mode="fixed_lot", master_base_lot=10.0,
+                            fixed_lot=0.1, follow_master_lot=True)
+    assert eng._slaves["s1"].config.follow_master_lot is True

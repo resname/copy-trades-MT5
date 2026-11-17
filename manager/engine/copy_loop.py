@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from manager.engine.models import Position, Snapshot, Event, Record, SymbolInfo
+from manager.engine.learned_lots import LearnedMasterLots
 from manager.engine.linkage import magic_for, encode_comment
 from manager.engine.transform import SymbolMapper, calculate_slave_lot
 from manager.engine.snapshot_diff import diff
@@ -23,6 +25,7 @@ class SlaveConfig:
     sizing_mode: str = "balance_step"
     master_base_lot: float = 0.0
     fixed_lot: float = 0.01
+    follow_master_lot: bool = False
 
 
 @dataclass
@@ -32,6 +35,7 @@ class SlaveState:
     symbol_infos: dict[str, SymbolInfo]
     balance: float
     mapper: SymbolMapper
+    learned_lots: LearnedMasterLots = field(default_factory=LearnedMasterLots)
     pending: set[int] = field(default_factory=set)
     held: dict[int, Event] = field(default_factory=dict)
     info_inflight: set[str] = field(default_factory=set)
@@ -68,9 +72,12 @@ def derive_command(state: SlaveState, event: Event, now: int) -> CommandMsg | _A
             if slave_symbol in state.confirmed_missing:
                 return None  # worker said this symbol doesn't exist
             return _AwaitInfo(slave_symbol)
+        base = cfg.master_base_lot
+        if cfg.follow_master_lot:
+            base = max(base, state.learned_lots.get(pos.symbol))
         lots = calculate_slave_lot(cfg.sizing_mode, pos.volume, state.balance,
                                    cfg.step_amount, cfg.step_size,
-                                   cfg.master_base_lot, cfg.fixed_lot,
+                                   base, cfg.fixed_lot,
                                    cfg.max_lot, info.volume_step,
                                    info.volume_min)
         if lots <= 0.0:
@@ -115,15 +122,23 @@ class CopyEngine:
     snapshot. ingest_snapshot -> per-slave commands; apply_ack updates records
     and re-emits held commands. No I/O."""
 
-    def __init__(self):
+    def __init__(self, learned_lots: LearnedMasterLots | None = None,
+                 on_learned_lots_changed: Callable[[dict[str, float]], None]
+                 | None = None):
         self._slaves: dict[str, SlaveState] = {}
         self._prev: list[Position] = []
         self._last_now: int = 0
         self._info_requests: dict[str, set[str]] = {}
+        self._learned = (learned_lots if learned_lots is not None
+                         else LearnedMasterLots())
+        self._on_learned = (on_learned_lots_changed
+                            if on_learned_lots_changed is not None
+                            else (lambda lots: None))
 
     def add_slave(self, config: SlaveConfig) -> None:
         state = SlaveState(config=config, table=RecordTable(), symbol_infos={},
-                           balance=0.0, mapper=None)  # type: ignore[arg-type]
+                           balance=0.0, mapper=None,  # type: ignore[arg-type]
+                           learned_lots=self._learned)
         state.mapper = SymbolMapper(config.symbol_map_csv,
                                     lambda s: s in state.symbol_infos)
         self._slaves[config.slave_id] = state
@@ -178,7 +193,8 @@ class CopyEngine:
                             normalize_sltp: bool,
                             sizing_mode: str = "balance_step",
                             master_base_lot: float = 0.0,
-                            fixed_lot: float = 0.01) -> bool:
+                            fixed_lot: float = 0.01,
+                            follow_master_lot: bool = False) -> bool:
         """Live-update a running slave's config in place. Returns whether
         symbol_map_csv changed (caller may then ask the worker to re-report
         SymbolInfo). Safe for open trades: derive_command routes
@@ -196,6 +212,7 @@ class CopyEngine:
         cfg.sizing_mode = sizing_mode
         cfg.master_base_lot = master_base_lot
         cfg.fixed_lot = fixed_lot
+        cfg.follow_master_lot = follow_master_lot
         if map_changed:
             state.mapper = SymbolMapper(
                 symbol_map_csv, lambda s: s in state.symbol_infos)
@@ -206,6 +223,10 @@ class CopyEngine:
         events = diff(self._prev, list(snapshot.positions))
         self._prev = list(snapshot.positions)
         self._last_now = now
+        # Learn BEFORE deriving: a new maximum applies to the NEW events in
+        # this very tick.
+        if self._learned.update(snapshot.positions):
+            self._on_learned(self._learned.as_dict())
         out: dict[str, list[CommandMsg]] = {}
         for slave_id, state in self._slaves.items():
             cmds: list[CommandMsg] = []
@@ -215,6 +236,16 @@ class CopyEngine:
                     cmds.append(cmd)
             out[slave_id] = cmds
         return out
+
+    def learned_master_lots(self) -> dict[str, float]:
+        return self._learned.as_dict()
+
+    def open_master_tickets(self) -> set[int]:
+        return {p.ticket for p in list(self._prev)}
+
+    def reset_learned_master_lots(self, open_tickets: Iterable[int]) -> None:
+        self._learned.reset(open_tickets)
+        self._on_learned(self._learned.as_dict())
 
     def _handle_event(self, state: SlaveState, event: Event,
                       now: int) -> CommandMsg | None:
