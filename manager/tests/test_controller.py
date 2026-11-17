@@ -679,3 +679,69 @@ def test_coerce_profiles_rejects_non_bool_follow_master_lot():
     from manager.app.controller import coerce_profiles
     raw = [{"id": "p1", "name": "A", "follow_master_lot": "yes"}]
     assert coerce_profiles(raw) == []
+
+
+def test_reset_after_failed_start_targets_the_stored_terminal():
+    """A failed Start must not leave a stale engine that retargets Reset to the
+    failed terminal: Reset while stopped clears the STORED terminal's lots and
+    keeps its path key."""
+    store = SettingsStore(path=Path(tempfile.mkdtemp()) / "settings.json")
+    store.save_master_lot_tracking("C:/old/terminal64.exe", {"EURUSD": 23.0})
+    c, _, _ = _controller(_insts(), store)
+    state = dict(_empty_master_state())
+    state["terminal_info"] = {"trade_allowed": False}
+    with pytest.raises(AlgoTradingDisabledError):
+        c.start(_master(), [_slave()], master_fake_state=state,
+                slave_fake_state=_slave_state())
+    c.reset_learned_master_lots()
+    assert store.load_master_lot_tracking() == ("C:/old/terminal64.exe", {})
+
+
+def test_terminal_change_is_committed_before_the_copy_loop_starts(
+        monkeypatch, tmp_path):
+    """The terminal-change drop must be persisted before the supervisor's tick
+    thread can learn, otherwise the empty commit can erase the first learned
+    maximum."""
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_master_lot_tracking("C:/old/terminal64.exe", {"EURUSD": 23.0})
+    c, _, _ = _controller(_insts(), store)
+    at_start = []
+    real_build = c.build_supervisor
+
+    def build(*a, **kw):
+        sup = real_build(*a, **kw)
+        real_start = sup.start
+
+        def start_spy():
+            at_start.append(store.load_master_lot_tracking())
+            real_start()
+
+        sup.start = start_spy
+        return sup
+
+    monkeypatch.setattr(c, "build_supervisor", build)
+    c.start(_master(), [_slave()], master_fake_state=_empty_master_state(),
+            slave_fake_state=_slave_state())
+    try:
+        assert at_start == [("C:/m/terminal64.exe", {})]
+    finally:
+        c.stop()
+
+
+def test_first_learned_lot_survives_the_terminal_change_commit(tmp_path):
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_master_lot_tracking("C:/old/terminal64.exe", {"EURUSD": 10.0})
+    c, _, _ = _controller(_insts(), store)
+    master_state = {"positions": [Position(42, "EURUSD", BUY, 1.1, 23.0,
+                                           0.0, 0.0, NOW, 0.00001, "")],
+                    "symbol_infos": {"EURUSD": SI},
+                    "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                                "currency": "USD", "server": "Demo"}}
+    c.start(_master(), [_slave()], master_fake_state=master_state,
+            slave_fake_state=_slave_state())
+    try:
+        assert _tick_until(
+            lambda: store.load_master_lot_tracking() ==
+            ("C:/m/terminal64.exe", {"EURUSD": 23.0}))
+    finally:
+        c.stop()

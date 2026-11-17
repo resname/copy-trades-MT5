@@ -461,6 +461,7 @@ class CopyController:
             self._status("error", "one or more slaves did not become ready")
             sup.shutdown()
             self._supervisor = None
+            self._engine = None
             raise ControllerError("slaves not ready within timeout")
         # Algo-Trading preflight (slaves): block before any copy is attempted.
         # A slave with Algo Trading off would silently accept commands whose
@@ -472,6 +473,7 @@ class CopyController:
             self._status("error", "Algo Trading is disabled on: " + ", ".join(names))
             sup.shutdown()
             self._supervisor = None
+            self._engine = None
             raise AlgoTradingDisabledError(names)
         self._status("ready", "slaves ready; starting master")
         mcfg = cfgs[master.id]
@@ -484,18 +486,24 @@ class CopyController:
             self._status("error", "master did not report status in time")
             sup.shutdown()
             self._supervisor = None
+            self._engine = None
             raise ControllerError("master did not report status within timeout")
         if not sup.master_trade_allowed():
             name = f"master ({cfgs[master.id]['terminal_path']})"
             self._status("error", "Algo Trading is disabled on: " + name)
             sup.shutdown()
             self._supervisor = None
+            self._engine = None
             raise AlgoTradingDisabledError([name])
+        # Every fallible step has passed: commit a terminal change now, while
+        # no tick thread is running. Saving after sup.start() could race the
+        # first learning callback and erase the newly learned maximum.
+        if not same_terminal:
+            self._learned_changed(master_path,
+                                  self._engine.learned_master_lots())
         sup.start()
         self._supervisor = sup
         self._master_tracking_path = master_path
-        if not same_terminal:
-            self._learned_changed(master_path, {})
         self._status("info", "copying started")
 
     def stop(self) -> None:
@@ -527,7 +535,7 @@ class CopyController:
         """Forget the learned master lots. While running, the engine reset
         suppresses tickets open right now until they close; while stopped,
         the persisted lots for the stored terminal are cleared."""
-        if self._engine is not None:
+        if self._supervisor is not None and self._engine is not None:
             self._engine.reset_learned_master_lots(
                 self._engine.open_master_tickets())
             return
