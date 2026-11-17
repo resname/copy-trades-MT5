@@ -6,7 +6,7 @@ import math
 import os
 import tempfile
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 
@@ -121,9 +121,10 @@ class SettingsStore:
         return path, lots
 
     def save_master_lot_tracking(self, terminal_path: str,
-                                 lots: Mapping[str, float]) -> None:
-        """Persist the learned per-symbol master lots for `terminal_path`,
-        preserving every other key in the store."""
+                                 lots: Mapping[str, float],
+                                 suppressed: Iterable[int] = ()) -> None:
+        """Persist the learned per-symbol master lots and the tickets whose
+        re-learning a reset suppresses, preserving every other key."""
         clean: dict[str, float] = {}
         for symbol, value in lots.items():
             if not isinstance(symbol, str) or not symbol:
@@ -136,6 +137,9 @@ class SettingsStore:
                 continue
             if math.isfinite(lot) and lot > 0.0:
                 clean[symbol] = lot
+        clean_suppressed = sorted(
+            {t for t in suppressed
+             if isinstance(t, int) and not isinstance(t, bool) and t > 0})
         with self._lock:
             data = self._load_unlocked()
             glob = data.get("global")
@@ -146,8 +150,25 @@ class SettingsStore:
                 "terminal_path": terminal_path if isinstance(
                     terminal_path, str) else "",
                 "lots": clean,
+                "suppressed": clean_suppressed,
             }
             self._save_unlocked(data)
+
+    def load_master_lot_suppressed(self) -> set[int]:
+        """Return the tickets whose re-learning a reset suppressed. Missing or
+        malformed shapes degrade to an empty set."""
+        data = self.load()
+        glob = data.get("global")
+        if not isinstance(glob, dict):
+            return set()
+        raw = glob.get("master_lot_tracking")
+        if not isinstance(raw, dict):
+            return set()
+        values = raw.get("suppressed")
+        if not isinstance(values, list):
+            return set()
+        return {t for t in values
+                if isinstance(t, int) and not isinstance(t, bool) and t > 0}
 
     def list_provisioned_instances(self) -> list[str]:
         return list(self.load().get("provisioned_instances", []))

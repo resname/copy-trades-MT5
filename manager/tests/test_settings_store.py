@@ -156,3 +156,22 @@ def test_config_and_tracking_saves_do_not_clobber_each_other(tmp_path):
     store.save_config({"master": {"terminal_path": "C:/other/terminal64.exe"}})
     assert store.load_master_lot_tracking() == (
         "C:/m/terminal64.exe", {"EURUSD": 23.0})
+
+
+def test_master_lot_suppression_round_trip(tmp_path):
+    store = _store(tmp_path)
+    store.save_master_lot_tracking("C:/m/terminal64.exe", {"EURUSD": 23.0},
+                                   suppressed={42, 7})
+    assert store.load_master_lot_suppressed() == {7, 42}
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"global": {"master_lot_tracking": {
+        "terminal_path": "C:/m/terminal64.exe", "lots": {},
+        "suppressed": [7, 0, -1, True, "x"]}}}), encoding="utf-8")
+    assert SettingsStore(path=p).load_master_lot_suppressed() == {7}
+
+
+def test_master_lot_suppression_defaults_to_empty(tmp_path):
+    store = _store(tmp_path)
+    assert store.load_master_lot_suppressed() == set()
+    store.save_master_lot_tracking("C:/m/terminal64.exe", {"EURUSD": 23.0})
+    assert store.load_master_lot_suppressed() == set()
