@@ -80,6 +80,17 @@ source:
   Master entries can be **regular expressions** with optional `$1`–`$9`
   group substitution in the slave name (see
   [Symbol map: regex support](#symbol-map-regex-support)).
+- **Symbol Assistant** — next to the map rows, **Assistant…** takes one or more
+  example pairs (master → slave) and generates the regex rule automatically.
+  Example: `YMZ26 → YM_Z` and `YMH27 → YM_H` produces
+  `^(YM)([FGHJKMNQUVXZ])(\d{2})$ → YM_$2`, which covers every YM contract
+  across rollovers. The rule is shown in editable fields with a live preview;
+  the assistant warns when an existing exact row (which always wins) or an
+  earlier regex row would keep the new rule from taking effect.
+- **One trade per master trade per slave** — a master trade resolves to exactly
+  one map row, so it opens at most one position per slave. The only exception
+  is the existing oversized-volume split, which opens several orders on that
+  same slave symbol.
 - **Copy profiles** — define symbol map + lot sizing once, attach many slaves,
   edit once (live while copying).
 - **Risk-managed lot sizing** per slave or shared via a profile — choose a mode per slave:
