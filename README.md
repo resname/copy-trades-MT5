@@ -95,6 +95,13 @@ source:
     trade is *smaller* than the base, the fixed lot is scaled down
     proportionally (fixed 0.1 with base 10, master opens 5 → 0.05); trades at or
     above the base are not scaled up.
+  - Optionally tick **Follow the master's largest lot** (balance step and fixed
+    lot): the copier remembers the largest lot it has seen per master symbol
+    (persisted across restarts) and uses it as the reference base, so a master
+    base that has grown over time keeps scaling correctly — once the master's
+    usual lot is 20, a 10-lot trade opens half the configured size. It never
+    scales up; Max Lots still caps the order. The Master pane shows the learned
+    values and offers a reset.
   - If a computed volume exceeds the slave symbol's per-order max
     (`SYMBOL_VOLUME_MAX`), the order is **split into several slave orders** —
     e.g. 150 lots at a 100-lot max opens 100 + 50 — each leg carrying its own
@@ -231,7 +238,9 @@ auto-restart. `copytrades update` runs the same update from the command line.
    and editing it updates every attached slave live while copying. Standalone
    slaves can stay on **Own settings (no profile)** and keep their per-slave
    symbol map / lot-sizing mode (balance step with optional master base lot,
-   copy master lot, or fixed lot) / normalization options. Add as many slaves
+   copy master lot, or fixed lot) / normalization options. If the master's
+   usual lot grows over time, tick **Follow the master's largest lot** so the
+   base follows it automatically. Add as many slaves
    as you need (one terminal each). **Open slave list…** opens a large modal
    list with the same Add / Remove / Edit actions.
    After updating from a version without
