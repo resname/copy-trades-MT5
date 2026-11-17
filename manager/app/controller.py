@@ -2,17 +2,24 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from uuid import uuid4
 
 from manager.engine.copy_loop import CopyEngine, SlaveConfig
+from manager.engine.learned_lots import LearnedMasterLots
 from manager.engine.models import BUY, SELL  # noqa: F401  (re-exported for GUI)
 from manager.engine.transform import parse_symbol_map
 from manager.supervisor import Supervisor
 from manager.terminal.discovery import TerminalInstance
 from manager.settings.store import SettingsStore
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Windows path identity (separators + case) used as the tracking key."""
+    return os.path.normpath(a).lower() == os.path.normpath(b).lower()
 
 
 class ControllerError(Exception):
@@ -47,13 +54,14 @@ class AccountSpec:
     sizing_mode: str = "balance_step"
     master_base_lot: float = 0.0
     fixed_lot: float = 0.01
+    follow_master_lot: bool = False
     profile_id: str = ""
 
 
 SHARED_PROFILE_FIELDS = (
     "symbol_map_csv", "step_amount", "step_size", "max_lot",
     "max_trade_age_minutes", "normalize_sltp", "sizing_mode",
-    "master_base_lot", "fixed_lot",
+    "master_base_lot", "fixed_lot", "follow_master_lot",
 )
 
 
@@ -70,6 +78,7 @@ class CopyProfile:
     sizing_mode: str = "balance_step"
     master_base_lot: float = 0.0
     fixed_lot: float = 0.01
+    follow_master_lot: bool = False
 
 
 def profile_from_spec(profile_id: str, name: str, spec: AccountSpec) -> CopyProfile:
@@ -179,6 +188,12 @@ def coerce_profiles(raw: object, *,
                 reason = "normalize_sltp is not a bool"
             else:
                 kwargs["normalize_sltp"] = value
+        if reason is None and "follow_master_lot" in entry:
+            value = entry["follow_master_lot"]
+            if not isinstance(value, bool):
+                reason = "follow_master_lot is not a bool"
+            else:
+                kwargs["follow_master_lot"] = value
         if reason is None and "sizing_mode" in entry:
             value = entry["sizing_mode"]
             if not isinstance(value, str) or value not in _SIZING_MODES:
@@ -283,7 +298,8 @@ class CopyController:
 
     def __init__(self, terminal_manager, store=None,
                  supervisor_factory=None,
-                 on_status=None, on_log=None, clock=time.time):
+                 on_status=None, on_log=None, clock=time.time,
+                 on_learned_lots_changed=None):
         self._terminal_manager = terminal_manager
         self._store = store if store is not None else SettingsStore()
         self._supervisor_factory = (supervisor_factory
@@ -292,8 +308,11 @@ class CopyController:
         self._on_status = on_status or (lambda s: None)
         self._on_log = on_log or (lambda m: None)
         self._clock = clock
+        self._on_learned_lots_changed = (on_learned_lots_changed
+                                         or (lambda lots: None))
         self._supervisor: Supervisor | None = None
         self._engine: CopyEngine | None = None
+        self._master_tracking_path = ""
 
     @staticmethod
     def _default_supervisor_factory(engine, **kw):
@@ -367,8 +386,14 @@ class CopyController:
         return cfgs
 
     # ---- supervisor construction (testable independently) ----
-    def build_supervisor(self, heartbeat_seconds: int = 5) -> Supervisor:
-        eng = CopyEngine()
+    def build_supervisor(self, heartbeat_seconds: int = 5,
+                         learned_lots=None, on_learned_lots_changed=None
+                         ) -> Supervisor:
+        eng = CopyEngine(
+            learned_lots=learned_lots,
+            on_learned_lots_changed=(on_learned_lots_changed
+                                     if on_learned_lots_changed is not None
+                                     else self._on_learned_lots_changed))
         self._engine = eng
         sup = self._supervisor_factory(
             eng, heartbeat_seconds=heartbeat_seconds,
@@ -400,9 +425,20 @@ class CopyController:
         if self._supervisor is not None:
             raise ControllerError("already running")
         assigned = self.prepare(master, slaves)
+        # Master-lot tracking: load the learned base for this terminal. A
+        # different terminal runs with empty lots but the stored drop is NOT
+        # committed until Start succeeds (a failed Start must not destroy the
+        # previous terminal's values).
+        master_path = assigned[master.id].exe_path
+        stored_path, stored_lots = self._store.load_master_lot_tracking()
+        same_terminal = _same_path(stored_path, master_path)
+        lots = stored_lots if same_terminal else {}
         # build engine + supervisor (kill_terminal wired); seed the engine with
         # a SlaveConfig per slave (needed before snapshots arrive)
-        sup = self.build_supervisor()
+        sup = self.build_supervisor(
+            learned_lots=LearnedMasterLots(lots),
+            on_learned_lots_changed=lambda lots: self._learned_changed(
+                master_path, lots))
         for s in slaves:
             self._engine.add_slave(SlaveConfig(
                 slave_id=s.id, symbol_map_csv=s.symbol_map_csv,
@@ -411,7 +447,8 @@ class CopyController:
                 max_trade_age_minutes=s.max_trade_age_minutes,
                 normalize_sltp=s.normalize_sltp,
                 sizing_mode=s.sizing_mode, master_base_lot=s.master_base_lot,
-                fixed_lot=s.fixed_lot))
+                fixed_lot=s.fixed_lot,
+                follow_master_lot=s.follow_master_lot))
         cfgs = self.build_worker_configs(master, slaves, assigned)
         self._status("info", "starting slave workers…")
         for s in slaves:
@@ -456,6 +493,9 @@ class CopyController:
             raise AlgoTradingDisabledError([name])
         sup.start()
         self._supervisor = sup
+        self._master_tracking_path = master_path
+        if not same_terminal:
+            self._learned_changed(master_path, {})
         self._status("info", "copying started")
 
     def stop(self) -> None:
@@ -472,6 +512,33 @@ class CopyController:
         self._engine = None
         self._status("info", "stopped")
 
+    def _learned_changed(self, master_path: str,
+                         lots: dict[str, float]) -> None:
+        """Persist a learned-lots change and forward it to the GUI. Called on
+        the supervisor's tick thread for growth, and on the GUI thread for a
+        terminal-change reset after Start."""
+        try:
+            self._store.save_master_lot_tracking(master_path, lots)
+        except Exception as exc:
+            self._log(f"master lot tracking save failed: {exc}")
+        self._on_learned_lots_changed(lots)
+
+    def reset_learned_master_lots(self) -> None:
+        """Forget the learned master lots. While running, the engine reset
+        suppresses tickets open right now until they close; while stopped,
+        the persisted lots for the stored terminal are cleared."""
+        if self._engine is not None:
+            self._engine.reset_learned_master_lots(
+                self._engine.open_master_tickets())
+            return
+        path, _ = self._store.load_master_lot_tracking()
+        if path:
+            try:
+                self._store.save_master_lot_tracking(path, {})
+            except Exception as exc:
+                self._log(f"master lot tracking reset failed: {exc}")
+        self._on_learned_lots_changed({})
+
     def apply_slave_edit(self, slave_id: str, spec: AccountSpec) -> None:
         """Apply an edited slave's trading params live. No-op when not running
         (the GUI has already updated _slaves + saved config; it applies on the
@@ -487,7 +554,8 @@ class CopyController:
             max_lot=spec.max_lot, max_trade_age_minutes=spec.max_trade_age_minutes,
             symbol_map_csv=spec.symbol_map_csv, normalize_sltp=spec.normalize_sltp,
             sizing_mode=spec.sizing_mode, master_base_lot=spec.master_base_lot,
-            fixed_lot=spec.fixed_lot)
+            fixed_lot=spec.fixed_lot,
+            follow_master_lot=spec.follow_master_lot)
         self._supervisor.reconfigure_slave(
             slave_id, spec.symbol_map_csv, spec.normalize_sltp)
 

@@ -1,5 +1,8 @@
 # manager/tests/test_controller.py
+import tempfile
 import time
+from pathlib import Path
+
 import pytest
 
 from manager.engine.models import SymbolInfo, BUY, Position
@@ -8,6 +11,7 @@ from manager.app.controller import (
     CopyController, AccountSpec, StatusUpdate, ControllerError,
     AlgoTradingDisabledError,
 )
+from manager.settings.store import SettingsStore
 from manager.supervisor import Supervisor
 from manager.terminal.discovery import TerminalInstance
 
@@ -59,10 +63,13 @@ def _slave_state():
             "ticks": {"EURUSD": (1.10000, 1.10010)}}
 
 
-def _controller(instances):
+def _controller(instances, store=None):
     statuses, logs = [], []
+    if store is None:
+        store = SettingsStore(path=Path(tempfile.mkdtemp()) / "settings.json")
     c = CopyController(
         terminal_manager=FakeTerminalManager(instances),
+        store=store,
         on_status=lambda s: statuses.append(s),
         on_log=lambda m: logs.append(m),
     )
@@ -561,3 +568,114 @@ def test_migrate_tolerates_unhashable_symbol_map_csv():
     profiles, mapping = migrate_legacy_profiles(slaves)  # must not raise
     assert len(profiles) == 1
     assert set(mapping) == {"s1", "s2"}
+
+def _empty_master_state():
+    return {"positions": [], "symbol_infos": {"EURUSD": SI},
+            "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                        "currency": "USD", "server": "Demo"}}
+
+
+def _insts():
+    return [TerminalInstance("C:/m", "C:/m/terminal64.exe", "appdata"),
+            TerminalInstance("C:/s", "C:/s/terminal64.exe", "appdata")]
+
+
+def test_start_passes_follow_master_lot_to_engine():
+    store = SettingsStore(path=Path(tempfile.mkdtemp()) / "settings.json")
+    c, _, _ = _controller(_insts(), store)
+    slave = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe",
+                        symbol_map_csv="EURUSD=EURUSD",
+                        follow_master_lot=True)
+    c.start(_master(), [slave], master_fake_state=_empty_master_state(),
+            slave_fake_state=_slave_state())
+    try:
+        assert c._engine._slaves["s1"].config.follow_master_lot is True
+    finally:
+        c.stop()
+
+
+def test_start_loads_lots_for_the_same_terminal_despite_path_spelling():
+    store = SettingsStore(path=Path(tempfile.mkdtemp()) / "settings.json")
+    store.save_master_lot_tracking(r"c:\m\terminal64.exe", {"EURUSD": 23.0})
+    c, _, _ = _controller(_insts(), store)
+    c.start(_master(), [_slave()], master_fake_state=_empty_master_state(),
+            slave_fake_state=_slave_state())
+    try:
+        assert c._engine.learned_master_lots() == {"EURUSD": 23.0}
+    finally:
+        c.stop()
+
+
+def test_start_drops_lots_for_a_different_terminal_after_success():
+    store = SettingsStore(path=Path(tempfile.mkdtemp()) / "settings.json")
+    store.save_master_lot_tracking("C:/old/terminal64.exe", {"EURUSD": 23.0})
+    c, _, _ = _controller(_insts(), store)
+    c.start(_master(), [_slave()], master_fake_state=_empty_master_state(),
+            slave_fake_state=_slave_state())
+    try:
+        assert c._engine.learned_master_lots() == {}
+        assert store.load_master_lot_tracking() == ("C:/m/terminal64.exe", {})
+    finally:
+        c.stop()
+
+
+def test_failed_start_keeps_the_previous_tracking():
+    store = SettingsStore(path=Path(tempfile.mkdtemp()) / "settings.json")
+    store.save_master_lot_tracking("C:/old/terminal64.exe", {"EURUSD": 23.0})
+    c, _, _ = _controller(_insts(), store)
+    state = dict(_empty_master_state())
+    state["terminal_info"] = {"trade_allowed": False}
+    with pytest.raises(AlgoTradingDisabledError):
+        c.start(_master(), [_slave()], master_fake_state=state,
+                slave_fake_state=_slave_state())
+    assert store.load_master_lot_tracking() == (
+        "C:/old/terminal64.exe", {"EURUSD": 23.0})
+
+
+def test_learning_persists_and_reset_clears_engine_and_store(tmp_path):
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c, _, _ = _controller(_insts(), store)
+    master_state = {"positions": [Position(42, "EURUSD", BUY, 1.1, 23.0,
+                                           0.0, 0.0, NOW, 0.00001, "")],
+                    "symbol_infos": {"EURUSD": SI},
+                    "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                                "currency": "USD", "server": "Demo"}}
+    c.start(_master(), [_slave()], master_fake_state=master_state,
+            slave_fake_state=_slave_state())
+    try:
+        assert _tick_until(
+            lambda: store.load_master_lot_tracking()[1].get("EURUSD") == 23.0)
+        c.reset_learned_master_lots()
+        assert c._engine.learned_master_lots() == {}
+        assert store.load_master_lot_tracking() == ("C:/m/terminal64.exe", {})
+    finally:
+        c.stop()
+
+
+def test_reset_while_stopped_clears_the_stored_lots():
+    store = SettingsStore(path=Path(tempfile.mkdtemp()) / "settings.json")
+    store.save_master_lot_tracking("C:/m/terminal64.exe", {"EURUSD": 23.0})
+    c, _, _ = _controller(_insts(), store)
+    c.reset_learned_master_lots()
+    assert store.load_master_lot_tracking() == ("C:/m/terminal64.exe", {})
+
+
+def test_apply_slave_edit_forwards_follow_master_lot():
+    c, _, _ = _controller(_insts())
+    c.start(_master(), [_slave()], master_fake_state=_empty_master_state(),
+            slave_fake_state=_slave_state())
+    try:
+        c._supervisor.reconfigure_slave = lambda sid, csv, norm, **kw: None
+        new = AccountSpec(id="s1", terminal_path="C:/s/terminal64.exe",
+                          symbol_map_csv="EURUSD=EURUSD",
+                          follow_master_lot=True)
+        c.apply_slave_edit("s1", new)
+        assert c._engine._slaves["s1"].config.follow_master_lot is True
+    finally:
+        c.stop()
+
+
+def test_coerce_profiles_rejects_non_bool_follow_master_lot():
+    from manager.app.controller import coerce_profiles
+    raw = [{"id": "p1", "name": "A", "follow_master_lot": "yes"}]
+    assert coerce_profiles(raw) == []
