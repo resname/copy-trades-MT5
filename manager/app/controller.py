@@ -312,7 +312,6 @@ class CopyController:
                                          or (lambda lots: None))
         self._supervisor: Supervisor | None = None
         self._engine: CopyEngine | None = None
-        self._master_tracking_path = ""
 
     @staticmethod
     def _default_supervisor_factory(engine, **kw):
@@ -431,12 +430,14 @@ class CopyController:
         # previous terminal's values).
         master_path = assigned[master.id].exe_path
         stored_path, stored_lots = self._store.load_master_lot_tracking()
+        stored_suppressed = self._store.load_master_lot_suppressed()
         same_terminal = _same_path(stored_path, master_path)
         lots = stored_lots if same_terminal else {}
+        suppressed = stored_suppressed if same_terminal else set()
         # build engine + supervisor (kill_terminal wired); seed the engine with
         # a SlaveConfig per slave (needed before snapshots arrive)
         sup = self.build_supervisor(
-            learned_lots=LearnedMasterLots(lots),
+            learned_lots=LearnedMasterLots(lots, suppressed=suppressed),
             on_learned_lots_changed=lambda lots: self._learned_changed(
                 master_path, lots))
         for s in slaves:
@@ -503,7 +504,6 @@ class CopyController:
                                   self._engine.learned_master_lots())
         sup.start()
         self._supervisor = sup
-        self._master_tracking_path = master_path
         self._status("info", "copying started")
 
     def stop(self) -> None:
@@ -522,22 +522,35 @@ class CopyController:
 
     def _learned_changed(self, master_path: str,
                          lots: dict[str, float]) -> None:
-        """Persist a learned-lots change and forward it to the GUI. Called on
-        the supervisor's tick thread for growth, and on the GUI thread for a
-        terminal-change reset after Start."""
+        """Persist a learned-lots change and forward it to the GUI. The
+        payload is re-read from the holder under its lock, so a callback that
+        was in flight when the user pressed Reset cannot resurrect the old
+        values, and the saved lots always match the current suppression set."""
+        if self._engine is not None:
+            self._engine.learned_snapshot(
+                lambda current, suppressed: self._persist_learned(
+                    master_path, current, suppressed))
+        else:
+            self._persist_learned(master_path, lots, set())
+
+    def _persist_learned(self, master_path: str, lots: dict[str, float],
+                         suppressed: set[int]) -> None:
         try:
-            self._store.save_master_lot_tracking(master_path, lots)
+            self._store.save_master_lot_tracking(
+                master_path, lots, suppressed)
         except Exception as exc:
             self._log(f"master lot tracking save failed: {exc}")
         self._on_learned_lots_changed(lots)
 
     def reset_learned_master_lots(self) -> None:
         """Forget the learned master lots. While running, the engine reset
-        suppresses tickets open right now until they close; while stopped,
-        the persisted lots for the stored terminal are cleared."""
+        suppresses tickets open right now until they close (or, before the
+        first snapshot, whatever that snapshot reports); while stopped, the
+        persisted lots for the stored terminal are cleared."""
         if self._supervisor is not None and self._engine is not None:
             self._engine.reset_learned_master_lots(
-                self._engine.open_master_tickets())
+                self._engine.open_master_tickets(),
+                suppress_next_snapshot=not self._engine.has_master_snapshot())
             return
         path, _ = self._store.load_master_lot_tracking()
         if path:

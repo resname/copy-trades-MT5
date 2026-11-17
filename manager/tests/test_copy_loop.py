@@ -469,3 +469,23 @@ def test_update_slave_config_patches_follow_master_lot():
                             sizing_mode="fixed_lot", master_base_lot=10.0,
                             fixed_lot=0.1, follow_master_lot=True)
     assert eng._slaves["s1"].config.follow_master_lot is True
+
+
+def test_learned_snapshot_includes_suppression():
+    from manager.engine.learned_lots import LearnedMasterLots
+    holder = LearnedMasterLots({"EURUSD": 23.0}, suppressed={7})
+    eng = CopyEngine(learned_lots=holder)
+    eng.add_slave(_sizing_cfg())
+    seen = []
+    eng.learned_snapshot(lambda lots, sup: seen.append((lots, sup)))
+    assert seen == [({"EURUSD": 23.0}, {7})]
+
+
+def test_reset_before_the_first_snapshot_suppresses_its_positions():
+    eng = _engine(slaves=(_sizing_cfg(),), infos={"s1": {"EURUSD": SI}})
+    assert not eng.has_master_snapshot()
+    eng.reset_learned_master_lots(eng.open_master_tickets(),
+                                  suppress_next_snapshot=True)
+    eng.ingest_snapshot(_snap([_pos(1, volume=23.0)]), now=NOW)
+    assert eng.learned_master_lots() == {}
+    assert eng.has_master_snapshot()

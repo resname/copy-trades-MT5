@@ -240,11 +240,24 @@ class CopyEngine:
     def learned_master_lots(self) -> dict[str, float]:
         return self._learned.as_dict()
 
+    def learned_snapshot(self,
+                         fn: Callable[[dict[str, float], set[int]], None]
+                         ) -> None:
+        """Run `fn(lots, suppressed)` under the holder lock, so a concurrent
+        reset cannot interleave between the read and the caller's save."""
+        self._learned.with_snapshot(fn)
+
     def open_master_tickets(self) -> set[int]:
         return {p.ticket for p in list(self._prev)}
 
-    def reset_learned_master_lots(self, open_tickets: Iterable[int]) -> None:
-        self._learned.reset(open_tickets)
+    def has_master_snapshot(self) -> bool:
+        return self._last_now != 0
+
+    def reset_learned_master_lots(
+            self, open_tickets: Iterable[int], *,
+            suppress_next_snapshot: bool = False) -> None:
+        self._learned.reset(open_tickets,
+                            suppress_next_snapshot=suppress_next_snapshot)
         self._on_learned(self._learned.as_dict())
 
     def _handle_event(self, state: SlaveState, event: Event,

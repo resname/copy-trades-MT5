@@ -745,3 +745,77 @@ def test_first_learned_lot_survives_the_terminal_change_commit(tmp_path):
             ("C:/m/terminal64.exe", {"EURUSD": 23.0}))
     finally:
         c.stop()
+
+
+def test_stale_growth_callback_cannot_resurrect_reset_values(monkeypatch, tmp_path):
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c, _, _ = _controller(_insts(), store)
+    callbacks = []
+    real_build = c.build_supervisor
+
+    def build(*a, **kw):
+        callbacks.append(kw.get("on_learned_lots_changed"))
+        return real_build(*a, **kw)
+
+    monkeypatch.setattr(c, "build_supervisor", build)
+    master_state = {"positions": [Position(42, "EURUSD", BUY, 1.1, 23.0,
+                                           0.0, 0.0, NOW, 0.00001, "")],
+                    "symbol_infos": {"EURUSD": SI},
+                    "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                                "currency": "USD", "server": "Demo"}}
+    c.start(_master(), [_slave()], master_fake_state=master_state,
+            slave_fake_state=_slave_state())
+    try:
+        assert _tick_until(
+            lambda: c._engine.learned_master_lots() == {"EURUSD": 23.0})
+        c.reset_learned_master_lots()
+        assert store.load_master_lot_tracking()[1] == {}
+        callbacks[-1]({"EURUSD": 23.0})  # simulate an in-flight stale callback
+        assert store.load_master_lot_tracking()[1] == {}
+    finally:
+        c.stop()
+
+
+def test_reset_suppression_survives_a_restart(tmp_path):
+    store = SettingsStore(path=tmp_path / "settings.json")
+    master_state = {"positions": [Position(42, "EURUSD", BUY, 1.1, 23.0,
+                                           0.0, 0.0, NOW, 0.00001, "")],
+                    "symbol_infos": {"EURUSD": SI},
+                    "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                                "currency": "USD", "server": "Demo"}}
+    c, _, _ = _controller(_insts(), store)
+    c.start(_master(), [_slave()], master_fake_state=master_state,
+            slave_fake_state=_slave_state())
+    try:
+        assert _tick_until(
+            lambda: c._engine.learned_master_lots() == {"EURUSD": 23.0})
+        c.reset_learned_master_lots()
+        assert store.load_master_lot_suppressed() == {42}
+    finally:
+        c.stop()
+    c2, _, _ = _controller(_insts(), store)
+    c2.start(_master(), [_slave()], master_fake_state=master_state,
+             slave_fake_state=_slave_state())
+    try:
+        assert _tick_until(lambda: c2._engine.has_master_snapshot())
+        assert c2._engine.learned_master_lots() == {}
+    finally:
+        c2.stop()
+
+
+def test_reset_right_after_start_sticks(tmp_path):
+    store = SettingsStore(path=tmp_path / "settings.json")
+    c, _, _ = _controller(_insts(), store)
+    master_state = {"positions": [Position(42, "EURUSD", BUY, 1.1, 23.0,
+                                           0.0, 0.0, NOW, 0.00001, "")],
+                    "symbol_infos": {"EURUSD": SI},
+                    "account": {"login": 1, "balance": 0.0, "equity": 0.0,
+                                "currency": "USD", "server": "Demo"}}
+    c.start(_master(), [_slave()], master_fake_state=master_state,
+            slave_fake_state=_slave_state())
+    try:
+        c.reset_learned_master_lots()
+        assert _tick_until(lambda: c._engine.has_master_snapshot())
+        assert c._engine.learned_master_lots() == {}
+    finally:
+        c.stop()
