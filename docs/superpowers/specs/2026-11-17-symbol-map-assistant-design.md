@@ -30,6 +30,13 @@ verify or fix it before adding it to the symbol table.
 - Replace an existing row with the same master pattern instead of duplicating
   it.
 - Keep the existing map format and engine behaviour unchanged.
+- **Single-trade invariant:** one master NEW produces at most one OPEN command
+  per slave, no matter how many map rows could match the master symbol.
+  Multiple matching rows never multiply trades; the first match wins. The only
+  multiplicity stays the existing oversized-volume split, which opens several
+  orders on the *same* chosen slave symbol.
+- The assistant warns when a new or edited rule overlaps an existing row (one
+  would shadow the other) and offers to place the row in the right order.
 
 ## Non-goals
 
@@ -166,6 +173,12 @@ Vorschau
   - every example resolves to its slave example.
   On failure the dialog stays open with an inline message; on success it
   returns `(master_pattern, slave_template)`.
+- **Shadowing check:** before applying, the dialog resolves each example
+  against the profile's existing rows. If an existing row would win for any
+  example (the new row would be ineffective), or the new row would shadow an
+  existing row, the dialog says which row and why, and offers to insert the
+  new row above the conflicting one. Applying anyway is allowed; the map
+  still yields exactly one trade.
 
 ### Widget integration
 
@@ -177,6 +190,18 @@ Vorschau
   - Otherwise append a new row and select it.
 - The existing `_symbol_map_csv()` serialization is unchanged, so saving and
   loading a profile need no changes.
+
+### Single-trade invariant (already true, now pinned)
+
+- `SymbolMapper.resolve(master_symbol)` returns **one** slave name: exact map
+  entry first, then the first regex row whose `fullmatch` succeeds, then the
+  same-name fallback. There is no code path that returns a list of symbols.
+- `derive_command` therefore emits at most one OPEN command per master NEW per
+  slave. A second matching row is never evaluated for that symbol.
+- The worker's oversized-volume path (`split_volume`) may open several orders,
+  but always on the chosen symbol; it never consults the symbol map again.
+- The assistant only changes which single row wins (by warning about shadowing
+  and ordering); it cannot make one master trade resolve to multiple symbols.
 
 ### Backward compatibility
 
@@ -219,7 +244,15 @@ Vorschau
 - `manager/tests/test_profile_editor.py` / `test_slave_editor.py`: the
   assistant button exists and the applied row round-trips through
   `values()`/`set_values()`.
-- `README.md`: document the assistant and the YM example.
+- Single-trade invariant regression tests:
+  - `test_transform.py`: a map with two overlapping matching rows resolves a
+    master symbol to exactly one slave name (the first row's).
+  - `test_copy_loop.py`: ingesting one master NEW through a slave whose map has
+    overlapping rows emits exactly one OPEN command.
+  - `test_worker` / existing split-order tests stay green: an oversized volume
+    still opens multiple orders on the one resolved symbol.
+- `README.md`: document the assistant and the YM example, and state the
+  one-trade-per-master-trade-per-slave rule with the split-order exception.
 
 ## What is left to the builder
 
