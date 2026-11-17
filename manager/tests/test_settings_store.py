@@ -117,3 +117,42 @@ def test_save_then_load_config_round_trip_with_autostart(tmp_path):
            "autostart": {"on_boot": True, "auto_copy": False}}
     s.save_config(cfg)
     assert s.load_config() == cfg
+
+def test_master_lot_tracking_round_trip(tmp_path):
+    store = _store(tmp_path)
+    store.save_master_lot_tracking("C:/m/terminal64.exe",
+                                   {"EURUSD": 23.0, "XAUUSD": 0.5})
+    assert store.load_master_lot_tracking() == (
+        "C:/m/terminal64.exe", {"EURUSD": 23.0, "XAUUSD": 0.5})
+
+
+def test_master_lot_tracking_missing_or_corrupt_degrades(tmp_path):
+    store = _store(tmp_path)
+    assert store.load_master_lot_tracking() == ("", {})
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"global": {"master_lot_tracking": "nope"}}),
+                 encoding="utf-8")
+    assert SettingsStore(path=p).load_master_lot_tracking() == ("", {})
+
+
+def test_master_lot_tracking_drops_invalid_entries(tmp_path):
+    store = _store(tmp_path)
+    store.save({"global": {"master_lot_tracking": {
+        "terminal_path": "C:/m/terminal64.exe",
+        "lots": {"EURUSD": 23.0, "BAD": "x", "NAN": float("nan"),
+                 "NEG": -1.0, "BOOL": True, "": 5.0}}}})
+    assert store.load_master_lot_tracking() == ("C:/m/terminal64.exe",
+                                                {"EURUSD": 23.0})
+
+
+def test_config_and_tracking_saves_do_not_clobber_each_other(tmp_path):
+    store = _store(tmp_path)
+    store.save_config({"master": {"terminal_path": "C:/m/terminal64.exe"}})
+    store.save_master_lot_tracking("C:/m/terminal64.exe", {"EURUSD": 23.0})
+    assert store.load_config()["master"]["terminal_path"] == "C:/m/terminal64.exe"
+    assert store.load_master_lot_tracking() == (
+        "C:/m/terminal64.exe", {"EURUSD": 23.0})
+    # a later config save keeps the tracking key
+    store.save_config({"master": {"terminal_path": "C:/other/terminal64.exe"}})
+    assert store.load_master_lot_tracking() == (
+        "C:/m/terminal64.exe", {"EURUSD": 23.0})
