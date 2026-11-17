@@ -92,8 +92,10 @@ smaller trades smaller.
   23-lot NEW opens 0.1 for itself (base 23), not after one extra tick.
 - Per master symbol: a large-lot instrument never poisons the base for a
   small-lot instrument.
-- Tracking accumulates even when no slave has opted in (cheap); only opted-in
-  slaves use it.
+- Tracking accumulates and persists even when no slave has opted in (cheap;
+  the values are inert until a slave enables the flag). This is a deliberate
+  builder-check call: a user who turns tracking on later immediately has the
+  history, and the cost is one inert settings key.
 
 ### Thread-safe learned store
 
@@ -130,12 +132,30 @@ Shape:
 }
 ```
 
+**Settings write serialization (builder-check call).** `SettingsStore` gains
+one internal `threading.RLock` that covers every read-modify-write operation:
+`save_config`, `save_master_lot_tracking`, and the new reset path each
+re-read the file *inside* the lock before writing. The atomic `os.replace`
+already prevents a torn file; the lock prevents lost updates between the
+engine's persistence callback (supervisor thread) and the GUI's config save
+(GUI thread). A growth callback in flight during a reset therefore cannot
+resurrect the old values, and a GUI save cannot drop the newly learned max.
+
+**Terminal identity (builder-check call).** The tracking key is the normalized
+exe path actually used for the master this run — `assigned[master.id].exe_path`
+— normalized the same way `TerminalManager._norm` normalizes paths (unified
+separators, case-insensitive on Windows). The raw GUI text is never compared
+against the stored value.
+
 `CopyController.start`:
 1. Normalizes the master path via the existing `prepare`/`assigned` step.
 2. Loads the stored tracking.
-3. If the stored terminal path differs from the normalized current one, drops
-   the lots (a different terminal must not inherit a stale base) and saves the
-   new path.
+3. If the stored terminal path differs from the normalized current one, the
+   session runs with empty lots — but the stored drop + new path are **not
+   persisted yet**. A failed Start (readiness, Algo Trading, spawn error) must
+   not destroy the previous terminal's learned values. The drop is committed
+   only after `sup.start()` succeeds; the first growth callback re-saves with
+   the new path anyway.
 4. Passes the lots and an `on_learned_lots_changed` callback into
    `build_supervisor` → `CopyEngine`.
 
@@ -147,9 +167,19 @@ forwards the new dict to the GUI callback.
 
 - `CopyController.reset_learned_master_lots()`: resets the engine's holder (if
   running), saves an empty `lots` map, and emits the callback.
+- **Reset must stick against still-open positions (builder-check call).** The
+  engine observes every snapshot, so a naive reset would re-learn the 23-lot
+  position on the very next tick. `LearnedMasterLots.reset()` therefore takes
+  the set of master tickets open at reset time; `update()` skips those tickets
+  until they close (they disappear from the snapshot). After they close, a new
+  large trade can raise the base again.
 - The Main window's Master pane shows a label with the learned values
   (e.g. `Learned master lots: EURUSD 23, XAUUSD 0.5`, or `none yet`) and a
   **Reset learned master lots** button, enabled only when values exist.
+- **While stopped** (builder-check call): the label shows the persisted values
+  loaded at construction, and Reset clears the persisted `lots` for the stored
+  terminal path (the path key itself is kept). While running, Reset also
+  clears the in-memory holder with ticket suppression above.
 - The label also refreshes on Start/Stop and via a new marshaled signal
   (`_StatusBridge.learned` → `MainWindow.on_learned_lots`), following the
   existing status/log bridge pattern.
@@ -191,6 +221,9 @@ Main window Master pane:
 - Master opens only a half position after a restart that never observed the
   full one → the base is still the configured value until a full-size trade is
   seen (inherent to observation-based learning; documented).
+- Reset while the large position is still open: the ticket is suppressed, so
+  the base stays lowered until that position closes.
+- A failed Start leaves the stored tracking of the previous terminal intact.
 - Non-finite position volumes are ignored.
 - `max_lot` still caps the slave order; the learned base is a reference, not an
   order size, and is not capped.
@@ -208,4 +241,24 @@ Main window Master pane:
 - Settings store tests: round-trip, corrupt/missing tracking degrades, invalid
   entries dropped, old files load defaults.
 - GUI tests: checkbox round-trip + visibility (balance/fixed shown, copy-master
-  hidden); main-window label/reset button; old configs default `False`.
+  hidden); main-window label/reset button (running and stopped); old configs
+  default `False`.
+
+## Builder-check decisions (author's calls)
+
+The fresh builder raised six points; all were settled here rather than reopened
+with the user:
+
+1. **Settings consistency** — one `RLock` in `SettingsStore` covers every
+   read-modify-write; no lost updates between the engine callback and GUI
+   saves.
+2. **Reset durability** — tickets open at reset are suppressed until they
+   close, so Reset cannot be undone by the next tick.
+3. **Failed Start** — the terminal-change drop is held in memory and committed
+   only after a successful start.
+4. **Terminal identity** — the normalized `assigned[master.id].exe_path` is the
+   key, compared with `TerminalManager._norm` semantics.
+5. **Opt-in scope** — observation and persistence run regardless of whether a
+   slave enabled the flag; the stored values are inert otherwise.
+6. **Stopped state** — the Master pane shows persisted values and Reset works
+   while stopped (clears the stored lots, keeps the path key).
