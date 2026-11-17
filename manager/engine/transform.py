@@ -152,7 +152,10 @@ def calculate_slave_lot(mode: str, master_volume: float, balance: float,
     if mode == SIZING_FIXED_LOT:
         if fixed_lot <= 0.0:
             return 0.0
-        return _snap_clamp(fixed_lot, lot_step, min_lot, max_lot)
+        raw = fixed_lot
+        if master_base_lot > 0.0 and master_volume < master_base_lot:
+            raw *= master_volume / master_base_lot
+        return _snap_clamp(raw, lot_step, min_lot, max_lot)
     return 0.0
 
 

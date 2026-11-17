@@ -222,6 +222,53 @@ def test_calculate_slave_lot_fixed_lot_invalid_returns_zero():
                                0.0, 0.0, 10, 0.01, 0.01) == 0.0
 
 
+def test_calculate_slave_lot_fixed_lot_scales_down_below_base():
+    # fixed 0.1, base 10, master 5 -> 0.1 * (5/10) = 0.05
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 5.0, 1000, 100, 0.01,
+                               10.0, 0.1, 10, 0.01, 0.01) == 0.05
+
+
+def test_calculate_slave_lot_fixed_lot_no_scaling_at_base():
+    # master 10 == base 10 -> strict '<' guard -> full fixed lot
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 10.0, 1000, 100, 0.01,
+                               10.0, 0.1, 10, 0.01, 0.01) == 0.1
+
+
+def test_calculate_slave_lot_fixed_lot_no_scaling_above_base():
+    # master 20 > base 10 -> down-only -> full fixed lot
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 20.0, 1000, 100, 0.01,
+                               10.0, 0.1, 10, 0.01, 0.01) == 0.1
+
+
+def test_calculate_slave_lot_fixed_lot_scaled_below_min_opens_min():
+    # fixed 0.1, base 10, master 0.5 -> raw 0.005 -> snaps to 0.0 -> min 0.01
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 0.5, 1000, 100, 0.01,
+                               10.0, 0.1, 10, 0.01, 0.01) == 0.01
+
+
+def test_calculate_slave_lot_fixed_lot_negative_base_disables_scaling():
+    # master_base_lot <= 0 -> disabled -> full fixed lot (master 0.5 ignored)
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 0.5, 1000, 100, 0.01,
+                               -10.0, 0.1, 10, 0.01, 0.01) == 0.1
+
+
+def test_calculate_slave_lot_fixed_lot_with_base_capped_at_max_lot():
+    # fixed 10, base 10, master 5 -> raw 5 -> capped at max_lot 2
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 5.0, 1000, 100, 0.01,
+                               10.0, 10.0, 2.0, 0.01, 0.01) == 2.0
+
+
+def test_calculate_slave_lot_fixed_lot_with_base_invalid_lot_step_returns_zero():
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 5.0, 1000, 100, 0.01,
+                               10.0, 0.1, 10, 0.0, 0.01) == 0.0
+
+
+def test_calculate_slave_lot_fixed_lot_zero_with_base_returns_zero():
+    # invalid fixed lot is skipped before any scaling is considered
+    assert calculate_slave_lot(SIZING_FIXED_LOT, 5.0, 1000, 100, 0.01,
+                               10.0, 0.0, 10, 0.01, 0.01) == 0.0
+
+
 def test_calculate_slave_lot_balance_step_invalid_step_returns_zero():
     assert calculate_slave_lot(SIZING_BALANCE_STEP, 0.5, 1000, 0, 0.01,
                                0.0, 0.01, 10, 0.01, 0.01) == 0.0
