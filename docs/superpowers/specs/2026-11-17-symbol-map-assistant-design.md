@@ -21,7 +21,7 @@ verify or fix it before adding it to the symbol table.
 
 ## Goals
 
-- A **Symbol-Assistent…** button next to Add Row / Remove Row in the shared
+- An **Assistant…** button next to Add Row / Remove Row in the shared
   symbol-map widget (used by both the profile editor and the slave editor).
 - Enter 1–2 master/slave example pairs; derive a master regex and slave
   template automatically.
@@ -105,64 +105,84 @@ def infer_symbol_rule(examples: list[tuple[str, str]]) -> SymbolRule:
 Inference, for one or more example pairs:
 
 1. Strip whitespace; require at least one non-empty pair.
-2. Master side: split trailing digits (`(\d+)$`) as the optional year. The
-   remaining head must end with a month-code letter from
-   `FGHJKMNQUVXZ`; the master prefix is everything before that letter. All
-   examples must agree on the year-digit count (or all have none).
-3. Slave side: if the master has a year and the slave ends with the same
-   number of digits, treat those as the slave's year; otherwise the slave has
-   no year. Locate the month-code letter in the slave core (after the slave's
-   own prefix), replace it with the month group, and the trailing year digits
-   with the year group.
-4. Build the master pattern:
-   `^` + escaped master prefix + `([FGHJKMNQUVXZ])` +
-   (`(\d{n})` if a year exists) + `$`.
-   Group 1 = master prefix, group 2 = month code, group 3 = year (if present).
-5. Build the slave template from the slave example: replace the month letter
-   with `$2`; if the slave has a year, replace its digits with `$3`. Because
-   group 1 is the master prefix, the template does not need `$1` unless the
-   slave text includes the master prefix; inference instead keeps the literal
-   slave prefix. (For `YMZ26 → YM_Z`, the template is `YM_$2`.)
-6. Validate by constructing `SymbolMapper(f"{pattern}={template}", lambda s:
-   True)` and resolving every master example; each must equal its slave
-   example. On mismatch or structural inconsistency, raise
-   `SymbolAssistError` with a plain-language reason (e.g. "the slave example
-   does not contain the month letter").
+2. Master side, per example:
+   - Find the **rightmost** month-code letter from `FGHJKMNQUVXZ` that is
+     immediately followed by a digit run of 2–4 digits (the contract year).
+     Without one, raise "the master example needs a month code and a year,
+     e.g. YMZ26" (undated contracts are edited manually).
+   - master prefix = everything before that letter (must be non-empty);
+     master suffix = everything after the year digits (e.g. `.cfd` in
+     `YMH27.cfd`). A root that itself contains a month letter (`YM`) is not
+     mistaken for the month because the rightmost match wins.
+3. All master examples must agree on the prefix, the year width and the
+   suffix. Otherwise raise "the examples describe different symbol shapes".
+4. Slave side, per example:
+   - Month letter = the **last** month-code letter in the string.
+   - slave prefix = everything before it; slave tail = everything after it.
+   - If the tail starts with digits whose width equals the master year width,
+     those digits are the slave year and the rest of the tail is the slave
+     suffix. If the tail starts with digits of a different width, raise "the
+     slave year width does not match the master's". If it starts with no
+     digits, the slave has no year and the whole tail is its suffix.
+   - All slave examples must agree on the prefix, the suffix and whether they
+     carry a year (and its width).
+5. Build the master pattern:
+   `^` + `(` + escaped master prefix + `)` + `([FGHJKMNQUVXZ])` +
+   `(\d{n})` + escaped master suffix + `$`.
+   Group 1 = master prefix, group 2 = month code, group 3 = year.
+6. Build the slave template from the slave example: replace the month letter
+   with `$2`, replace the slave year (if any) with `$3`, and keep the slave
+   prefix and suffix literally. (`YMZ26 → YM_Z` gives `YM_$2`;
+   `YMH27.cfd → YM_H.cfd` gives `YM_$2.cfd`.)
+7. Validate with `SymbolMapper(f"{pattern}={template}", lambda s: False)` —
+   the same-name fallback is disabled so an invalid rule cannot look valid.
+   Every master example must resolve to its slave example; otherwise raise
+   `SymbolAssistError` with a plain-language reason.
 
 Known limitations, surfaced in the dialog, not errors:
+- The master example must carry a year; undated contracts are not inferred
+  (the editable rule fields remain the escape hatch).
 - The slave must contain the same month-code letter as the master.
 - One month code per symbol; no numeric month representation.
-- Mixed year formats across examples are rejected.
+- A master suffix that itself contains a month-code letter can confuse the
+  "last month letter before the year" rule; the editable fields are the
+  escape hatch.
+- Roots may differ between master and slave (`NQH27 → NAS_H`): the master root
+  is captured in group 1, the slave root is written literally.
 
 ### Dialog
 
 New `manager/gui/symbol_assistant.py`, class `SymbolAssistant(QDialog)`:
 
+The app's GUI and README are English; keep every new user-facing string
+English for consistency. The button label is **Assistant…** (with the ellipsis
+used by the other dialogs).
+
 ```
-Symbol-Assistent
+Symbol Assistant
 ─────────────────────────────────────────────────
-Beispiele (Master → Slave)
+Examples (master → slave)
   [ YMZ26      ]  →  [ YM_Z        ]   [−]
   [ YMH27      ]  →  [ YM_H        ]   [−]
-  [+ Beispiel]
+  [+ Example]
 
-Regel (editierbar)
+Rule (editable)
   Master:  [ ^(YM)([FGHJKMNQUVXZ])(\d{2})$ ]
   Slave:   [ YM_$2                         ]
-  [ Neu ableiten ]
+  [ Re-derive ]
 
-Vorschau
-  Test-Master-Symbol: [ YMZ26     ]  →  YM_Z
-  ✓ passt zu Beispiel 1
+Preview
+  Test master symbol: [ YMZ26     ]  →  YM_Z
+  ✓ matches example 1
 
-[ Abbrechen ]                       [ Übernehmen ]
+[ Cancel ]                          [ Apply ]
 ```
 
 - Examples table: two editable columns, add/remove buttons, starts with one
   empty row.
 - Inference runs automatically when an example changes and the rule fields
   have not been manually edited. Editing a rule field stops auto-inference;
-  **Neu ableiten** re-runs it.
+  **Re-derive** re-runs it.
 - Preview updates live: it resolves the test master symbol (default: the first
   example) with the current rule fields and reports either the result or the
   validation error.
@@ -183,7 +203,7 @@ Vorschau
 ### Widget integration
 
 `CopySettingsWidget` (shared by `ProfileEditor` and `SlaveEditor`):
-- New `assistant_button = QPushButton("Assistent…")` next to Add Row /
+- New `assistant_button = QPushButton("Assistant…")` next to Add Row /
   Remove Row.
 - On click, open `SymbolAssistant(parent=self)`; on accept:
   - If a row with the same master pattern exists, replace its slave cell.
@@ -211,15 +231,23 @@ Vorschau
 
 ## Edge cases
 
-- A month code that is also the root's last letter (e.g. `YM_M` for June) is
-  fine because inference strips the master prefix before locating the month.
-- Broker prefixes/suffixes are preserved literally (e.g. `YMH27.cfd → YM_H.cfd`
-  yields `$(...)_$2.cfd`).
+- A month code that is also part of the root (e.g. `YMM27` for June) is fine:
+  inference uses the rightmost month-code letter followed by the year, so the
+  root's `M` is not mistaken for the month.
+- Broker prefixes/suffixes are preserved literally: `YMH27.cfd → YM_H.cfd`
+  yields the pattern `^(YM)([FGHJKMNQUVXZ])(\d{2})\.cfd$` and the template
+  `YM_$2.cfd`.
 - A slave name that includes the year (`YM_H27`) gets `$3` in place of the
-  year digits.
-- Fewer than two examples are allowed; a single pair still generates a rule
-  (the family shape is inferred from that one pair).
-- Inconsistent examples (different roots, different year widths) are rejected
+  year digits; its year width must match the master's.
+- A 4-digit master year (`YMZ2026`) is supported; the width must be consistent
+  across examples.
+- Master and slave roots may differ (`NQH27 → NAS_H`): group 1 captures the
+  master root, the slave root is literal.
+- Fewer than two examples are allowed; a single pair still generates a rule,
+  but a second example is recommended because it is the only cross-check that
+  the inferred shape is not a coincidence.
+- Inconsistent examples (different master prefixes/suffixes, different year
+  widths, different slave prefixes/suffixes or year presence) are rejected
   with a clear message; the user can edit the rule fields manually.
 - If the generated pattern matches more broadly than intended, the preview and
   the editable fields make that visible before applying.
@@ -229,11 +257,17 @@ Vorschau
 - `manager/tests/test_symbol_assist.py`: pure inference.
   - `YMZ26→YM_Z`, `YMH27→YM_H` → `^(YM)([FGHJKMNQUVXZ])(\d{2})$` / `YM_$2`;
     the generated mapper resolves both examples and `YMM27 → YM_M`.
-  - Other families (`ESZ26→ES_Z`, `NQH27→NQ_H`), broker suffix
-    (`YMH27.cfd→YM_H.cfd`), slave with year (`YMH27→YM_H27`), root whose last
-    letter is the month (`YMM27→YM_M`).
-  - Failure cases: inconsistent roots, no month code, no trailing year on the
-    master, mixed year widths, empty input, slave missing the month letter.
+  - Other families (`ESZ26→ES_Z`), a different slave root
+    (`NQH27→NAS_H`), broker suffix (`YMH27.cfd→YM_H.cfd` with the escaped
+    suffix in the pattern and `YM_$2.cfd` as the template), a slave with a
+    year (`YMH27→YM_H27`), a 4-digit master year, a root containing the month
+    letter (`YMM27→YM_M`).
+  - Failure cases: no trailing year on the master, no month code, empty
+    master prefix, mixed year widths, inconsistent prefixes/suffixes, slave
+    missing the month letter, slave year width mismatch, empty input.
+  - Validation disables the same-name fallback: a same-name example whose
+    rule does not actually match is rejected (it would "resolve" with the
+    fallback enabled).
   - CSV safety: the generated pattern/template contain no `,` or `=`.
 - `manager/tests/test_symbol_assistant.py` (GUI, offscreen):
   - Filling two examples auto-fills the rule and preview.
