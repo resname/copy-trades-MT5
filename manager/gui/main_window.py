@@ -911,6 +911,8 @@ class MainWindow(QMainWindow):
         # Include the lot parameter that the selected mode actually uses.
         if profile.sizing_mode == "fixed_lot":
             mode_detail = f" · fixed {profile.fixed_lot}"
+            if profile.master_base_lot > 0:
+                mode_detail += f" · base {profile.master_base_lot}"
         elif profile.sizing_mode == "balance_step":
             mode_detail = f" · base {profile.master_base_lot}"
         else:

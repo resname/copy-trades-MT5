@@ -1109,6 +1109,10 @@ def test_profile_tooltip_includes_mode_relevant_lot(qapp):
     fixed = w._profile_tooltip(_copy_profile(sizing_mode="fixed_lot",
                                              fixed_lot=0.07))
     assert "fixed 0.07" in fixed
+    assert "base" not in fixed  # base lot disabled -> not shown
+    fixed_scaled = w._profile_tooltip(_copy_profile(
+        sizing_mode="fixed_lot", fixed_lot=0.07, master_base_lot=10.0))
+    assert "fixed 0.07" in fixed_scaled and "base 10.0" in fixed_scaled
     balance = w._profile_tooltip(_copy_profile(sizing_mode="balance_step",
                                                master_base_lot=0.2))
     assert "base 0.2" in balance
