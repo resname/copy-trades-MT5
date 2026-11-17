@@ -100,8 +100,12 @@ source:
     (persisted across restarts) and uses it as the reference base, so a master
     base that has grown over time keeps scaling correctly — once the master's
     usual lot is 20, a 10-lot trade opens half the configured size. It never
-    scales up; Max Lots still caps the order. The Master pane shows the learned
-    values and offers a reset.
+    scales up; Max Lots still caps the order. The learned base only grows — use
+    **Reset learned master lots** to lower it. Reset ignores positions that are
+    open at that moment until they close, and that hold survives a restart. A
+    restart that has only seen a half-size position keeps the configured base
+    until a full-size trade appears. The Master pane shows the learned values
+    and offers the reset.
   - If a computed volume exceeds the slave symbol's per-order max
     (`SYMBOL_VOLUME_MAX`), the order is **split into several slave orders** —
     e.g. 150 lots at a 100-lot max opens 100 + 50 — each leg carrying its own
