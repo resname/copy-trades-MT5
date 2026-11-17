@@ -63,3 +63,39 @@ def test_reset_frees_suppression_when_the_ticket_disappears():
     lots.update([])  # ticket 7 is gone
     assert lots.update([_pos(7, volume=23.0)]) is True
     assert lots.get("EURUSD") == 23.0
+
+
+def test_update_accepts_a_one_shot_iterable():
+    lots = LearnedMasterLots()
+    assert lots.update(iter([_pos(1, volume=23.0)])) is True
+    assert lots.get("EURUSD") == 23.0
+
+
+def test_initial_suppression_is_validated_and_reported():
+    lots = LearnedMasterLots({"EURUSD": 23.0}, suppressed={7, 0, -1, True, "x"})
+    assert lots.suppressed() == {7}
+    assert lots.update([_pos(7, volume=23.0)]) is False
+    assert lots.as_dict() == {"EURUSD": 23.0}
+
+
+def test_suppressed_returns_a_copy():
+    lots = LearnedMasterLots(suppressed={7})
+    copy = lots.suppressed()
+    copy.add(9)
+    assert lots.suppressed() == {7}
+
+
+def test_reset_can_suppress_the_next_snapshot():
+    lots = LearnedMasterLots({"EURUSD": 23.0})
+    lots.reset(open_tickets=set(), suppress_next_snapshot=True)
+    assert lots.update([_pos(7, volume=23.0)]) is False   # first snapshot
+    assert lots.suppressed() == {7}
+    lots.update([])                                        # ticket 7 closed
+    assert lots.update([_pos(8, volume=10.0)]) is True     # new trades learn
+
+
+def test_with_snapshot_provides_lots_and_suppression():
+    lots = LearnedMasterLots({"EURUSD": 23.0}, suppressed={7})
+    seen = []
+    lots.with_snapshot(lambda lots, sup: seen.append((lots, sup)))
+    assert seen == [({"EURUSD": 23.0}, {7})]
