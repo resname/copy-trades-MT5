@@ -489,3 +489,22 @@ def test_reset_before_the_first_snapshot_suppresses_its_positions():
     eng.ingest_snapshot(_snap([_pos(1, volume=23.0)]), now=NOW)
     assert eng.learned_master_lots() == {}
     assert eng.has_master_snapshot()
+
+
+def test_one_master_new_emits_one_open_with_overlapping_rows():
+    cfg = _cfg(symbol_map=r"YM.*=YM,^(YM)([FGHJKMNQUVXZ])(\d{2})$=YM_$2")
+    eng = _engine(slaves=(cfg,), infos={"s1": {"YM": SI}})
+    cmds = eng.ingest_snapshot(
+        _snap([_pos(1, volume=0.5, symbol="YMZ26")]), now=NOW)["s1"]
+    assert len(cmds) == 1
+    assert cmds[0].symbol == "YM"
+
+
+def test_exact_row_wins_for_a_master_new():
+    cfg = _cfg(
+        symbol_map=r"^(YM)([FGHJKMNQUVXZ])(\d{2})$=YM_$2,YMZ26=EXACT")
+    eng = _engine(slaves=(cfg,), infos={"s1": {"EXACT": SI}})
+    cmds = eng.ingest_snapshot(
+        _snap([_pos(1, volume=0.5, symbol="YMZ26")]), now=NOW)["s1"]
+    assert len(cmds) == 1
+    assert cmds[0].symbol == "EXACT"

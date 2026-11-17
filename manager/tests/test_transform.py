@@ -140,7 +140,7 @@ def test_lots_invalid_lot_step_returns_zero():
 
 
 from manager.engine.transform import (
-    _snap_clamp, calculate_slave_lot,
+    SymbolMapper, _snap_clamp, calculate_slave_lot,
     SIZING_BALANCE_STEP, SIZING_COPY_MASTER, SIZING_FIXED_LOT,
 )
 
@@ -359,3 +359,18 @@ def test_split_volume_degenerate_inputs_single_part():
     assert split_volume(0.0, 100.0, 0.01, 0.01) == [0.0]
     assert split_volume(5.0, 0.0, 0.01, 0.01) == [5.0]   # unusable volume_max -> legacy single order
     assert split_volume(5.0, 100.0, 0.0, 0.01) == [5.0]  # unusable volume_step -> legacy single order
+
+
+def test_overlapping_rows_resolve_to_exactly_one_slave():
+    first_broad = SymbolMapper(
+        r"YM.*=YM,^(YM)([FGHJKMNQUVXZ])(\d{2})$=YM_$2", lambda s: False)
+    assert first_broad.resolve("YMZ26") == "YM"
+    first_specific = SymbolMapper(
+        r"^(YM)([FGHJKMNQUVXZ])(\d{2})$=YM_$2,YM.*=YM", lambda s: False)
+    assert first_specific.resolve("YMZ26") == "YM_Z"
+
+
+def test_exact_row_beats_regex_rows_regardless_of_order():
+    m = SymbolMapper(
+        r"^(YM)([FGHJKMNQUVXZ])(\d{2})$=YM_$2,YMZ26=EXACT", lambda s: False)
+    assert m.resolve("YMZ26") == "EXACT"
