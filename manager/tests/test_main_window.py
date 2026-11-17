@@ -30,6 +30,7 @@ class FakeController:
         self.stopped = False
         self._instances = []
         self.applied_edits = []
+        self.reset_calls = 0
     def discover_instances(self):
         return self._instances
     def start(self, master, slaves, **kw):
@@ -41,6 +42,8 @@ class FakeController:
         return self.started and not self.stopped
     def apply_slave_edit(self, slave_id, spec):
         self.applied_edits.append((slave_id, spec))
+    def reset_learned_master_lots(self):
+        self.reset_calls += 1
 
 
 def test_main_window_constructs(qapp):
@@ -1442,3 +1445,43 @@ def test_remove_slave_at_keeps_a_neighbour_selected(qapp):
     w.slave_list.setCurrentRow(2)
     assert w._remove_slave_at(2) is True
     assert w.slave_list.currentRow() == 1
+
+
+def test_main_window_has_learned_lots_widgets(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    assert w.learned_lots_label is not None
+    assert w.reset_learned_lots_button is not None
+    assert w.reset_learned_lots_button.isEnabled() is False
+
+
+def test_learned_lots_label_shows_persisted_values(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_master_lot_tracking("C:/m/terminal64.exe",
+                                   {"EURUSD": 23.0, "XAUUSD": 0.5})
+    w = MainWindow(FakeController(), store=store)
+    assert "EURUSD 23" in w.learned_lots_label.text()
+    assert w.reset_learned_lots_button.isEnabled() is True
+
+
+def test_on_learned_lots_updates_the_label(qapp):
+    from manager.gui.main_window import MainWindow
+    w = MainWindow(FakeController())
+    w.on_learned_lots({"EURUSD": 23.0})
+    assert "EURUSD 23" in w.learned_lots_label.text()
+    w.on_learned_lots({})
+    assert "none yet" in w.learned_lots_label.text()
+
+
+def test_reset_button_calls_controller_and_clears_label(qapp, tmp_path):
+    from manager.gui.main_window import MainWindow
+    from manager.settings.store import SettingsStore
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save_master_lot_tracking("C:/m/terminal64.exe", {"EURUSD": 23.0})
+    c = FakeController()
+    w = MainWindow(c, store=store)
+    w.reset_learned_lots_button.click()
+    assert c.reset_calls == 1
+    assert "none yet" in w.learned_lots_label.text()

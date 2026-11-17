@@ -19,6 +19,7 @@ class _StatusBridge(QObject):
     supervisor's daemon thread) onto the GUI thread via a Qt signal."""
     status = Signal(object)
     log = Signal(str)
+    learned = Signal(object)
 
 
 def build_app_graph(app: QApplication, resume_copy: bool = False):
@@ -28,10 +29,12 @@ def build_app_graph(app: QApplication, resume_copy: bool = False):
     controller = CopyController(
         terminal_manager=terminal_manager, store=store,
         on_status=lambda s: bridge.status.emit(s),
-        on_log=lambda m: bridge.log.emit(m))
+        on_log=lambda m: bridge.log.emit(m),
+        on_learned_lots_changed=lambda lots: bridge.learned.emit(lots))
     window = MainWindow(controller, store=store, resume_copy=resume_copy)
     bridge.status.connect(window.append_status)
     bridge.log.connect(window.append_log)
+    bridge.learned.connect(window.on_learned_lots)
     return window, controller, bridge
 
 

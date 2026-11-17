@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._populate_terminals()
         self._load_config()
+        self._refresh_learned_lots()
         app = QApplication.instance()
         if app is not None and self._store is not None:
             app.aboutToQuit.connect(self._save_config)
@@ -113,6 +114,14 @@ class MainWindow(QMainWindow):
         self.master_terminal.setEditable(True)
         fit_combo_width(self.master_terminal, 30)
         mform.addRow("Terminal", self.master_terminal)
+        self.learned_lots_label = QLabel("Learned master lots: none yet")
+        self.learned_lots_label.setWordWrap(True)
+        self.reset_learned_lots_button = QPushButton("Reset learned master lots")
+        self.reset_learned_lots_button.setEnabled(False)
+        mform.addRow("Learned lots", self.learned_lots_label)
+        mform.addRow("", self.reset_learned_lots_button)
+        self.reset_learned_lots_button.clicked.connect(
+            self._on_reset_learned_lots)
         term_row = QHBoxLayout()
         self.install_metatrader_button = QPushButton("Install MetaTrader")
         self.launch_terminal_button = QPushButton("Open terminal for login")
@@ -650,6 +659,7 @@ class MainWindow(QMainWindow):
             self._controller.start(master, list(self._slaves))
             self.set_running(True)
             self._save_config()
+            self._refresh_learned_lots()
         except AlgoTradingDisabledError as exc:
             self.append_log(f"{label} failed: {exc}")
             if show_modal:
@@ -800,6 +810,31 @@ class MainWindow(QMainWindow):
     def _on_stop(self):
         self._controller.stop()
         self.set_running(False)
+        self._refresh_learned_lots()
+
+    # ---- learned master lots ----
+    def _refresh_learned_lots(self, lots=None) -> None:
+        """Show the learned per-symbol master lots. `lots=None` re-reads the
+        store; any read failure or missing store renders 'none yet'."""
+        if lots is None:
+            try:
+                lots = self._store.load_master_lot_tracking()[1]
+            except Exception:
+                lots = {}
+        if lots:
+            detail = ", ".join(f"{sym} {lot:g}"
+                               for sym, lot in sorted(lots.items()))
+            self.learned_lots_label.setText(f"Learned master lots: {detail}")
+        else:
+            self.learned_lots_label.setText("Learned master lots: none yet")
+        self.reset_learned_lots_button.setEnabled(bool(lots))
+
+    def on_learned_lots(self, lots) -> None:
+        self._refresh_learned_lots(dict(lots))
+
+    def _on_reset_learned_lots(self) -> None:
+        self._controller.reset_learned_master_lots()
+        self._refresh_learned_lots({})
 
     def _on_launch_terminal(self):
         exe = self.master_terminal.currentText().strip()

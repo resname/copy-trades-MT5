@@ -13,6 +13,7 @@ class FakeTerminalManager:
 class _FakeStore:
     def load(self): return {}
     def save(self, d): pass
+    def load_master_lot_tracking(self): return ("", {})
 
 
 def test_main_assembles_window_controller_bridge(qapp, monkeypatch):
@@ -61,3 +62,11 @@ def test_main_update_subcommand(monkeypatch):
     rc = entry.main(["update"])
     assert rc == 0
     assert len(called) == 1  # on_quit passed through, not invoked here
+
+def test_build_app_graph_wires_learned_lots(qapp, monkeypatch):
+    import manager.__main__ as entry
+    monkeypatch.setattr(entry, "TerminalManager", lambda *a, **k: FakeTerminalManager())
+    monkeypatch.setattr(entry, "SettingsStore", lambda *a, **k: _FakeStore())
+    w, controller, bridge = entry.build_app_graph(qapp)
+    assert hasattr(bridge, "learned")
+    assert hasattr(w, "on_learned_lots")
