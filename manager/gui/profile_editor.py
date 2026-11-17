@@ -140,7 +140,7 @@ class CopySettingsWidget(QWidget):
         is_fixed = mode == "fixed_lot"
         show_row(self.step_amount, is_balance)
         show_row(self.step_size, is_balance)
-        show_row(self.master_base_lot, is_balance)
+        show_row(self.master_base_lot, is_balance or is_fixed)
         show_row(self.fixed_lot, is_fixed)
 
     # ---- data in/out ----

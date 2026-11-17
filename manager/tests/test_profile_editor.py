@@ -55,7 +55,8 @@ def test_copy_settings_widget_visibility_follows_mode(qapp):
     w = CopySettingsWidget()
     w.sizing_mode.setCurrentIndex(w.sizing_mode.findData("fixed_lot"))
     assert not w.fixed_lot.isHidden()
-    assert w.step_amount.isHidden() and w.master_base_lot.isHidden()
+    assert w.step_amount.isHidden()
+    assert not w.master_base_lot.isHidden()  # base-lot scaling applies to fixed lot
 
 
 def _accept_with_name(name):

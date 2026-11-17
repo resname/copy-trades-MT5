@@ -210,7 +210,7 @@ def test_slave_editor_fixed_lot_shows_fixed_field_hides_step(qapp):
     assert not dlg.max_lot.isHidden()
     assert dlg.step_amount.isHidden()
     assert dlg.step_size.isHidden()
-    assert dlg.master_base_lot.isHidden()
+    assert not dlg.master_base_lot.isHidden()  # base-lot scaling applies to fixed lot
 
 
 def test_slave_editor_spec_carries_sizing_mode(qapp):
