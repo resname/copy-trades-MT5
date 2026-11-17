@@ -415,3 +415,10 @@ def test_slave_editor_follow_master_lot_round_trip(qapp):
     dlg.follow_master_lot.setChecked(True)
     dlg.accept()
     assert dlg.spec().follow_master_lot is True
+
+
+def test_slave_editor_assistant_button_disabled_with_set_editable(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    dlg.copy_settings.set_editable(False)
+    assert not dlg.copy_settings.assistant_button.isEnabled()

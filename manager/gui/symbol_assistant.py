@@ -68,6 +68,13 @@ class SymbolAssistant(QDialog):
         preview_form.addRow("Result", self.preview_label)
         root.addLayout(preview_form)
 
+        self.hint_label = QLabel(
+            "Tip: a suffix containing a month-code letter "
+            "(F G H J K M N Q U V X Z) can confuse inference — check the "
+            "preview.")
+        self.hint_label.setWordWrap(True)
+        root.addWidget(self.hint_label)
+
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
         self.error_label.setVisible(False)
@@ -138,6 +145,8 @@ class SymbolAssistant(QDialog):
     def _on_example_changed(self, _item) -> None:
         if self._filling:
             return
+        # A conflict computed against the old examples is stale now.
+        self._clear_conflict()
         if not self._manual and self._examples():
             self._rederive()
         self._update_preview()

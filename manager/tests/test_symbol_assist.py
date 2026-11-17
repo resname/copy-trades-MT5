@@ -137,3 +137,9 @@ def test_infer_slave_with_year_accepts_multiple_examples():
     assert rule.slave_template == "YM_$2$3"
     validate_rule(rule, [("YMH27", "YM_H27"), ("YMZ26", "YM_Z26"),
                          ("YMQ28", "YM_Q28")])
+
+
+def test_infer_rejects_csv_unsafe_symbols():
+    for examples in ([("YM,Z26", "YM_Z")], [("YM=Z26", "YM_Z")]):
+        with pytest.raises(SymbolAssistError):
+            infer_symbol_rule(examples)

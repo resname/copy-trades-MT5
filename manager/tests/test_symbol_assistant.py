@@ -78,3 +78,29 @@ def test_cancel_returns_no_rule(qapp):
     _fill(dlg, [("YMZ26", "YM_Z")])
     dlg.cancel_button.click()
     assert dlg.rule() is None
+
+
+def test_conflict_state_clears_when_an_example_changes(qapp):
+    existing = [(r"^(YM)([FGHJKMNQUVXZ])(\d{2})$", "OLD_$2")]
+    dlg = SymbolAssistant(existing_rows=existing)
+    _fill(dlg, [("YMZ26", "YM_Z")])
+    dlg.apply_button.click()
+    assert dlg.conflict_label.text()
+    dlg.examples_table.item(0, 1).setText("YM_H")  # example edit
+    assert dlg.conflict_label.text() == ""
+    assert dlg.insert_above_button.isHidden()
+    assert dlg.apply_anyway_button.isHidden()
+
+
+def test_dialog_surfaces_the_month_ambiguity_tip(qapp):
+    dlg = SymbolAssistant()
+    assert "month-code" in dlg.hint_label.text()
+
+
+def test_apply_rejects_csv_unsafe_fields(qapp):
+    dlg = SymbolAssistant()
+    _fill(dlg, [("YMZ26", "YM_Z")])
+    dlg.master_pattern_edit.setText("A,B")
+    dlg.apply_button.click()
+    assert dlg.result() != QDialog.DialogCode.Accepted
+    assert "cannot contain" in dlg.error_label.text()
