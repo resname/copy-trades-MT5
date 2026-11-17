@@ -15,6 +15,7 @@ from manager.app.controller import (
     AccountSpec, CopyProfile, SHARED_PROFILE_FIELDS, new_profile_id,
 )
 from manager.engine.transform import parse_symbol_map
+from manager.gui.symbol_assistant import AssistantResult, SymbolAssistant
 
 
 def fit_combo_width(combo: QComboBox, contents_length: int) -> None:
@@ -66,11 +67,14 @@ class CopySettingsWidget(QWidget):
         sym_row = QHBoxLayout()
         self.add_sym_button = QPushButton("Add Row")
         self.del_sym_button = QPushButton("Remove Row")
+        self.assistant_button = QPushButton("Assistant…")
         sym_row.addWidget(self.add_sym_button)
         sym_row.addWidget(self.del_sym_button)
+        sym_row.addWidget(self.assistant_button)
         root.addLayout(sym_row)
         self.add_sym_button.clicked.connect(self._add_sym_row)
         self.del_sym_button.clicked.connect(self._del_sym_row)
+        self.assistant_button.clicked.connect(self._open_assistant)
 
         self._sizing = QFormLayout()
         self.sizing_mode = QComboBox()
@@ -110,6 +114,61 @@ class CopySettingsWidget(QWidget):
         r = self.symbol_table.currentRow()
         if r >= 0:
             self.symbol_table.removeRow(r)
+
+    def symbol_map_pairs(self) -> list[tuple[str, str]]:
+        """Every table row in order (raw cell text; "" for empty cells)."""
+        pairs = []
+        for r in range(self.symbol_table.rowCount()):
+            master = self.symbol_table.item(r, 0)
+            slave = self.symbol_table.item(r, 1)
+            pairs.append((master.text() if master else "",
+                          slave.text() if slave else ""))
+        return pairs
+
+    def _open_assistant(self) -> None:
+        dlg = SymbolAssistant(existing_rows=self.symbol_map_pairs(),
+                              parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = dlg.rule()
+        if result is not None:
+            self._apply_assistant_result(result)
+
+    def _set_sym_cells(self, row: int, master: str, slave: str) -> None:
+        for col, text in ((0, master), (1, slave)):
+            item = self.symbol_table.item(row, col)
+            if item is None:
+                self.symbol_table.setItem(row, col, QTableWidgetItem(text))
+            else:
+                item.setText(text)
+
+    def _apply_assistant_result(self, result: AssistantResult) -> None:
+        """Insert the generated pair at the requested index, replace the first
+        matching master row (removing duplicates), or append it."""
+        if result.insert_before is not None:
+            row = max(0, min(result.insert_before,
+                             self.symbol_table.rowCount()))
+            self.symbol_table.insertRow(row)
+            self._set_sym_cells(row, result.master_pattern,
+                                result.slave_template)
+            self.symbol_table.selectRow(row)
+            return
+        pairs = self.symbol_map_pairs()
+        matches = [i for i, (master, slave) in enumerate(pairs)
+                   if master.strip() and slave.strip()
+                   and master == result.master_pattern]
+        if matches:
+            row = matches[0]
+            self._set_sym_cells(row, result.master_pattern,
+                                result.slave_template)
+            for duplicate in reversed(matches[1:]):
+                self.symbol_table.removeRow(duplicate)
+            self.symbol_table.selectRow(row)
+            return
+        row = self.symbol_table.rowCount()
+        self.symbol_table.insertRow(row)
+        self._set_sym_cells(row, result.master_pattern, result.slave_template)
+        self.symbol_table.selectRow(row)
 
     def _symbol_map_csv(self) -> str:
         pairs = []
@@ -199,6 +258,7 @@ class CopySettingsWidget(QWidget):
         """Enable/disable every input and both symbol-row buttons."""
         for widget in (
             self.symbol_table, self.add_sym_button, self.del_sym_button,
+            self.assistant_button,
             self.sizing_mode, self.step_amount, self.step_size, self.max_lot,
             self.max_trade_age_minutes, self.master_base_lot, self.fixed_lot,
             self.follow_master_lot, self.normalize_sltp,

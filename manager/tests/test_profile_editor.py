@@ -168,3 +168,83 @@ def test_copy_settings_widget_follow_master_lot_visibility(qapp):
         assert not w.follow_master_lot.isHidden()
     w.sizing_mode.setCurrentIndex(w.sizing_mode.findData("copy_master"))
     assert w.follow_master_lot.isHidden()
+
+
+def test_copy_settings_widget_has_assistant_button(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    w = CopySettingsWidget()
+    assert w.assistant_button.text() == "Assistant…"
+
+
+def test_copy_settings_widget_assistant_button_follows_set_editable(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    w = CopySettingsWidget()
+    w.set_editable(False)
+    assert not w.assistant_button.isEnabled()
+    w.set_editable(True)
+    assert w.assistant_button.isEnabled()
+
+
+def test_symbol_map_pairs_preserves_order(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    w = CopySettingsWidget()
+    w._add_sym_row()
+    w._add_sym_row()
+    w.symbol_table.item(0, 0).setText("EURUSD")
+    w.symbol_table.item(0, 1).setText("EURUSD")
+    w.symbol_table.item(1, 0).setText("YMZ26")
+    w.symbol_table.item(1, 1).setText("YM_Z")
+    assert w.symbol_map_pairs() == [("EURUSD", "EURUSD"), ("YMZ26", "YM_Z")]
+
+
+def test_apply_assistant_result_inserts_above(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    from manager.gui.symbol_assistant import AssistantResult
+    w = CopySettingsWidget()
+    w._add_sym_row()
+    w.symbol_table.item(0, 0).setText("EURUSD")
+    w.symbol_table.item(0, 1).setText("EURUSD")
+    w._apply_assistant_result(AssistantResult("PATTERN", "TEMPLATE", 0))
+    assert w.symbol_map_pairs() == [("PATTERN", "TEMPLATE"),
+                                    ("EURUSD", "EURUSD")]
+    assert w.values()["symbol_map_csv"].startswith("PATTERN=TEMPLATE,")
+
+
+def test_apply_assistant_result_replaces_first_and_removes_duplicates(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    from manager.gui.symbol_assistant import AssistantResult
+    w = CopySettingsWidget()
+    for master in ("PATTERN", "EURUSD", "PATTERN"):
+        w._add_sym_row()
+        r = w.symbol_table.rowCount() - 1
+        w.symbol_table.item(r, 0).setText(master)
+        w.symbol_table.item(r, 1).setText("OLD")
+    w._apply_assistant_result(AssistantResult("PATTERN", "NEW", None))
+    assert w.symbol_map_pairs() == [("PATTERN", "NEW"), ("EURUSD", "OLD")]
+
+
+def test_apply_assistant_result_appends_when_new(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    from manager.gui.symbol_assistant import AssistantResult
+    w = CopySettingsWidget()
+    w._apply_assistant_result(AssistantResult("PATTERN", "TEMPLATE", None))
+    assert w.symbol_map_pairs() == [("PATTERN", "TEMPLATE")]
+
+
+def test_assistant_button_applies_the_dialog_result(qapp, monkeypatch):
+    import manager.gui.profile_editor as profile_editor
+    from manager.gui.symbol_assistant import AssistantResult
+    from PySide6.QtWidgets import QDialog
+
+    class FakeAssistant:
+        def __init__(self, existing_rows=None, parent=None):
+            self.existing_rows = existing_rows
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+        def rule(self):
+            return AssistantResult("PATTERN", "TEMPLATE", None)
+
+    monkeypatch.setattr(profile_editor, "SymbolAssistant", FakeAssistant)
+    w = profile_editor.CopySettingsWidget()
+    w.assistant_button.click()
+    assert w.symbol_map_pairs() == [("PATTERN", "TEMPLATE")]
