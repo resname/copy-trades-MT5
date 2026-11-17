@@ -248,3 +248,17 @@ def test_assistant_button_applies_the_dialog_result(qapp, monkeypatch):
     w = profile_editor.CopySettingsWidget()
     w.assistant_button.click()
     assert w.symbol_map_pairs() == [("PATTERN", "TEMPLATE")]
+
+
+def test_apply_assistant_result_insert_above_removes_same_master_rows(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    from manager.gui.symbol_assistant import AssistantResult
+    w = CopySettingsWidget()
+    for master, slave in (("EURUSD", "EURUSD"), ("PATTERN", "OLD")):
+        w._add_sym_row()
+        r = w.symbol_table.rowCount() - 1
+        w.symbol_table.item(r, 0).setText(master)
+        w.symbol_table.item(r, 1).setText(slave)
+    w._apply_assistant_result(AssistantResult("PATTERN", "NEW", 0))
+    assert w.symbol_map_pairs() == [("PATTERN", "NEW"),
+                                    ("EURUSD", "EURUSD")]

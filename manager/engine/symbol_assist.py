@@ -101,7 +101,14 @@ def infer_symbol_rule(examples: list[tuple[str, str]]) -> SymbolRule:
         [(p, "", s) for p, _, _, s in masters], "master symbol shapes")
 
     slaves = [_split_slave(slave, year_width) for _, slave in pairs]
-    slave_prefix, slave_year, slave_suffix = _one(slaves, "slave symbol shapes")
+    # The literal year differs across rollover examples; only its presence
+    # (and, already checked above, its width) must agree.
+    shape = (slaves[0][0], bool(slaves[0][1]), slaves[0][2])
+    if any((prefix, bool(year), suffix) != shape
+           for prefix, year, suffix in slaves):
+        raise SymbolAssistError("the examples describe different slave "
+                                "symbol shapes")
+    slave_prefix, slave_year, slave_suffix = slaves[0]
 
     pattern = ("^(" + re.escape(prefix) + ")([" + MONTH_CODES + "])(\\d{"
                + str(year_width) + "})" + re.escape(master_suffix) + "$")
@@ -141,20 +148,39 @@ def find_conflicts(rule: SymbolRule, examples: list[tuple[str, str]],
                 and "," not in slave and "=" not in slave]
     if not complete:
         return []
+    # Reproduce parse_symbol_map: a duplicate master keeps its first position
+    # but the last value wins.
+    collapsed: dict[str, list] = {}
+    for index, master, slave in complete:
+        if master not in collapsed:
+            collapsed[master] = [index, slave]
+        else:
+            collapsed[master][1] = slave
+    existing_mapper = SymbolMapper(
+        ",".join(f"{master}={entry[1]}" for master, entry in collapsed.items()),
+        lambda s: False)
     new_mapper = SymbolMapper(f"{rule.master_pattern}={rule.slave_template}",
                               lambda s: False)
     conflicts: list[RuleConflict] = []
     for master_example, _ in examples:
         master_example = master_example.strip()
         expected = new_mapper.resolve(master_example)
-        for index, master, slave in complete:
-            one = SymbolMapper(f"{master}={slave}", lambda s: False)
-            actual = one.resolve(master_example)
-            if not actual:
-                continue
-            if actual != expected:
-                conflicts.append(RuleConflict(
-                    master_example, expected, actual, index,
-                    exact_tier=master_example == master))
-            break
+        # Resolve through the whole map: the exact tier wins before any regex.
+        actual = existing_mapper.resolve(master_example)
+        if not actual:
+            continue
+        if master_example in collapsed:
+            row_index = collapsed[master_example][0]
+            exact_tier = True
+        else:
+            row_index = -1
+            for master, entry in collapsed.items():
+                one = SymbolMapper(f"{master}={entry[1]}", lambda s: False)
+                if one.resolve(master_example):
+                    row_index = entry[0]
+                    break
+            exact_tier = False
+        if actual != expected:
+            conflicts.append(RuleConflict(
+                master_example, expected, actual, row_index, exact_tier))
     return conflicts

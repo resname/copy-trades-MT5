@@ -148,6 +148,16 @@ class CopySettingsWidget(QWidget):
         if result.insert_before is not None:
             row = max(0, min(result.insert_before,
                              self.symbol_table.rowCount()))
+            # Never leave a second row with the same master pattern: the map
+            # keeps the last value, so a later duplicate would beat the new row.
+            pairs = self.symbol_map_pairs()
+            duplicates = [i for i, (master, slave) in enumerate(pairs)
+                          if master.strip() and slave.strip()
+                          and master == result.master_pattern]
+            for index in reversed(duplicates):
+                self.symbol_table.removeRow(index)
+                if index < row:
+                    row -= 1
             self.symbol_table.insertRow(row)
             self._set_sym_cells(row, result.master_pattern,
                                 result.slave_template)

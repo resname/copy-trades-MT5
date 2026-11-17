@@ -109,3 +109,31 @@ def test_conflicts_skip_incomplete_rows_but_keep_table_indices():
     rows = [("", ""), ("YMZ26", "OLD"), ("", "")]
     conflicts = find_conflicts(rule, [("YMZ26", "YM_Z")], rows)
     assert conflicts[0].row_index == 1
+
+
+def test_conflicts_see_an_exact_row_after_a_regex_row():
+    rule = infer_symbol_rule([("YMZ26", "YM_Z")])
+    existing = [("YM.*", "BROAD"), ("YMZ26", "EXACT")]
+    conflicts = find_conflicts(rule, [("YMZ26", "YM_Z")], existing)
+    assert conflicts == [RuleConflict("YMZ26", "YM_Z", "EXACT", 1, True)]
+
+
+def test_conflicts_use_the_last_duplicate_exact_master():
+    rule = infer_symbol_rule([("YMZ26", "YM_Z")])
+    existing = [("YMZ26", "A"), ("YMZ26", "B")]
+    conflicts = find_conflicts(rule, [("YMZ26", "YM_Z")], existing)
+    assert conflicts == [RuleConflict("YMZ26", "YM_Z", "B", 0, True)]
+
+
+def test_conflicts_use_the_last_duplicate_regex_master():
+    rule = infer_symbol_rule([("YMZ26", "YM_Z")])
+    existing = [("YM.*", "A"), ("YM.*", "B")]
+    conflicts = find_conflicts(rule, [("YMZ26", "YM_Z")], existing)
+    assert conflicts == [RuleConflict("YMZ26", "YM_Z", "B", 0, False)]
+
+
+def test_infer_slave_with_year_accepts_multiple_examples():
+    rule = infer_symbol_rule([("YMH27", "YM_H27"), ("YMZ26", "YM_Z26")])
+    assert rule.slave_template == "YM_$2$3"
+    validate_rule(rule, [("YMH27", "YM_H27"), ("YMZ26", "YM_Z26"),
+                         ("YMQ28", "YM_Q28")])
