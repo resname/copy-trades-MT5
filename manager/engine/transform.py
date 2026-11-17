@@ -136,7 +136,8 @@ def calculate_slave_lot(mode: str, master_volume: float, balance: float,
       master_base_lot > 0 and master_volume < master_base_lot, scale DOWN:
       raw *= master_volume / master_base_lot (never scales up).
     - copy_master: raw = master_volume.
-    - fixed_lot: raw = fixed_lot.
+    - fixed_lot: raw = fixed_lot; if master_base_lot > 0 and master_volume <
+      master_base_lot, scale DOWN the same way (never scales up).
     """
     if mode == SIZING_BALANCE_STEP:
         if step_amount <= 0.0 or step_size <= 0.0:
