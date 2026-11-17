@@ -87,6 +87,8 @@ class CopySettingsWidget(QWidget):
         self.normalize_sltp.setChecked(True)
         self._sizing.addRow("Lot sizing mode", self.sizing_mode)
         self._sizing.addRow("Master base lot size", self.master_base_lot)
+        self.follow_master_lot = QCheckBox("Follow the master's largest lot")
+        self._sizing.addRow("", self.follow_master_lot)
         self._sizing.addRow("Fixed lot size", self.fixed_lot)
         self._sizing.addRow("Step amount", self.step_amount)
         self._sizing.addRow("Step size", self.step_size)
@@ -141,6 +143,7 @@ class CopySettingsWidget(QWidget):
         show_row(self.step_amount, is_balance)
         show_row(self.step_size, is_balance)
         show_row(self.master_base_lot, is_balance or is_fixed)
+        show_row(self.follow_master_lot, is_balance or is_fixed)
         show_row(self.fixed_lot, is_fixed)
 
     # ---- data in/out ----
@@ -156,6 +159,7 @@ class CopySettingsWidget(QWidget):
             "sizing_mode": self.sizing_mode.currentData(),
             "master_base_lot": float(self.master_base_lot.text()),
             "fixed_lot": float(self.fixed_lot.text()),
+            "follow_master_lot": self.follow_master_lot.isChecked(),
         }
 
     def set_values(self, source: Mapping[str, object] | AccountSpec
@@ -188,6 +192,8 @@ class CopySettingsWidget(QWidget):
                 widget.setText(str(data[name]))
         if "normalize_sltp" in data:
             self.normalize_sltp.setChecked(bool(data["normalize_sltp"]))
+        if "follow_master_lot" in data:
+            self.follow_master_lot.setChecked(bool(data["follow_master_lot"]))
 
     def set_editable(self, editable: bool) -> None:
         """Enable/disable every input and both symbol-row buttons."""
@@ -195,7 +201,7 @@ class CopySettingsWidget(QWidget):
             self.symbol_table, self.add_sym_button, self.del_sym_button,
             self.sizing_mode, self.step_amount, self.step_size, self.max_lot,
             self.max_trade_age_minutes, self.master_base_lot, self.fixed_lot,
-            self.normalize_sltp,
+            self.follow_master_lot, self.normalize_sltp,
         ):
             widget.setEnabled(editable)
 

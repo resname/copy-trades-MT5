@@ -146,3 +146,25 @@ def test_edit_profile_returns_edited_profile(qapp, monkeypatch):
     monkeypatch.setattr(ProfileEditor, "exec", _accept_with_name("B"))
     out = edit_profile(CopyProfile(id="p1", name="A"))
     assert out is not None and out.id == "p1" and out.name == "B"
+
+
+def test_copy_settings_widget_follow_master_lot_round_trip(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    w = CopySettingsWidget()
+    assert w.follow_master_lot.isChecked() is False
+    w.follow_master_lot.setChecked(True)
+    assert w.values()["follow_master_lot"] is True
+    w.set_values({"follow_master_lot": False})
+    assert w.follow_master_lot.isChecked() is False
+    w.set_editable(False)
+    assert not w.follow_master_lot.isEnabled()
+
+
+def test_copy_settings_widget_follow_master_lot_visibility(qapp):
+    from manager.gui.profile_editor import CopySettingsWidget
+    w = CopySettingsWidget()
+    for mode in ("balance_step", "fixed_lot"):
+        w.sizing_mode.setCurrentIndex(w.sizing_mode.findData(mode))
+        assert not w.follow_master_lot.isHidden()
+    w.sizing_mode.setCurrentIndex(w.sizing_mode.findData("copy_master"))
+    assert w.follow_master_lot.isHidden()

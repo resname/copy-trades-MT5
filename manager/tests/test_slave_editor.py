@@ -406,3 +406,12 @@ def test_long_terminal_path_does_not_widen_the_dialog(qapp):
     dlg.layout().activate()
     qapp.processEvents()
     assert dlg.minimumSizeHint().width() < 1200
+
+
+def test_slave_editor_follow_master_lot_round_trip(qapp):
+    from manager.gui.slave_editor import SlaveEditor
+    dlg = SlaveEditor(FakeController([_inst("C:/i0/terminal64.exe")]))
+    dlg.terminal.setCurrentIndex(0)
+    dlg.follow_master_lot.setChecked(True)
+    dlg.accept()
+    assert dlg.spec().follow_master_lot is True

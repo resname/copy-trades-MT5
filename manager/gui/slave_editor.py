@@ -114,6 +114,14 @@ class SlaveEditor(QDialog):
         self.copy_settings.fixed_lot = widget
 
     @property
+    def follow_master_lot(self):
+        return self.copy_settings.follow_master_lot
+
+    @follow_master_lot.setter
+    def follow_master_lot(self, widget) -> None:
+        self.copy_settings.follow_master_lot = widget
+
+    @property
     def normalize_sltp(self):
         return self.copy_settings.normalize_sltp
 
