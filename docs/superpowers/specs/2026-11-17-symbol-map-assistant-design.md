@@ -23,8 +23,8 @@ verify or fix it before adding it to the symbol table.
 
 - An **Assistant…** button next to Add Row / Remove Row in the shared
   symbol-map widget (used by both the profile editor and the slave editor).
-- Enter 1–2 master/slave example pairs; derive a master regex and slave
-  template automatically.
+- Enter one or more master/slave example pairs (two recommended); derive a
+  master regex and slave template automatically.
 - Show the derived rule in editable fields plus a live preview.
 - On apply, insert the pair as one new row in the symbol table.
 - Replace an existing row with the same master pattern instead of duplicating
@@ -35,8 +35,10 @@ verify or fix it before adding it to the symbol table.
   Multiple matching rows never multiply trades; the first match wins. The only
   multiplicity stays the existing oversized-volume split, which opens several
   orders on the *same* chosen slave symbol.
-- The assistant warns when a new or edited rule overlaps an existing row (one
-  would shadow the other) and offers to place the row in the right order.
+- The assistant warns when an existing row would win for the new rule's
+  examples (the new rule would be ineffective) and offers to insert above the
+  conflicting regex row. An exact-tier row always wins regardless of position,
+  so that conflict is reported as not fixable by ordering.
 
 ## Non-goals
 
@@ -107,9 +109,10 @@ Inference, for one or more example pairs:
 1. Strip whitespace; require at least one non-empty pair.
 2. Master side, per example:
    - Find the **rightmost** month-code letter from `FGHJKMNQUVXZ` that is
-     immediately followed by a digit run of 2–4 digits (the contract year).
-     Without one, raise "the master example needs a month code and a year,
-     e.g. YMZ26" (undated contracts are edited manually).
+     immediately followed by a digit run. The **entire** run must be 2–4
+     digits (the contract year); a 1-digit or 5+-digit run is rejected.
+     Without such a letter+run, raise "the master example needs a month code
+     and a year, e.g. YMZ26" (undated contracts are edited manually).
    - master prefix = everything before that letter (must be non-empty);
      master suffix = everything after the year digits (e.g. `.cfd` in
      `YMH27.cfd`). A root that itself contains a month letter (`YM`) is not
@@ -117,7 +120,8 @@ Inference, for one or more example pairs:
 3. All master examples must agree on the prefix, the year width and the
    suffix. Otherwise raise "the examples describe different symbol shapes".
 4. Slave side, per example:
-   - Month letter = the **last** month-code letter in the string.
+   - Month letter = the **last** month-code letter in the string. If there is
+     none, raise "the slave example needs a month code, e.g. YM_Z".
    - slave prefix = everything before it; slave tail = everything after it.
    - If the tail starts with digits whose width equals the master year width,
      those digits are the slave year and the rest of the tail is the slave
@@ -132,7 +136,9 @@ Inference, for one or more example pairs:
    Group 1 = master prefix, group 2 = month code, group 3 = year.
 6. Build the slave template from the slave example: replace the month letter
    with `$2`, replace the slave year (if any) with `$3`, and keep the slave
-   prefix and suffix literally. (`YMZ26 → YM_Z` gives `YM_$2`;
+   prefix and suffix literally — except that a literal `$` in the slave text
+   must be written `$$`, because `_expand_template` treats `$n` as a
+   backreference and `$$` as a literal `$`. (`YMZ26 → YM_Z` gives `YM_$2`;
    `YMH27.cfd → YM_H.cfd` gives `YM_$2.cfd`.)
 7. Validate with `SymbolMapper(f"{pattern}={template}", lambda s: False)` —
    the same-name fallback is disabled so an invalid rule cannot look valid.
@@ -144,9 +150,10 @@ Known limitations, surfaced in the dialog, not errors:
   (the editable rule fields remain the escape hatch).
 - The slave must contain the same month-code letter as the master.
 - One month code per symbol; no numeric month representation.
-- A master suffix that itself contains a month-code letter can confuse the
-  "last month letter before the year" rule; the editable fields are the
-  escape hatch.
+- A master **or slave** suffix that itself contains a month-code letter can
+  confuse the rightmost-month rule; with a single example this can even
+  validate and generate a wrong template. The editable fields are the escape
+  hatch.
 - Roots may differ between master and slave (`NQH27 → NAS_H`): the master root
   is captured in group 1, the slave root is written literally.
 
@@ -191,25 +198,52 @@ Preview
   - the master pattern compiles and contains no `,` or `=`,
   - the slave template contains no `,` or `=`,
   - every example resolves to its slave example.
-  On failure the dialog stays open with an inline message; on success it
-  returns `(master_pattern, slave_template)`.
-- **Shadowing check:** before applying, the dialog resolves each example
-  against the profile's existing rows. If an existing row would win for any
-  example (the new row would be ineffective), or the new row would shadow an
-  existing row, the dialog says which row and why, and offers to insert the
-  new row above the conflicting one. Applying anyway is allowed; the map
-  still yields exactly one trade.
+  On failure the dialog stays open with an inline message. On success it
+  returns:
+  ```python
+  @dataclass(frozen=True)
+  class AssistantResult:
+      master_pattern: str
+      slave_template: str
+      insert_before: int | None = None   # index into the existing rows
+  ```
+- **Shadowing check (computable direction only):** the dialog receives the
+  profile's current rows in order (`existing_rows: list[tuple[str, str]]`).
+  Before applying, it resolves every example through those rows alone with
+  `exists_check=lambda s: False`. If the result is not the new rule's expected
+  slave name, the new rule would be ineffective for that example; the dialog
+  names the winning row and why:
+  - If the example equals an existing row's master text **literally**, that
+    row is in the exact tier and wins regardless of position. Apply anyway, or
+    edit/remove that row; moving the new row above it cannot help.
+  - Otherwise the winning row is the first matching regex row at index `i`;
+    the dialog offers **Insert above**, which returns `insert_before=i`.
+  With several conflicting regex rows, `insert_before` is the lowest of their
+  indices, so the new row precedes all of them. Exact-tier conflicts are
+  listed separately because ordering does not solve them.
+  The reverse direction ("the new rule would shadow some existing row") is not
+  claimed: existing rows have no example pairs, and arbitrary regex-language
+  overlap is not computable in practice.
 
 ### Widget integration
 
 `CopySettingsWidget` (shared by `ProfileEditor` and `SlaveEditor`):
 - New `assistant_button = QPushButton("Assistant…")` next to Add Row /
-  Remove Row.
-- On click, open `SymbolAssistant(parent=self)`; on accept:
-  - If a row with the same master pattern exists, replace its slave cell.
+  Remove Row. Add it to `set_editable`, so the button is disabled whenever the
+  symbol table is locked (a profile-attached slave's read-only preview).
+- New `symbol_map_pairs() -> list[tuple[str, str]]` returns the current rows
+  in order (the same cells `_symbol_map_csv()` serializes). `_symbol_map_csv()`
+  itself is unchanged, so saving/loading needs no changes.
+- On click, open `SymbolAssistant(existing_rows=self.symbol_map_pairs(),
+  parent=self)`. On accept:
+  - If `insert_before` is not `None`, insert the pair at that index and select
+    it.
+  - Else if a row with the same master pattern exists, replace the **first**
+    such row's slave cell and remove any additional rows with the same master
+    pattern (otherwise a later duplicate would win in the engine).
   - Otherwise append a new row and select it.
-- The existing `_symbol_map_csv()` serialization is unchanged, so saving and
-  loading a profile need no changes.
+- The `set_editable` change is asserted in
+  `test_copy_settings_widget_set_editable_disables_everything`.
 
 ### Single-trade invariant (already true, now pinned)
 
@@ -262,29 +296,41 @@ Preview
     suffix in the pattern and `YM_$2.cfd` as the template), a slave with a
     year (`YMH27→YM_H27`), a 4-digit master year, a root containing the month
     letter (`YMM27→YM_M`).
-  - Failure cases: no trailing year on the master, no month code, empty
-    master prefix, mixed year widths, inconsistent prefixes/suffixes, slave
-    missing the month letter, slave year width mismatch, empty input.
+  - Failure cases: no trailing year on the master, a 1-digit or 5+-digit year
+    run, no month code, empty master prefix, mixed year widths, inconsistent
+    prefixes/suffixes, slave missing the month letter, slave year width
+    mismatch, empty input.
   - Validation disables the same-name fallback: a same-name example whose
     rule does not actually match is rejected (it would "resolve" with the
     fallback enabled).
+  - A literal `$` in the slave text is emitted as `$$` in the template and
+    survives `_expand_template`.
   - CSV safety: the generated pattern/template contain no `,` or `=`.
 - `manager/tests/test_symbol_assistant.py` (GUI, offscreen):
   - Filling two examples auto-fills the rule and preview.
-  - Manual rule edit stops auto-inference; "Neu ableiten" restores it.
-  - Apply inserts/replaces the table row and serializes into `symbol_map_csv`.
+  - Manual rule edit stops auto-inference; **Re-derive** restores it.
+  - Apply appends/replaces the table row and serializes into `symbol_map_csv`.
+  - Accepting returns an `AssistantResult`; with a regex-row conflict,
+    **Insert above** sets `insert_before` to the lowest conflicting index and
+    the widget inserts there, so the new rule wins.
+  - An exact-tier conflict (an existing row's master text equals an example)
+    is reported as such; inserting above does not change the winner, and Apply
+    anyway appends with the exact row still winning.
+  - Duplicate master patterns: accepting a same-master rule replaces the first
+    matching row and removes the duplicates.
   - Invalid examples keep the dialog open.
   - Cancel changes nothing.
 - `manager/tests/test_profile_editor.py` / `test_slave_editor.py`: the
-  assistant button exists and the applied row round-trips through
-  `values()`/`set_values()`.
+  assistant button exists, is disabled by `set_editable(False)`, and the
+  applied row round-trips through `values()`/`set_values()`.
 - Single-trade invariant regression tests:
   - `test_transform.py`: a map with two overlapping matching rows resolves a
     master symbol to exactly one slave name (the first row's).
   - `test_copy_loop.py`: ingesting one master NEW through a slave whose map has
     overlapping rows emits exactly one OPEN command.
-  - `test_worker` / existing split-order tests stay green: an oversized volume
-    still opens multiple orders on the one resolved symbol.
+  - `manager/tests/test_mt5_worker.py` / existing split-order tests stay green:
+    an oversized volume still opens multiple orders on the one resolved
+    symbol.
 - `README.md`: document the assistant and the YM example, and state the
   one-trade-per-master-trade-per-slave rule with the split-order exception.
 
